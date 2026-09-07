@@ -122,10 +122,18 @@ type GrantDispatchStore interface {
 	GetGrantDispatch(context.Context, string) (GrantDispatchRecord, error)
 }
 
+type RunnerFleetStore interface {
+	HeartbeatRunner(context.Context, domain.RunnerInfo, domain.AuditEvent) (domain.RunnerInfo, error)
+	GetRunner(context.Context, string, string) (domain.RunnerInfo, error)
+	ListRunnerFleet(context.Context, string) ([]domain.RunnerInfo, error)
+	SetRunnerStatus(context.Context, string, string, domain.RunnerStatus, string, time.Time, domain.AuditEvent) (domain.RunnerInfo, error)
+}
+
 type DurableStore interface {
 	Store
 	RunnerJournal
 	GrantDispatchStore
+	RunnerFleetStore
 	SavePlan(domain.ReleasePlan) error
 	GetPlan(string) (domain.ReleasePlan, error)
 	CreateRunAtomic(*domain.ReleaseRun, []domain.AuditEvent, []domain.OutboxEvent) (*domain.ReleaseRun, bool, error)

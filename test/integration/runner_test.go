@@ -100,3 +100,40 @@ func TestGrantDispatchSurvivesReconnectAndRecordsAckResult(t *testing.T) {
 		t.Fatalf("complete=%#v err=%v", completed, err)
 	}
 }
+
+func TestRunnerFleetHeartbeatAndDrainSurviveControlPlaneRestart(t *testing.T) {
+	requireIntegration(t)
+	ctx := context.Background()
+	databaseURL := integrationDatabaseURL()
+	if err := postgresstore.Migrate(databaseURL, false); err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	suffix := now.Format("150405.000000000")
+	runnerID := "runner-fleet-" + suffix
+	correlationID := "runner/tenant-integration/" + runnerID
+	heartbeat := domain.RunnerInfo{ID: runnerID, TenantID: "tenant-integration", Group: "runner-integration", ReportedCapacity: 3, InFlight: 1, LastSeen: now}
+	connected, err := persistent.HeartbeatRunner(ctx, heartbeat, integrationAudit("runner-connect-"+suffix, correlationID, now))
+	if err != nil || connected.Status != domain.RunnerReady || connected.Capacity != 2 {
+		t.Fatalf("connected=%#v err=%v", connected, err)
+	}
+	drained, err := persistent.SetRunnerStatus(ctx, heartbeat.TenantID, runnerID, domain.RunnerDraining, "operator", now.Add(time.Second), integrationAudit("runner-drain-"+suffix, correlationID, now.Add(time.Second)))
+	if err != nil || drained.Capacity != 0 {
+		t.Fatalf("drained=%#v err=%v", drained, err)
+	}
+	persistent.Close()
+
+	reconnected, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reconnected.Close()
+	loaded, err := reconnected.GetRunner(ctx, heartbeat.TenantID, runnerID)
+	if err != nil || loaded.Status != domain.RunnerDraining || loaded.Capacity != 0 {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+}

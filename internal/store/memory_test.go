@@ -81,6 +81,32 @@ func TestMemoryGrantDispatchLeaseAckResultAndOutbox(t *testing.T) {
 	}
 }
 
+func TestRunnerFleetHeartbeatAndControlAreTenantBoundAndAudited(t *testing.T) {
+	memory := NewMemory()
+	now := time.Date(2026, 9, 8, 3, 0, 0, 0, time.UTC)
+	correlationID := "runner/tenant-1/runner-1"
+	heartbeatAudit := domain.AuditEvent{ID: "heartbeat-audit", CorrelationID: correlationID, ActorType: "runner", ActorID: "runner-1", Action: "runner.heartbeat", ResourceType: "runner", ResourceID: "runner-1", Result: "CONNECTED", Timestamp: now}
+	runner, err := memory.HeartbeatRunner(context.Background(), domain.RunnerInfo{ID: "runner-1", TenantID: "tenant-1", Group: "prod-jp", ReportedCapacity: 4, InFlight: 1, LastSeen: now}, heartbeatAudit)
+	if err != nil || runner.Status != domain.RunnerReady || runner.Capacity != 3 {
+		t.Fatalf("runner=%#v err=%v", runner, err)
+	}
+	controlAudit := domain.AuditEvent{ID: "freeze-audit", CorrelationID: correlationID, ActorType: "user", ActorID: "operator", Action: "runner.frozen", ResourceType: "runner", ResourceID: "runner-1", Result: "FROZEN", Timestamp: now.Add(time.Second)}
+	frozen, err := memory.SetRunnerStatus(context.Background(), "tenant-1", "runner-1", domain.RunnerFrozen, "operator", now.Add(time.Second), controlAudit)
+	if err != nil || frozen.Status != domain.RunnerFrozen || frozen.Capacity != 0 {
+		t.Fatalf("frozen=%#v err=%v", frozen, err)
+	}
+	if _, err := memory.GetRunner(context.Background(), "tenant-2", "runner-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-tenant read error=%v", err)
+	}
+	if _, err := memory.HeartbeatRunner(context.Background(), domain.RunnerInfo{ID: "runner-1", TenantID: "tenant-1", Group: "other", ReportedCapacity: 1, LastSeen: now}, heartbeatAudit); !errors.Is(err, ErrConflict) {
+		t.Fatalf("group reassignment error=%v", err)
+	}
+	events, err := memory.AuditEvents(correlationID)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}
+
 func TestMemoryExecutionIdempotencyAndOutboxAtomicity(t *testing.T) {
 	now := time.Date(2026, 8, 15, 1, 0, 0, 0, time.UTC)
 	memory := NewMemory()

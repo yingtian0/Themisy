@@ -25,6 +25,7 @@ type Memory struct {
 	runnerByKey    map[string]string
 	grantDispatch  map[string]GrantDispatchRecord
 	grantByKey     map[string]string
+	runnerFleet    map[string]domain.RunnerInfo
 	journalError   error
 }
 
@@ -35,7 +36,90 @@ func NewMemory() *Memory {
 		projections:   make(map[string]*domain.ReleaseRun),
 		runnerActions: make(map[string]RunnerActionRecord), runnerByKey: make(map[string]string),
 		grantDispatch: make(map[string]GrantDispatchRecord), grantByKey: make(map[string]string),
+		runnerFleet: make(map[string]domain.RunnerInfo),
 	}
+}
+
+func (m *Memory) HeartbeatRunner(_ context.Context, heartbeat domain.RunnerInfo, audit domain.AuditEvent) (domain.RunnerInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if heartbeat.ID == "" || heartbeat.TenantID == "" || heartbeat.Group == "" || heartbeat.ReportedCapacity < 0 || heartbeat.InFlight < 0 || heartbeat.InFlight > heartbeat.ReportedCapacity || heartbeat.LastSeen.IsZero() {
+		return domain.RunnerInfo{}, ErrConflict
+	}
+	key := runnerFleetKey(heartbeat.TenantID, heartbeat.ID)
+	current, exists := m.runnerFleet[key]
+	if exists && current.Group != heartbeat.Group {
+		return domain.RunnerInfo{}, ErrConflict
+	}
+	if !exists {
+		current = heartbeat
+		current.Status = domain.RunnerReady
+		current.StateVersion = 1
+	} else {
+		current.ReportedCapacity = heartbeat.ReportedCapacity
+		current.InFlight = heartbeat.InFlight
+		current.LastSeen = heartbeat.LastSeen
+		current.StateVersion++
+	}
+	current.Capacity = current.ReportedCapacity - current.InFlight
+	if current.Status != domain.RunnerReady {
+		current.Capacity = 0
+	}
+	m.runnerFleet[key] = current
+	if audit.ID != "" {
+		m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
+	}
+	return current, nil
+}
+
+func (m *Memory) GetRunner(_ context.Context, tenantID, runnerID string) (domain.RunnerInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	value, ok := m.runnerFleet[runnerFleetKey(tenantID, runnerID)]
+	if !ok {
+		return domain.RunnerInfo{}, ErrNotFound
+	}
+	return value, nil
+}
+
+func (m *Memory) ListRunnerFleet(_ context.Context, tenantID string) ([]domain.RunnerInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := []domain.RunnerInfo{}
+	for _, value := range m.runnerFleet {
+		if value.TenantID == tenantID {
+			result = append(result, value)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+func (m *Memory) SetRunnerStatus(_ context.Context, tenantID, runnerID string, status domain.RunnerStatus, actor string, now time.Time, audit domain.AuditEvent) (domain.RunnerInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if actor == "" || (status != domain.RunnerReady && status != domain.RunnerDraining && status != domain.RunnerFrozen) {
+		return domain.RunnerInfo{}, ErrConflict
+	}
+	key := runnerFleetKey(tenantID, runnerID)
+	current, ok := m.runnerFleet[key]
+	if !ok {
+		return domain.RunnerInfo{}, ErrNotFound
+	}
+	current.Status, current.ControlledBy, current.ControlledAt = status, actor, &now
+	current.Capacity = current.ReportedCapacity - current.InFlight
+	if status != domain.RunnerReady {
+		current.Capacity = 0
+	}
+	if status == domain.RunnerFrozen {
+		current.FrozenBy, current.FrozenAt = actor, &now
+	} else {
+		current.FrozenBy, current.FrozenAt = "", nil
+	}
+	current.StateVersion++
+	m.runnerFleet[key] = current
+	m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
+	return current, nil
 }
 
 func (m *Memory) CreateGrantDispatch(_ context.Context, record GrantDispatchRecord, audit domain.AuditEvent, outbox domain.OutboxEvent) (GrantDispatchRecord, bool, error) {
@@ -470,6 +554,7 @@ func runnerNonceKey(tenant, runnerGroup, nonce string) string {
 func runnerIdempotencyKey(tenant, runnerGroup, key string) string {
 	return tenant + "\x00" + runnerGroup + "\x00" + key
 }
+func runnerFleetKey(tenant, runnerID string) string { return tenant + "\x00" + runnerID }
 
 func cloneRun(run *domain.ReleaseRun) *domain.ReleaseRun {
 	data, err := json.Marshal(run)

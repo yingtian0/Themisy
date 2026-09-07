@@ -181,20 +181,26 @@ type ApprovalSummary struct {
 type RunnerStatus string
 
 const (
-	RunnerUnknown RunnerStatus = "UNKNOWN"
-	RunnerReady   RunnerStatus = "READY"
-	RunnerFrozen  RunnerStatus = "FROZEN"
+	RunnerUnknown  RunnerStatus = "UNKNOWN"
+	RunnerReady    RunnerStatus = "READY"
+	RunnerDraining RunnerStatus = "DRAINING"
+	RunnerFrozen   RunnerStatus = "FROZEN"
 )
 
 type RunnerInfo struct {
-	ID       string       `json:"id"`
-	TenantID string       `json:"tenant_id"`
-	Group    string       `json:"group"`
-	Status   RunnerStatus `json:"status"`
-	Capacity int          `json:"capacity"`
-	LastSeen time.Time    `json:"last_seen,omitempty"`
-	FrozenBy string       `json:"frozen_by,omitempty"`
-	FrozenAt *time.Time   `json:"frozen_at,omitempty"`
+	ID               string       `json:"id"`
+	TenantID         string       `json:"tenant_id"`
+	Group            string       `json:"group"`
+	Status           RunnerStatus `json:"status"`
+	Capacity         int          `json:"capacity"`
+	ReportedCapacity int          `json:"reported_capacity,omitempty"`
+	InFlight         int          `json:"in_flight,omitempty"`
+	LastSeen         time.Time    `json:"last_seen,omitempty"`
+	StateVersion     int64        `json:"state_version,omitempty"`
+	ControlledBy     string       `json:"controlled_by,omitempty"`
+	ControlledAt     *time.Time   `json:"controlled_at,omitempty"`
+	FrozenBy         string       `json:"frozen_by,omitempty"`
+	FrozenAt         *time.Time   `json:"frozen_at,omitempty"`
 }
 
 type ContractValidation struct {
