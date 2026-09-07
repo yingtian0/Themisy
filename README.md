@@ -149,45 +149,38 @@ at `api/openapi/v1alpha1.yaml`.
 
 
 ```mermaid
+flowchart TD
+    USER["人間・CI・AI Agent"] -->|"リリース要求（Intent）"| API["Control Plane API"]
 
-flowchart LR
+    GIT["Git<br/>Service Contract・Release Profile"] -->|"サービス定義・依存関係"| CTX["Context収集"]
+    AWSREAD["AWS ECS<br/>現在の配置状態"] -->|"Read情報"| CTX
+    OBS["Datadog等"] -->|"Metrics・Evidence"| CTX
 
-    U["開発者・承認者"] --> UI["Port / ServiceConsole / GitHub / CLI"]
+    subgraph CP["Control Plane"]
+        API --> CTX
+        CTX -->|"固定したContext"| PLANNER["Planner<br/>PlanとStepを生成"]
+        CPPOL["OPA Policy<br/>実行ルール"] -->|"許可・制約・承認条件"| PLANNER
+        PLANNER -->|"Plan・Step・各種hash"| TEMPORAL["Temporal<br/>Stepの進行管理"]
+        TEMPORAL -->|"実行可能になったStep"| ISSUER["Grant発行機能"]
+        ISSUER -->|"署名対象のGrant本文"| KMS["KMS<br/>Control Plane秘密鍵"]
+        KMS -->|"電子署名"| ISSUER
+        CPDB["Control Plane PostgreSQL<br/>Plan・Run・Approval・Audit"] --- PLANNER
+        CPDB --- ISSUER
+    end
 
-    A["AI Agent"] --> MCP["MCP / API"]
+    ISSUER -->|"Signed Action Grant<br/>Step・Action・各種hash・key・署名"| VERIFY["Runner<br/>署名検証"]
 
-    UI --> O["Temporal / 既存CI/CD"]
+    subgraph CUSTOMER["顧客AWS環境"]
+        VERIFY -->|"公開鍵で検証"| LOCALPOL["Runner側OPA<br/>署名済みPolicy Bundle"]
+        LOCALPOL -->|"ALLOWの場合のみ"| JOURNAL["共有PostgreSQL Journal<br/>二重実行防止・実行状態"]
+        JOURNAL --> BROKER["Credential Broker"]
+        BROKER -->|"AWS STSの短寿命Credential"| ADAPTER["型付きECS Adapter"]
+        ADAPTER -->|"Deploy・Status・Rollback"| ECS["AWS ECS"]
+        ECS -->|"外部execution ID・実状態"| ADAPTER
+    end
 
-    MCP --> O
-
-    O --> CP["Themisy<br/>Plan・Policy・Approval・Grant"]
-
-    CP --> R["顧客環境Runner<br/>最終認可・Credential取得"]
-
-    R --> AD["型付きAdapter"]
-
-    AD --> AWS["AWS ECS"]
-
-    AD --> ARGO["Argo / Kubernetes"]
-
-    AD --> GHA["GitHub Actions"]
-
-    AD --> OBS["Datadog等"]
-
-    AWS --> EV["実行結果・Evidence"]
-
-    ARGO --> EV
-
-    GHA --> EV
-
-    OBS --> EV
-
-    EV --> CP
-
-    CP --> UI
-
+    ADAPTER -->|"実行結果・Evidence"| TEMPORAL
 ```
-
 
 
 ## Package map
