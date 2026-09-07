@@ -3,9 +3,12 @@ package transport
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,6 +25,139 @@ import (
 	"themisy/pkg/credentials"
 	"themisy/pkg/protocol"
 )
+
+func TestMTLSAuthenticatorBindsWorkloadIdentityToRunner(t *testing.T) {
+	workloadID, err := url.Parse("spiffe://example.internal/themisy/runner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := &x509.Certificate{URIs: []*url.URL{workloadID}}
+	authenticator := MTLSRunnerAuthenticator{workloadID.String(): {RunnerID: "runner-1", TenantID: "tenant-1", RunnerGroup: "prod-jp"}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/runner/grants:next", nil)
+	request.Header.Set(runnerIDHeader, "runner-1")
+	request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificate}, VerifiedChains: [][]*x509.Certificate{{certificate}}}
+	identity, err := authenticator.Authenticate(request)
+	if err != nil || identity.TenantID != "tenant-1" || identity.RunnerGroup != "prod-jp" {
+		t.Fatalf("identity=%#v err=%v", identity, err)
+	}
+	request.Header.Set(runnerIDHeader, "other-runner")
+	if _, err := authenticator.Authenticate(request); err == nil {
+		t.Fatal("certificate was accepted for a different Runner ID")
+	}
+	hybrid := HybridRunnerAuthenticator{MTLS: authenticator, Bearer: StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}}
+	request.Header.Set(runnerIDHeader, "runner-1")
+	request.Header.Set("Authorization", "Bearer secret")
+	request.TLS.VerifiedChains = nil
+	if _, err := hybrid.Authenticate(request); err == nil {
+		t.Fatal("unverified client certificate downgraded to bearer authentication")
+	}
+}
+
+func TestHeartbeatAppliesDrainAndPreventsDispatch(t *testing.T) {
+	memory := store.NewMemory()
+	authenticator := StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}
+	server := httptest.NewServer((&RunnerServer{Store: memory, Fleet: memory, Audit: memory, Auth: authenticator, RequireHeartbeat: true, HeartbeatInterval: time.Second}).Handler())
+	defer server.Close()
+	runtimeState := runnercore.NewRuntimeState(2)
+	client := &RunnerClient{BaseURL: server.URL, RunnerID: "runner-1", Token: "secret", Runtime: runtimeState, Capacity: 2}
+	if err := client.heartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	registered, err := memory.GetRunner(context.Background(), "tenant-1", "runner-1")
+	if err != nil || registered.Status != domain.RunnerReady || registered.Capacity != 2 {
+		t.Fatalf("registered=%#v err=%v", registered, err)
+	}
+	now := time.Now().UTC()
+	audit := domain.AuditEvent{ID: "drain-audit", CorrelationID: "runner/tenant-1/runner-1", ActorType: "user", ActorID: "operator", Action: "runner.draining", ResourceType: "runner", ResourceID: "runner-1", Result: "DRAINING", Timestamp: now}
+	if _, err := memory.SetRunnerStatus(context.Background(), "tenant-1", "runner-1", domain.RunnerDraining, "operator", now, audit); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.heartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeState.Mode() != protocol.RunnerModeDraining || runtimeState.Accepting() {
+		t.Fatalf("mode=%s accepting=%v", runtimeState.Mode(), runtimeState.Accepting())
+	}
+	actionGrant := protocol.ActionGrant{GrantID: "grant-drain", RunID: "run-drain", StepID: "step-1", TenantID: "tenant-1", RunnerGroup: "prod-jp", IdempotencyKey: "key-drain", Nonce: "nonce-drain", ExpiresAt: now.Add(time.Minute)}
+	if _, _, err := memory.CreateGrantDispatch(context.Background(), store.GrantDispatchRecord{Grant: actionGrant, CreatedAt: now, UpdatedAt: now}, domain.AuditEvent{ID: "issue-drain", CorrelationID: actionGrant.RunID, Timestamp: now}, domain.OutboxEvent{ID: "outbox-drain", AggregateType: "action_grant", AggregateID: actionGrant.GrantID, EventType: "grant.dispatch.requested", CreatedAt: now, AvailableAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/v1/runner/grants:next?wait=0s", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set(runnerIDHeader, "runner-1")
+	request.Header.Set("Authorization", "Bearer secret")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("dispatch status=%d", response.StatusCode)
+	}
+	pending, err := memory.GetGrantDispatch(context.Background(), actionGrant.GrantID)
+	if err != nil || pending.Status != store.GrantDispatchPending {
+		t.Fatalf("drain claimed a new grant: %#v err=%v", pending, err)
+	}
+}
+
+func TestAuthenticationFailureIsAudited(t *testing.T) {
+	memory := store.NewMemory()
+	server := httptest.NewServer((&RunnerServer{Store: memory, Fleet: memory, Audit: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}}).Handler())
+	defer server.Close()
+	request, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/runner/grants:next?wait=0s", nil)
+	request.Header.Set(runnerIDHeader, "runner-1")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d", response.StatusCode)
+	}
+	events, err := memory.AuditEvents("runner-auth/runner-1")
+	if err != nil || len(events) != 1 || events[0].Result != "REJECTED" {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}
+
+func TestPreExecutionRejectionReasonIsStoredAndAudited(t *testing.T) {
+	memory := store.NewMemory()
+	now := time.Now().UTC()
+	actionGrant := protocol.ActionGrant{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: "grant-rejected", RunID: "run-rejected", StepID: "step-1", TenantID: "tenant-1", RunnerGroup: "prod-jp", IdempotencyKey: "key-rejected", Nonce: "nonce-rejected", ExpiresAt: now.Add(time.Minute)}
+	record := store.GrantDispatchRecord{Grant: actionGrant, CreatedAt: now, UpdatedAt: now}
+	issueAudit := domain.AuditEvent{ID: "issue-rejected", CorrelationID: actionGrant.RunID, ActorType: "system", ActorID: "test", Action: "grant.issue", ResourceType: "action_grant", ResourceID: actionGrant.GrantID, Result: "AUTHORIZED", Timestamp: now}
+	outbox := domain.OutboxEvent{ID: "outbox-rejected", AggregateType: "action_grant", AggregateID: actionGrant.GrantID, EventType: "grant.dispatch.requested", CreatedAt: now, AvailableAt: now}
+	if _, _, err := memory.CreateGrantDispatch(context.Background(), record, issueAudit, outbox); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer((&RunnerServer{Store: memory, Audit: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}}).Handler())
+	defer server.Close()
+	client := &RunnerClient{BaseURL: server.URL, RunnerID: "runner-1", Token: "secret", Wait: time.Millisecond, BeforeExecute: func(context.Context, protocol.ActionGrant) error { return grant.ErrWrongTenant }}
+	delivered, err := client.RunOnce(context.Background(), rejectingProbe{})
+	if err != nil || !delivered {
+		t.Fatalf("delivered=%v err=%v", delivered, err)
+	}
+	stored, err := memory.GetGrantDispatch(context.Background(), actionGrant.GrantID)
+	if err != nil || stored.Status != store.GrantDispatchRejected || stored.Result.ReasonCode != "WRONG_TENANT" {
+		t.Fatalf("stored=%#v err=%v", stored, err)
+	}
+	events, err := memory.AuditEvents(actionGrant.RunID)
+	if err != nil || len(events) < 4 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+	resultAudit := events[len(events)-1]
+	if resultAudit.Action != "grant.result" || resultAudit.Details["reason_code"] != "WRONG_TENANT" {
+		t.Fatalf("result audit=%#v", resultAudit)
+	}
+}
+
+type rejectingProbe struct{}
+
+func (rejectingProbe) Execute(context.Context, protocol.ActionGrant) (protocol.Result, error) {
+	panic("executor must not run after pre-execution rejection")
+}
 
 func TestStaticRunnerAuthenticatorRequiresBearerScheme(t *testing.T) {
 	authenticator := StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}
@@ -129,6 +265,8 @@ func (p helperPolicy) Evaluate(_ context.Context, input policy.Input) (policy.Ev
 }
 
 type helperAdapter struct{ marker string }
+
+func (a helperAdapter) Authorize(protocol.Target, protocol.Action) error { return nil }
 
 func (a helperAdapter) Execute(_ context.Context, _ runnercore.AdapterRequest, _ credentials.Credential) (runnercore.AdapterResult, error) {
 	if err := os.WriteFile(a.marker, []byte("called"), 0o600); err != nil {

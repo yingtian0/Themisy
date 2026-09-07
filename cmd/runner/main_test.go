@@ -59,7 +59,7 @@ func TestBuildRunnerComposesExecutableDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if executionRunner.Grants == nil || executionRunner.Subjects == nil || executionRunner.Delegations == nil || executionRunner.Policy == nil || executionRunner.Journal == nil || executionRunner.Credentials == nil || executionRunner.Adapter == nil || executionRunner.Connectivity == nil || client == nil || reconciler == nil {
+	if executionRunner.Grants == nil || executionRunner.Subjects == nil || executionRunner.Delegations == nil || executionRunner.Policy == nil || executionRunner.Journal == nil || executionRunner.Credentials == nil || executionRunner.Adapter == nil || executionRunner.Connectivity == nil || executionRunner.Admission == nil || client == nil || client.Runtime == nil || reconciler == nil {
 		t.Fatalf("runner dependencies were not fully composed: %#v", executionRunner)
 	}
 }

@@ -2,11 +2,16 @@ mode: development
 runner_id: runner-local-1
 runner_group: local-development
 tenant_id: tenant-development
+capacity: 1
 health_address: ":8081"
 control_plane:
   address: https://control-plane.example.invalid
   issuer: https://control-plane.example.invalid
   token_file: ${THEMISY_RUNNER_TOKEN_FILE}
+  # Production uses mTLS workload identity instead of token_file.
+  # client_cert_file: /run/secrets/runner.crt
+  # client_key_file: /run/secrets/runner.key
+  # ca_file: /run/secrets/control-plane-ca.crt
   trust_key_id: development-grant-key
   trust_key_file: ${THEMISY_GRANT_PUBLIC_KEY_FILE}
 identity:

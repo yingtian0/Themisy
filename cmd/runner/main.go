@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -40,6 +42,7 @@ type settings struct {
 	RunnerID      string                `yaml:"runner_id"`
 	RunnerGroup   string                `yaml:"runner_group"`
 	TenantID      string                `yaml:"tenant_id"`
+	Capacity      int                   `yaml:"capacity"`
 	HealthAddress string                `yaml:"health_address"`
 	ControlPlane  controlPlaneSettings  `yaml:"control_plane"`
 	Identity      identitySettings      `yaml:"identity"`
@@ -50,11 +53,14 @@ type settings struct {
 	Capabilities  []protocol.Capability `yaml:"capabilities"`
 }
 type controlPlaneSettings struct {
-	Address      string `yaml:"address"`
-	Issuer       string `yaml:"issuer"`
-	TokenFile    string `yaml:"token_file"`
-	TrustKeyID   string `yaml:"trust_key_id"`
-	TrustKeyFile string `yaml:"trust_key_file"`
+	Address        string `yaml:"address"`
+	Issuer         string `yaml:"issuer"`
+	TokenFile      string `yaml:"token_file"`
+	ClientCertFile string `yaml:"client_cert_file"`
+	ClientKeyFile  string `yaml:"client_key_file"`
+	CAFile         string `yaml:"ca_file"`
+	TrustKeyID     string `yaml:"trust_key_id"`
+	TrustKeyFile   string `yaml:"trust_key_file"`
 }
 type identitySettings struct {
 	Issuer          string `yaml:"issuer"`
@@ -149,7 +155,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer cleanup()
-	server := &http.Server{Addr: configuration.HealthAddress, Handler: healthHandler(configuration, executionRunner.Connectivity), ReadHeaderTimeout: 2 * time.Second}
+	server := &http.Server{Addr: configuration.HealthAddress, Handler: healthHandler(configuration, executionRunner.Connectivity, client.Runtime), ReadHeaderTimeout: 2 * time.Second}
 	go func() {
 		logger.Info("runner health endpoint listening", "address", configuration.HealthAddress, "runner_group", configuration.RunnerGroup)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -189,12 +195,18 @@ func load(path string) (settings, error) {
 	if result.HealthAddress == "" {
 		result.HealthAddress = ":8081"
 	}
+	if result.Capacity == 0 {
+		result.Capacity = 1
+	}
+	if result.Capacity < 1 {
+		return settings{}, fmt.Errorf("capacity must be at least one")
+	}
 	for _, capability := range result.Capabilities {
 		if capability != protocol.CapabilityDeploy && capability != protocol.CapabilityRollback {
 			return settings{}, fmt.Errorf("unsupported capability %q", capability)
 		}
 	}
-	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.TokenFile == "" || result.ControlPlane.TrustKeyID == "" || result.ControlPlane.TrustKeyFile == "" || result.Identity.TrustKeyID == "" || result.Identity.TrustKeyFile == "" || result.Identity.DelegationsFile == "" || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
+	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.ControlPlane.TrustKeyID == "" || result.ControlPlane.TrustKeyFile == "" || result.Identity.TrustKeyID == "" || result.Identity.TrustKeyFile == "" || result.Identity.DelegationsFile == "" || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
 		return settings{}, fmt.Errorf("production requires durable journal and customer-managed grant, OIDC, and policy trust keys")
 	}
 	if result.Mode == "production" && !strings.HasPrefix(result.ControlPlane.Address, "https://") {
@@ -290,20 +302,25 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	grantVerifier := &grant.Verifier{Issuer: configuration.ControlPlane.Issuer, RunnerGroup: configuration.RunnerGroup, TenantID: configuration.TenantID, Keys: grant.StaticKeys{configuration.ControlPlane.Issuer + "\x00" + configuration.ControlPlane.TrustKeyID: grantKey}, ClockSkew: 30 * time.Second}
 	received := runnercore.NewReceivedContexts()
 	connectivity := &runnercore.AtomicConnectionState{}
+	capacity := configuration.Capacity
+	if capacity < 1 {
+		capacity = 1
+	}
+	runtimeState := runnercore.NewRuntimeState(capacity)
 	executionRunner := &runnercore.Runner{
 		TenantID: configuration.TenantID, RunnerGroup: configuration.RunnerGroup, Grants: grantVerifier,
 		Subjects:    &identity.OIDCVerifier{Issuer: configuration.Identity.Issuer, Audience: configuration.Identity.Audience, Keys: identity.StaticOIDCKeys{configuration.Identity.Issuer + "\x00" + configuration.Identity.TrustKeyID: ed25519.PublicKey(oidcKey)}, ClockSkew: 30 * time.Second},
 		Delegations: &identity.DelegationVerifier{Resolver: delegations}, Contexts: received, Approvals: received,
 		Capabilities: runnercore.NewCapabilitySet(configuration.Capabilities...), Policy: policyEngine, Journal: journal,
-		Credentials: broker, Adapter: dispatcher, Connectivity: connectivity,
+		Credentials: broker, Adapter: dispatcher, Connectivity: connectivity, Admission: runtimeState,
 	}
-	token, err := readSecret(configuration.ControlPlane.TokenFile)
+	httpClient, token, err := buildRunnerTransportClient(configuration)
 	if err != nil {
-		return fail(fmt.Errorf("read Control Plane runner token: %w", err))
+		return fail(err)
 	}
 	client := &runnertransport.RunnerClient{
 		BaseURL: configuration.ControlPlane.Address, RunnerID: configuration.RunnerID, Token: token,
-		HTTP: &http.Client{Timeout: 40 * time.Second}, Wait: 30 * time.Second, Connectivity: connectivity,
+		HTTP: httpClient, Wait: 30 * time.Second, Connectivity: connectivity, Runtime: runtimeState, Capacity: capacity,
 		BeforeExecute: func(ctx context.Context, actionGrant protocol.ActionGrant) error {
 			if err := grantVerifier.Verify(ctx, actionGrant); err != nil {
 				return err
@@ -313,6 +330,47 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 		},
 	}
 	return executionRunner, client, dispatcher, cleanup, nil
+}
+
+func buildRunnerTransportClient(configuration settings) (*http.Client, string, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS13}
+	configured := configuration.ControlPlane
+	if configured.ClientCertFile != "" || configured.ClientKeyFile != "" || configured.CAFile != "" {
+		if configured.ClientCertFile == "" || configured.ClientKeyFile == "" || configured.CAFile == "" {
+			return nil, "", errors.New("Runner mTLS requires client certificate, client key, and Control Plane CA files")
+		}
+		keyInfo, err := os.Stat(configured.ClientKeyFile)
+		if err != nil {
+			return nil, "", fmt.Errorf("stat Runner workload key: %w", err)
+		}
+		if keyInfo.Mode().Perm()&0o077 != 0 {
+			return nil, "", errors.New("Runner workload key must not be group or world accessible")
+		}
+		certificate, err := tls.LoadX509KeyPair(configured.ClientCertFile, configured.ClientKeyFile)
+		if err != nil {
+			return nil, "", fmt.Errorf("load Runner workload certificate: %w", err)
+		}
+		data, err := os.ReadFile(configured.CAFile)
+		if err != nil {
+			return nil, "", fmt.Errorf("read Control Plane CA: %w", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(data) {
+			return nil, "", errors.New("Control Plane CA contains no certificates")
+		}
+		transport.TLSClientConfig.Certificates = []tls.Certificate{certificate}
+		transport.TLSClientConfig.RootCAs = roots
+		return &http.Client{Transport: transport, Timeout: 40 * time.Second}, "", nil
+	}
+	if configured.TokenFile == "" {
+		return nil, "", errors.New("Runner transport requires mTLS workload identity or a development token")
+	}
+	token, err := readSecret(configured.TokenFile)
+	if err != nil {
+		return nil, "", fmt.Errorf("read Control Plane runner token: %w", err)
+	}
+	return &http.Client{Transport: transport, Timeout: 40 * time.Second}, token, nil
 }
 
 func buildDeployAdapter(ctx context.Context, configuration settings) (adapter.DeployAdapter, credentials.Broker, error) {
@@ -491,12 +549,13 @@ func reconcileLoop(ctx context.Context, logger *slog.Logger, executionRunner *ru
 	}
 }
 
-func healthHandler(configuration settings, connectivity runnercore.Connectivity) http.Handler {
+func healthHandler(configuration settings, connectivity runnercore.Connectivity, runtimeState *runnercore.RuntimeState) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
-		accepting := connectivity != nil && connectivity.Connected()
+		accepting := connectivity != nil && connectivity.Connected() && runtimeState != nil && runtimeState.Accepting()
+		capacity, inFlight := runtimeState.Snapshot()
 		writer.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(writer, `{"status":"alive","accepting_actions":%t,"runner_id":%q,"runner_group":%q}`, accepting, configuration.RunnerID, configuration.RunnerGroup)
+		fmt.Fprintf(writer, `{"status":"alive","accepting_actions":%t,"runner_id":%q,"runner_group":%q,"mode":%q,"capacity":%d,"in_flight":%d}`, accepting, configuration.RunnerID, configuration.RunnerGroup, runtimeState.Mode(), capacity, inFlight)
 	})
 	return mux
 }

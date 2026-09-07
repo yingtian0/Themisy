@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -20,7 +21,9 @@ type Config struct {
 }
 
 type HTTP struct {
-	Address string `yaml:"address"`
+	Address     string `yaml:"address"`
+	TLSCertFile string `yaml:"tls_cert_file"`
+	TLSKeyFile  string `yaml:"tls_key_file"`
 }
 type Database struct {
 	URL         string `yaml:"url"`
@@ -48,13 +51,15 @@ type GrantSigning struct {
 	AWSRegion      string `yaml:"aws_region"`
 }
 type RunnerTransport struct {
+	ClientCAFile  string               `yaml:"client_ca_file"`
 	Registrations []RunnerRegistration `yaml:"registrations"`
 }
 type RunnerRegistration struct {
-	RunnerID    string `yaml:"runner_id"`
-	TenantID    string `yaml:"tenant_id"`
-	RunnerGroup string `yaml:"runner_group"`
-	TokenFile   string `yaml:"token_file"`
+	RunnerID         string `yaml:"runner_id"`
+	TenantID         string `yaml:"tenant_id"`
+	RunnerGroup      string `yaml:"runner_group"`
+	WorkloadIdentity string `yaml:"workload_identity"`
+	TokenFile        string `yaml:"token_file"`
 }
 
 func Load(path string) (Config, error) {
@@ -112,14 +117,25 @@ func (c Config) Validate() error {
 		return fmt.Errorf("control mode requires at least one runner registration")
 	}
 	seen := make(map[string]struct{}, len(c.RunnerTransport.Registrations))
+	hasWorkloadIdentity := false
 	for _, registration := range c.RunnerTransport.Registrations {
-		if registration.RunnerID == "" || registration.TenantID == "" || registration.RunnerGroup == "" || registration.TokenFile == "" {
+		if registration.RunnerID == "" || registration.TenantID == "" || registration.RunnerGroup == "" || (registration.TokenFile == "" && registration.WorkloadIdentity == "") {
 			return fmt.Errorf("runner registration is incomplete")
 		}
 		if _, duplicate := seen[registration.RunnerID]; duplicate {
 			return fmt.Errorf("duplicate runner registration %q", registration.RunnerID)
 		}
 		seen[registration.RunnerID] = struct{}{}
+		hasWorkloadIdentity = hasWorkloadIdentity || registration.WorkloadIdentity != ""
+		if registration.WorkloadIdentity != "" {
+			identity, err := url.Parse(registration.WorkloadIdentity)
+			if err != nil || identity.Scheme != "spiffe" || identity.Host == "" || identity.Path == "" {
+				return fmt.Errorf("runner workload_identity must be an absolute SPIFFE URI")
+			}
+		}
+	}
+	if c.Mode != "worker" && hasWorkloadIdentity && (c.RunnerTransport.ClientCAFile == "" || c.HTTP.TLSCertFile == "" || c.HTTP.TLSKeyFile == "") {
+		return fmt.Errorf("Runner mTLS requires http.tls_cert_file and http.tls_key_file")
 	}
 	return nil
 }
@@ -127,6 +143,8 @@ func (c Config) Validate() error {
 func applyEnv(c *Config) {
 	setString("THEMISY_MODE", &c.Mode)
 	setString("THEMISY_HTTP_ADDRESS", &c.HTTP.Address)
+	setString("THEMISY_HTTP_TLS_CERT_FILE", &c.HTTP.TLSCertFile)
+	setString("THEMISY_HTTP_TLS_KEY_FILE", &c.HTTP.TLSKeyFile)
 	setString("THEMISY_DATABASE_URL", &c.Database.URL)
 	setString("THEMISY_TEMPORAL_ADDRESS", &c.Temporal.Address)
 	setString("THEMISY_TEMPORAL_NAMESPACE", &c.Temporal.Namespace)
@@ -137,6 +155,7 @@ func applyEnv(c *Config) {
 	setString("THEMISY_GRANT_ISSUER", &c.Grants.Issuer)
 	setString("THEMISY_GRANT_SIGNING_KEY_ID", &c.Grants.Signing.KeyID)
 	setString("THEMISY_GRANT_SIGNING_PRIVATE_KEY_FILE", &c.Grants.Signing.PrivateKeyFile)
+	setString("THEMISY_RUNNER_CLIENT_CA_FILE", &c.RunnerTransport.ClientCAFile)
 }
 func setString(name string, target *string) {
 	if value, ok := os.LookupEnv(name); ok {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -134,8 +136,17 @@ func main() {
 	routes.Handle("/v1/runner/", runnerHandler)
 	routes.Handle("/", api.New(releases, logger).Handler())
 	server := &http.Server{Addr: settings.HTTP.Address, Handler: routes, ReadHeaderTimeout: 5 * time.Second}
+	server.TLSConfig, err = buildServerTLS(settings)
+	if err != nil {
+		logger.Error("initialize server TLS", "error", err)
+		os.Exit(1)
+	}
 	logger.Info("Themisy control plane listening", "address", settings.HTTP.Address, "services", len(contracts), "workflow", "temporal", "store", "postgres")
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	serve := server.ListenAndServe
+	if settings.HTTP.TLSCertFile != "" {
+		serve = func() error { return server.ListenAndServeTLS(settings.HTTP.TLSCertFile, settings.HTTP.TLSKeyFile) }
+	}
+	if err := serve(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
@@ -177,25 +188,60 @@ func buildGrantPath(ctx context.Context, settings config.Config, persistentStore
 	if settings.Mode == "worker" {
 		return grants, http.NotFoundHandler(), nil
 	}
-	authenticator := runnertransport.StaticRunnerAuthenticator{}
+	bearer := runnertransport.StaticRunnerAuthenticator{}
+	workloads := runnertransport.MTLSRunnerAuthenticator{}
 	for _, registration := range settings.RunnerTransport.Registrations {
-		if registration.RunnerID == "" || registration.TenantID == "" || registration.RunnerGroup == "" || registration.TokenFile == "" {
+		if registration.RunnerID == "" || registration.TenantID == "" || registration.RunnerGroup == "" || (registration.TokenFile == "" && registration.WorkloadIdentity == "") {
 			return nil, nil, errors.New("runner registration is incomplete")
 		}
-		token, err := readSecretFile(registration.TokenFile)
-		if err != nil {
-			return nil, nil, fmt.Errorf("runner %s token: %w", registration.RunnerID, err)
+		identity := runnertransport.RunnerIdentity{RunnerID: registration.RunnerID, TenantID: registration.TenantID, RunnerGroup: registration.RunnerGroup}
+		if registration.TokenFile != "" {
+			token, err := readSecretFile(registration.TokenFile)
+			if err != nil {
+				return nil, nil, fmt.Errorf("runner %s token: %w", registration.RunnerID, err)
+			}
+			bearer[registration.RunnerID] = runnertransport.RunnerRegistration{TenantID: registration.TenantID, RunnerGroup: registration.RunnerGroup, Token: token}
 		}
-		if _, duplicate := authenticator[registration.RunnerID]; duplicate {
-			return nil, nil, fmt.Errorf("duplicate runner registration %q", registration.RunnerID)
+		if registration.WorkloadIdentity != "" {
+			if _, duplicate := workloads[registration.WorkloadIdentity]; duplicate {
+				return nil, nil, fmt.Errorf("duplicate runner workload identity %q", registration.WorkloadIdentity)
+			}
+			workloads[registration.WorkloadIdentity] = identity
 		}
-		authenticator[registration.RunnerID] = runnertransport.RunnerRegistration{TenantID: registration.TenantID, RunnerGroup: registration.RunnerGroup, Token: token}
 	}
-	if len(authenticator) == 0 {
+	if len(bearer) == 0 && len(workloads) == 0 {
 		return nil, nil, errors.New("at least one runner registration is required")
 	}
-	server := &runnertransport.RunnerServer{Store: persistentStore, Auth: authenticator}
+	server := &runnertransport.RunnerServer{Store: persistentStore, Fleet: persistentStore, Audit: persistentStore, Auth: runnertransport.HybridRunnerAuthenticator{MTLS: workloads, Bearer: bearer}, RequireHeartbeat: true}
 	return grants, server.Handler(), nil
+}
+
+func buildServerTLS(settings config.Config) (*tls.Config, error) {
+	if settings.HTTP.TLSCertFile == "" {
+		return nil, nil
+	}
+	keyInfo, err := os.Stat(settings.HTTP.TLSKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("stat server TLS key: %w", err)
+	}
+	if keyInfo.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("server TLS key must not be group or world accessible")
+	}
+	configuration := &tls.Config{MinVersion: tls.VersionTLS13}
+	if settings.RunnerTransport.ClientCAFile == "" {
+		return configuration, nil
+	}
+	data, err := os.ReadFile(settings.RunnerTransport.ClientCAFile)
+	if err != nil {
+		return nil, fmt.Errorf("read Runner client CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, errors.New("Runner client CA contains no certificates")
+	}
+	configuration.ClientCAs = pool
+	configuration.ClientAuth = tls.VerifyClientCertIfGiven
+	return configuration, nil
 }
 
 func readSecretFile(path string) (string, error) {
