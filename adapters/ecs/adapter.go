@@ -62,6 +62,11 @@ func (a *Adapter) Name() string               { return Name }
 func (a *Adapter) Version() string            { return Version }
 func (a *Adapter) CredentialProvider() string { return adapter.ProviderAWS }
 
+func (a *Adapter) Authorize(target adapter.Target, artifactDigest string) error {
+	_, _, err := a.resolve(target, artifactDigest)
+	return err
+}
+
 func (a *Adapter) Deploy(ctx context.Context, request adapter.DeployRequest, credential appcredentials.Credential) (adapter.Deployment, error) {
 	if err := adapter.ValidateDeployRequest(request); err != nil {
 		return adapter.Deployment{}, terminal("deploy", request.IdempotencyKey, err)

@@ -73,6 +73,10 @@ type TypedAdapter interface {
 	Execute(context.Context, AdapterRequest, Credential) (AdapterResult, error)
 }
 
+type TargetAuthorizer interface {
+	Authorize(protocol.Target, protocol.Action) error
+}
+
 type Reconciler interface {
 	Reconcile(context.Context, AdapterRequest, Credential) (AdapterResult, bool, error)
 }
@@ -89,6 +93,19 @@ func (d *SDKDispatcher) CredentialProvider() string {
 		return configured.CredentialProvider()
 	}
 	return adapter.ProviderGitHubActions
+}
+
+func (d *SDKDispatcher) Authorize(target protocol.Target, action protocol.Action) error {
+	if d.Adapter == nil {
+		return fmt.Errorf("deploy adapter unavailable")
+	}
+	authorizer, ok := d.Adapter.(interface {
+		Authorize(adapter.Target, string) error
+	})
+	if !ok {
+		return fmt.Errorf("adapter does not expose a Runner target allowlist")
+	}
+	return authorizer.Authorize(adapter.Target{Service: target.Service, Environment: target.Environment}, action.ArtifactDigest)
 }
 
 func (d *SDKDispatcher) Execute(ctx context.Context, request AdapterRequest, credential Credential) (AdapterResult, error) {
