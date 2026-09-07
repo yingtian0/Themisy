@@ -79,6 +79,30 @@ func TestTenantBoundaryAndColonControls(t *testing.T) {
 	}
 }
 
+func TestRunnerDrainFreezeAndActivateControls(t *testing.T) {
+	service, memory, _ := testApplication(t)
+	now := time.Now().UTC()
+	audit := domain.AuditEvent{ID: "runner-connect", CorrelationID: "runner/tenant-a/runner-1", ActorType: "runner", ActorID: "runner-1", Action: "runner.connect", ResourceType: "runner", ResourceID: "runner-1", Result: "CONNECTED", Timestamp: now}
+	if _, err := memory.HeartbeatRunner(context.Background(), domain.RunnerInfo{ID: "runner-1", TenantID: "tenant-a", Group: "staging-runner", ReportedCapacity: 2, LastSeen: now}, audit); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(service, testLogger()).Handler()
+	for _, test := range []struct {
+		action string
+		status domain.RunnerStatus
+	}{{"drain", domain.RunnerDraining}, {"freeze", domain.RunnerFrozen}, {"activate", domain.RunnerReady}} {
+		response := request(t, handler, http.MethodPost, "/v1/runners/runner-1:"+test.action, nil, map[string]string{"X-Tenant-ID": "tenant-a", "X-Actor-ID": "operator"})
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", test.action, response.Code, response.Body.String())
+		}
+		var runner domain.RunnerInfo
+		decodeResponse(t, response, &runner)
+		if runner.Status != test.status {
+			t.Fatalf("%s runner=%#v", test.action, runner)
+		}
+	}
+}
+
 func TestApprovalIdentityIsRevalidatedServerSide(t *testing.T) {
 	service, memory, controller := testApplication(t)
 	now := time.Now().UTC()
@@ -137,6 +161,7 @@ func TestOpenAPIIsParseableAndDocumentsRequiredRoutes(t *testing.T) {
 		"/v1/approvals/{id}:approve": "post", "/v1/approvals/{id}:deny": "post",
 		"/v1/approvals/{id}:revoke": "post", "/v1/contracts:validate": "post",
 		"/v1/runners": "get", "/v1/runners/{id}:freeze": "post",
+		"/v1/runners/{id}:drain": "post", "/v1/runners/{id}:activate": "post",
 	} {
 		if _, ok := document.Paths[path][method]; !ok {
 			t.Errorf("OpenAPI missing %s %s", method, path)

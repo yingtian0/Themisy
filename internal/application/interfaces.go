@@ -37,6 +37,8 @@ type ControlPlane interface {
 	ValidateContract([]byte) (domain.ContractValidation, error)
 	ListRunners(string) []domain.RunnerInfo
 	FreezeRunner(string, string, string) (domain.RunnerInfo, error)
+	DrainRunner(string, string, string) (domain.RunnerInfo, error)
+	ActivateRunner(string, string, string) (domain.RunnerInfo, error)
 }
 
 type WorkflowController interface {

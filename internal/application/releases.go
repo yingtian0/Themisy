@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -173,6 +174,17 @@ func (r *Releases) ValidateContract(data []byte) (domain.ContractValidation, err
 
 func (r *Releases) ListRunners(tenant string) []domain.RunnerInfo {
 	tenant = normalized(tenant, "default")
+	fleet, fleetErr := r.store.ListRunnerFleet(context.Background(), tenant)
+	if fleetErr == nil && len(fleet) > 0 {
+		now := r.now().UTC()
+		for index := range fleet {
+			if fleet[index].LastSeen.Add(90 * time.Second).Before(now) {
+				fleet[index].Status = domain.RunnerUnknown
+				fleet[index].Capacity = 0
+			}
+		}
+		return fleet
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	runners := make([]domain.RunnerInfo, 0, len(r.runners))
@@ -183,12 +195,32 @@ func (r *Releases) ListRunners(tenant string) []domain.RunnerInfo {
 		}
 		runners = append(runners, runner)
 	}
+	if fleetErr != nil {
+		for index := range runners {
+			runners[index].Status = domain.RunnerUnknown
+			runners[index].Capacity = 0
+		}
+	}
 	sort.Slice(runners, func(i, j int) bool { return runners[i].ID < runners[j].ID })
 	return runners
 }
 
 func (r *Releases) RunnerCapacity(tenant, id string) int {
 	tenant = normalized(tenant, "default")
+	fleet, err := r.store.ListRunnerFleet(context.Background(), tenant)
+	if err != nil {
+		return 0
+	}
+	if len(fleet) > 0 {
+		now := r.now().UTC()
+		capacity := 0
+		for _, runner := range fleet {
+			if runner.Group == id && runner.Status == domain.RunnerReady && runner.LastSeen.Add(90*time.Second).After(now) {
+				capacity += runner.Capacity
+			}
+		}
+		return capacity
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if frozen, ok := r.frozenRunners[tenant+"\x00"+id]; ok {
@@ -201,8 +233,31 @@ func (r *Releases) RunnerCapacity(tenant, id string) int {
 }
 
 func (r *Releases) FreezeRunner(tenant, id, actor string) (domain.RunnerInfo, error) {
+	return r.setRunnerStatus(tenant, id, actor, domain.RunnerFrozen)
+}
+
+func (r *Releases) DrainRunner(tenant, id, actor string) (domain.RunnerInfo, error) {
+	return r.setRunnerStatus(tenant, id, actor, domain.RunnerDraining)
+}
+
+func (r *Releases) ActivateRunner(tenant, id, actor string) (domain.RunnerInfo, error) {
+	return r.setRunnerStatus(tenant, id, actor, domain.RunnerReady)
+}
+
+func (r *Releases) setRunnerStatus(tenant, id, actor string, status domain.RunnerStatus) (domain.RunnerInfo, error) {
 	if actor == "" {
-		return domain.RunnerInfo{}, errors.New("freeze actor is required")
+		return domain.RunnerInfo{}, errors.New("runner control actor is required")
+	}
+	tenant = normalized(tenant, "default")
+	now := r.now().UTC()
+	action := "runner." + strings.ToLower(string(status))
+	if status == domain.RunnerReady {
+		action = "runner.activate"
+	}
+	audit := domain.AuditEvent{ID: newID("audit"), CorrelationID: "runner/" + tenant + "/" + id, ActorType: "user", ActorID: actor, Action: action, ResourceType: "runner", ResourceID: id, Result: string(status), Timestamp: now}
+	updated, err := r.store.SetRunnerStatus(context.Background(), tenant, id, status, actor, now, audit)
+	if err == nil || !errors.Is(err, store.ErrNotFound) {
+		return updated, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -210,13 +265,30 @@ func (r *Releases) FreezeRunner(tenant, id, actor string) (domain.RunnerInfo, er
 	if !ok {
 		return domain.RunnerInfo{}, store.ErrNotFound
 	}
-	now := r.now().UTC()
-	runner.TenantID = normalized(tenant, "default")
-	runner.Status = domain.RunnerFrozen
+	runner.TenantID = tenant
+	runner.Status = status
+	runner.ControlledBy = actor
+	runner.ControlledAt = &now
+	if status == domain.RunnerReady {
+		runner.Capacity = runner.ReportedCapacity
+		if runner.Capacity == 0 {
+			runner.Capacity = 20
+		}
+		delete(r.frozenRunners, runner.TenantID+"\x00"+id)
+		if err := r.store.AppendAudit(audit); err != nil {
+			return domain.RunnerInfo{}, err
+		}
+		return runner, nil
+	}
 	runner.Capacity = 0
-	runner.FrozenBy = actor
-	runner.FrozenAt = &now
+	if status == domain.RunnerFrozen {
+		runner.FrozenBy = actor
+		runner.FrozenAt = &now
+	}
 	r.frozenRunners[runner.TenantID+"\x00"+id] = runner
+	if err := r.store.AppendAudit(audit); err != nil {
+		return domain.RunnerInfo{}, err
+	}
 	return runner, nil
 }
 
