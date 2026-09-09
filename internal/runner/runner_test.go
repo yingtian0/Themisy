@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,7 @@ func TestRunnerRejectsEveryUnsafeGrantBeforeAdapter(t *testing.T) {
 		}},
 		{"wrong audience", func(t *testing.T, f *runnerFixture) { f.grant.RunnerGroup = "other"; f.resign(t) }},
 		{"wrong tenant", func(t *testing.T, f *runnerFixture) { f.grant.TenantID = "other"; f.resign(t) }},
+		{"target outside Runner allowlist", func(_ *testing.T, f *runnerFixture) { f.adapter.authorizeErr = errors.New("target denied") }},
 		{"reused nonce", func(t *testing.T, f *runnerFixture) {
 			hash, _ := protocol.GrantHash(f.grant)
 			record := store.RunnerActionRecord{GrantID: f.grant.GrantID, RunID: f.grant.RunID, StepID: f.grant.StepID, TenantID: f.grant.TenantID, RunnerGroup: f.grant.RunnerGroup, Nonce: f.grant.Nonce, IdempotencyKey: f.grant.IdempotencyKey, RequestHash: hash, CreatedAt: f.now, UpdatedAt: f.now}
@@ -221,10 +223,13 @@ func (p *staticPolicy) Evaluate(_ context.Context, input policy.Input) (policy.E
 }
 
 type countingAdapter struct {
-	mu    sync.Mutex
-	calls int
-	now   time.Time
+	mu           sync.Mutex
+	calls        int
+	now          time.Time
+	authorizeErr error
 }
+
+func (a *countingAdapter) Authorize(protocol.Target, protocol.Action) error { return a.authorizeErr }
 
 func (a *countingAdapter) Execute(_ context.Context, _ AdapterRequest, _ Credential) (AdapterResult, error) {
 	a.mu.Lock()

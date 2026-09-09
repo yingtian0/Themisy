@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"themisy/internal/domain"
 	"themisy/internal/store"
 	postgresstore "themisy/internal/store/postgres"
+	"themisy/pkg/protocol"
 )
 
 func TestRunnerJournalSurvivesReconnectAndDeduplicatesNonce(t *testing.T) {
@@ -51,5 +53,87 @@ func TestRunnerJournalSurvivesReconnectAndDeduplicatesNonce(t *testing.T) {
 	completed, err := reconnected.GetRunnerAction(ctx, record.TenantID, record.RunnerGroup, record.Nonce)
 	if err != nil || completed.Status != store.RunnerActionSucceeded {
 		t.Fatalf("completed=%#v err=%v", completed, err)
+	}
+}
+
+func TestGrantDispatchSurvivesReconnectAndRecordsAckResult(t *testing.T) {
+	requireIntegration(t)
+	ctx := context.Background()
+	databaseURL := integrationDatabaseURL()
+	if err := postgresstore.Migrate(databaseURL, false); err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	suffix := now.Format("150405.000000000")
+	run := &domain.ReleaseRun{ID: "grant-run-" + suffix, RequestID: "grant-request-" + suffix, WorkflowID: "grant-run-" + suffix, TenantID: "tenant-integration", StateVersion: 1, CreatedAt: now, UpdatedAt: now}
+	if _, _, err := persistent.CreateRun(run); err != nil {
+		t.Fatal(err)
+	}
+	grant := protocol.ActionGrant{GrantID: "grant-" + suffix, RunID: run.ID, StepID: "payment-api", TenantID: run.TenantID, RunnerGroup: "runner-integration", Issuer: "https://control.example", IdempotencyKey: "grant-key-" + suffix, Nonce: "grant-nonce-" + suffix, ExpiresAt: now.Add(time.Minute)}
+	outbox := domain.OutboxEvent{ID: "grant-outbox-" + suffix, AggregateType: "action_grant", AggregateID: grant.GrantID, EventType: "grant.dispatch.requested", CreatedAt: now, AvailableAt: now}
+	created, fresh, err := persistent.CreateGrantDispatch(ctx, store.GrantDispatchRecord{Grant: grant, CreatedAt: now, UpdatedAt: now}, integrationAudit("grant-issue-"+suffix, run.ID, now), outbox)
+	if err != nil || !fresh || created.Status != store.GrantDispatchPending {
+		t.Fatalf("create=%#v fresh=%v err=%v", created, fresh, err)
+	}
+	claimed, err := persistent.ClaimGrantDispatch(ctx, grant.TenantID, grant.RunnerGroup, "runner-1", "delivery-token", now, now.Add(time.Minute))
+	if err != nil || claimed.DeliveryToken != "delivery-token" {
+		t.Fatalf("claim=%#v err=%v", claimed, err)
+	}
+	persistent.Close()
+
+	reconnected, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reconnected.Close()
+	acked, err := reconnected.AcknowledgeGrantDispatch(ctx, grant.GrantID, "runner-1", claimed.DeliveryToken, now.Add(time.Second), now.Add(2*time.Minute))
+	if err != nil || acked.Status != store.GrantDispatchAcked {
+		t.Fatalf("ack=%#v err=%v", acked, err)
+	}
+	result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grant.GrantID, RunID: run.ID, StepID: grant.StepID, Status: protocol.ResultSucceeded, CompletedAt: now.Add(2 * time.Second)}
+	completed, err := reconnected.CompleteGrantDispatch(ctx, grant.GrantID, "runner-1", claimed.DeliveryToken, result, result.CompletedAt, integrationAudit("grant-result-"+suffix, run.ID, now))
+	if err != nil || completed.Status != store.GrantDispatchSucceeded {
+		t.Fatalf("complete=%#v err=%v", completed, err)
+	}
+}
+
+func TestRunnerFleetHeartbeatAndDrainSurviveControlPlaneRestart(t *testing.T) {
+	requireIntegration(t)
+	ctx := context.Background()
+	databaseURL := integrationDatabaseURL()
+	if err := postgresstore.Migrate(databaseURL, false); err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	suffix := now.Format("150405.000000000")
+	runnerID := "runner-fleet-" + suffix
+	correlationID := "runner/tenant-integration/" + runnerID
+	heartbeat := domain.RunnerInfo{ID: runnerID, TenantID: "tenant-integration", Group: "runner-integration", ReportedCapacity: 3, InFlight: 1, LastSeen: now}
+	connected, err := persistent.HeartbeatRunner(ctx, heartbeat, integrationAudit("runner-connect-"+suffix, correlationID, now))
+	if err != nil || connected.Status != domain.RunnerReady || connected.Capacity != 2 {
+		t.Fatalf("connected=%#v err=%v", connected, err)
+	}
+	drained, err := persistent.SetRunnerStatus(ctx, heartbeat.TenantID, runnerID, domain.RunnerDraining, "operator", now.Add(time.Second), integrationAudit("runner-drain-"+suffix, correlationID, now.Add(time.Second)))
+	if err != nil || drained.Capacity != 0 {
+		t.Fatalf("drained=%#v err=%v", drained, err)
+	}
+	persistent.Close()
+
+	reconnected, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reconnected.Close()
+	loaded, err := reconnected.GetRunner(ctx, heartbeat.TenantID, runnerID)
+	if err != nil || loaded.Status != domain.RunnerDraining || loaded.Capacity != 0 {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
 	}
 }

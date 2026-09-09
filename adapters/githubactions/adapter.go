@@ -42,6 +42,13 @@ func New(config Config, client HTTPDoer) (*Adapter, error) {
 func (a *Adapter) Name() string    { return AdapterName }
 func (a *Adapter) Version() string { return AdapterVersion }
 
+func (a *Adapter) Authorize(target adapter.Target, _ string) error {
+	if _, ok := a.config.Targets[TargetKey{Service: target.Service, Environment: target.Environment}]; !ok {
+		return errors.New("target is not allow-listed")
+	}
+	return nil
+}
+
 func (a *Adapter) Deploy(ctx context.Context, request adapter.DeployRequest, credential credentials.Credential) (adapter.Deployment, error) {
 	if err := adapter.ValidateDeployRequest(request); err != nil {
 		return adapter.Deployment{}, &adapter.Error{Class: adapter.ErrorTerminal, Operation: "deploy.validate", Err: err}

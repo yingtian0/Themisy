@@ -276,31 +276,39 @@ func (p *Planner) Plan(request domain.ReleaseRequest) (domain.ReleasePlan, error
 
 func IntentFromLegacy(request domain.ReleaseRequest) domain.ReleaseIntent {
 	return domain.ReleaseIntent{
-		APIVersion:     domain.ReleaseIntentAPIVersion,
-		Kind:           domain.ReleaseIntentKind,
-		RequestID:      request.RequestID,
-		ReleaseVersion: request.ReleaseVersion,
-		TenantID:       request.TenantID,
-		Environment:    request.Environment,
-		Region:         request.Region,
-		Cluster:        request.Cluster,
-		RequestedBy:    request.RequestedBy,
-		Agent:          request.Agent,
-		Changes:        append([]domain.Change(nil), request.Changes...),
+		APIVersion:        domain.ReleaseIntentAPIVersion,
+		Kind:              domain.ReleaseIntentKind,
+		RequestID:         request.RequestID,
+		ReleaseVersion:    request.ReleaseVersion,
+		TenantID:          request.TenantID,
+		Environment:       request.Environment,
+		Region:            request.Region,
+		Cluster:           request.Cluster,
+		RequestedBy:       request.RequestedBy,
+		SubjectType:       request.SubjectType,
+		SubjectIssuer:     request.SubjectIssuer,
+		UserIdentityProof: request.UserIdentityProof,
+		DelegationRef:     request.DelegationRef,
+		Agent:             request.Agent,
+		Changes:           append([]domain.Change(nil), request.Changes...),
 	}
 }
 
 func LegacyRequestFromIntent(intent domain.ReleaseIntent) domain.ReleaseRequest {
 	return domain.ReleaseRequest{
-		RequestID:      intent.RequestID,
-		ReleaseVersion: intent.ReleaseVersion,
-		TenantID:       intent.TenantID,
-		Environment:    intent.Environment,
-		Region:         intent.Region,
-		Cluster:        intent.Cluster,
-		RequestedBy:    intent.RequestedBy,
-		Agent:          intent.Agent,
-		Changes:        append([]domain.Change(nil), intent.Changes...),
+		RequestID:         intent.RequestID,
+		ReleaseVersion:    intent.ReleaseVersion,
+		TenantID:          intent.TenantID,
+		Environment:       intent.Environment,
+		Region:            intent.Region,
+		Cluster:           intent.Cluster,
+		RequestedBy:       intent.RequestedBy,
+		SubjectType:       intent.SubjectType,
+		SubjectIssuer:     intent.SubjectIssuer,
+		UserIdentityProof: intent.UserIdentityProof,
+		DelegationRef:     intent.DelegationRef,
+		Agent:             intent.Agent,
+		Changes:           append([]domain.Change(nil), intent.Changes...),
 	}
 }
 

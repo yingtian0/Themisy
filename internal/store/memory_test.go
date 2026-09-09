@@ -1,11 +1,13 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"themisy/internal/domain"
+	"themisy/pkg/protocol"
 )
 
 func TestMemoryOptimisticLockAndProjectionRebuild(t *testing.T) {
@@ -36,6 +38,72 @@ func TestMemoryOptimisticLockAndProjectionRebuild(t *testing.T) {
 	}
 	if rebuilt.Status != domain.RunRunning {
 		t.Fatalf("status=%s, want RUNNING", rebuilt.Status)
+	}
+}
+
+func TestMemoryGrantDispatchLeaseAckResultAndOutbox(t *testing.T) {
+	now := time.Date(2026, 9, 4, 1, 0, 0, 0, time.UTC)
+	memory := NewMemory()
+	run := &domain.ReleaseRun{ID: "run-grant", RequestID: "request-grant", WorkflowID: "run-grant", StateVersion: 1, CreatedAt: now, UpdatedAt: now}
+	if _, _, err := memory.CreateRun(run); err != nil {
+		t.Fatal(err)
+	}
+	grant := protocol.ActionGrant{GrantID: "grant-1", RunID: run.ID, StepID: "payments", TenantID: "tenant-1", RunnerGroup: "prod", IdempotencyKey: "deploy-1", ExpiresAt: now.Add(time.Minute)}
+	record := GrantDispatchRecord{Grant: grant, CreatedAt: now, UpdatedAt: now}
+	audit := testAudit("grant-audit", now)
+	outbox := domain.OutboxEvent{ID: "grant-outbox", AggregateType: "action_grant", AggregateID: grant.GrantID, EventType: "grant.dispatch.requested", CreatedAt: now, AvailableAt: now}
+	created, fresh, err := memory.CreateGrantDispatch(context.Background(), record, audit, outbox)
+	if err != nil || !fresh || created.Status != GrantDispatchPending {
+		t.Fatalf("create=%#v fresh=%v err=%v", created, fresh, err)
+	}
+	if _, fresh, err := memory.CreateGrantDispatch(context.Background(), record, audit, outbox); err != nil || fresh {
+		t.Fatalf("duplicate fresh=%v err=%v", fresh, err)
+	}
+	claimed, err := memory.ClaimGrantDispatch(context.Background(), "tenant-1", "prod", "runner-1", "secret-token", now, now.Add(30*time.Second))
+	if err != nil || claimed.DeliveryToken != "secret-token" || claimed.Status != GrantDispatchLeased {
+		t.Fatalf("claim=%#v err=%v", claimed, err)
+	}
+	if _, err := memory.ClaimGrantDispatch(context.Background(), "tenant-1", "prod", "runner-2", "other-token", now, now.Add(30*time.Second)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second runner claim=%v", err)
+	}
+	acked, err := memory.AcknowledgeGrantDispatch(context.Background(), grant.GrantID, "runner-1", "secret-token", now.Add(time.Second), now.Add(time.Minute))
+	if err != nil || acked.Status != GrantDispatchAcked {
+		t.Fatalf("ack=%#v err=%v", acked, err)
+	}
+	result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grant.GrantID, RunID: run.ID, StepID: grant.StepID, Status: protocol.ResultSucceeded, CompletedAt: now.Add(2 * time.Second)}
+	completed, err := memory.CompleteGrantDispatch(context.Background(), grant.GrantID, "runner-1", "secret-token", result, now.Add(2*time.Second), testAudit("grant-result", now))
+	if err != nil || completed.Status != GrantDispatchSucceeded || completed.Result != result {
+		t.Fatalf("complete=%#v err=%v", completed, err)
+	}
+	pending, err := memory.PendingOutboxByType("grant.dispatch.requested", 10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending dispatch outbox=%d err=%v", len(pending), err)
+	}
+}
+
+func TestRunnerFleetHeartbeatAndControlAreTenantBoundAndAudited(t *testing.T) {
+	memory := NewMemory()
+	now := time.Date(2026, 9, 8, 3, 0, 0, 0, time.UTC)
+	correlationID := "runner/tenant-1/runner-1"
+	heartbeatAudit := domain.AuditEvent{ID: "heartbeat-audit", CorrelationID: correlationID, ActorType: "runner", ActorID: "runner-1", Action: "runner.heartbeat", ResourceType: "runner", ResourceID: "runner-1", Result: "CONNECTED", Timestamp: now}
+	runner, err := memory.HeartbeatRunner(context.Background(), domain.RunnerInfo{ID: "runner-1", TenantID: "tenant-1", Group: "prod-jp", ReportedCapacity: 4, InFlight: 1, LastSeen: now}, heartbeatAudit)
+	if err != nil || runner.Status != domain.RunnerReady || runner.Capacity != 3 {
+		t.Fatalf("runner=%#v err=%v", runner, err)
+	}
+	controlAudit := domain.AuditEvent{ID: "freeze-audit", CorrelationID: correlationID, ActorType: "user", ActorID: "operator", Action: "runner.frozen", ResourceType: "runner", ResourceID: "runner-1", Result: "FROZEN", Timestamp: now.Add(time.Second)}
+	frozen, err := memory.SetRunnerStatus(context.Background(), "tenant-1", "runner-1", domain.RunnerFrozen, "operator", now.Add(time.Second), controlAudit)
+	if err != nil || frozen.Status != domain.RunnerFrozen || frozen.Capacity != 0 {
+		t.Fatalf("frozen=%#v err=%v", frozen, err)
+	}
+	if _, err := memory.GetRunner(context.Background(), "tenant-2", "runner-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-tenant read error=%v", err)
+	}
+	if _, err := memory.HeartbeatRunner(context.Background(), domain.RunnerInfo{ID: "runner-1", TenantID: "tenant-1", Group: "other", ReportedCapacity: 1, LastSeen: now}, heartbeatAudit); !errors.Is(err, ErrConflict) {
+		t.Fatalf("group reassignment error=%v", err)
+	}
+	events, err := memory.AuditEvents(correlationID)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%#v err=%v", events, err)
 	}
 }
 

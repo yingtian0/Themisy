@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"themisy/internal/domain"
+	"themisy/pkg/protocol"
 )
 
 type Memory struct {
@@ -22,6 +23,9 @@ type Memory struct {
 	projections    map[string]*domain.ReleaseRun
 	runnerActions  map[string]RunnerActionRecord
 	runnerByKey    map[string]string
+	grantDispatch  map[string]GrantDispatchRecord
+	grantByKey     map[string]string
+	runnerFleet    map[string]domain.RunnerInfo
 	journalError   error
 }
 
@@ -31,7 +35,231 @@ func NewMemory() *Memory {
 		audit: make(map[string][]domain.AuditEvent), executions: make(map[string]ExecutionRecord),
 		projections:   make(map[string]*domain.ReleaseRun),
 		runnerActions: make(map[string]RunnerActionRecord), runnerByKey: make(map[string]string),
+		grantDispatch: make(map[string]GrantDispatchRecord), grantByKey: make(map[string]string),
+		runnerFleet: make(map[string]domain.RunnerInfo),
 	}
+}
+
+func (m *Memory) HeartbeatRunner(_ context.Context, heartbeat domain.RunnerInfo, audit domain.AuditEvent) (domain.RunnerInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if heartbeat.ID == "" || heartbeat.TenantID == "" || heartbeat.Group == "" || heartbeat.ReportedCapacity < 0 || heartbeat.InFlight < 0 || heartbeat.InFlight > heartbeat.ReportedCapacity || heartbeat.LastSeen.IsZero() {
+		return domain.RunnerInfo{}, ErrConflict
+	}
+	key := runnerFleetKey(heartbeat.TenantID, heartbeat.ID)
+	current, exists := m.runnerFleet[key]
+	if exists && current.Group != heartbeat.Group {
+		return domain.RunnerInfo{}, ErrConflict
+	}
+	if !exists {
+		current = heartbeat
+		current.Status = domain.RunnerReady
+		current.StateVersion = 1
+	} else {
+		current.ReportedCapacity = heartbeat.ReportedCapacity
+		current.InFlight = heartbeat.InFlight
+		current.LastSeen = heartbeat.LastSeen
+		current.StateVersion++
+	}
+	current.Capacity = current.ReportedCapacity - current.InFlight
+	if current.Status != domain.RunnerReady {
+		current.Capacity = 0
+	}
+	m.runnerFleet[key] = current
+	if audit.ID != "" {
+		m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
+	}
+	return current, nil
+}
+
+func (m *Memory) GetRunner(_ context.Context, tenantID, runnerID string) (domain.RunnerInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	value, ok := m.runnerFleet[runnerFleetKey(tenantID, runnerID)]
+	if !ok {
+		return domain.RunnerInfo{}, ErrNotFound
+	}
+	return value, nil
+}
+
+func (m *Memory) ListRunnerFleet(_ context.Context, tenantID string) ([]domain.RunnerInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := []domain.RunnerInfo{}
+	for _, value := range m.runnerFleet {
+		if value.TenantID == tenantID {
+			result = append(result, value)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+func (m *Memory) SetRunnerStatus(_ context.Context, tenantID, runnerID string, status domain.RunnerStatus, actor string, now time.Time, audit domain.AuditEvent) (domain.RunnerInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if actor == "" || (status != domain.RunnerReady && status != domain.RunnerDraining && status != domain.RunnerFrozen) {
+		return domain.RunnerInfo{}, ErrConflict
+	}
+	key := runnerFleetKey(tenantID, runnerID)
+	current, ok := m.runnerFleet[key]
+	if !ok {
+		return domain.RunnerInfo{}, ErrNotFound
+	}
+	current.Status, current.ControlledBy, current.ControlledAt = status, actor, &now
+	current.Capacity = current.ReportedCapacity - current.InFlight
+	if status != domain.RunnerReady {
+		current.Capacity = 0
+	}
+	if status == domain.RunnerFrozen {
+		current.FrozenBy, current.FrozenAt = actor, &now
+	} else {
+		current.FrozenBy, current.FrozenAt = "", nil
+	}
+	current.StateVersion++
+	m.runnerFleet[key] = current
+	m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
+	return current, nil
+}
+
+func (m *Memory) CreateGrantDispatch(_ context.Context, record GrantDispatchRecord, audit domain.AuditEvent, outbox domain.OutboxEvent) (GrantDispatchRecord, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := runnerIdempotencyKey(record.Grant.TenantID, record.Grant.RunnerGroup, record.Grant.IdempotencyKey)
+	if id, ok := m.grantByKey[key]; ok {
+		return cloneGrantDispatch(m.grantDispatch[id]), false, nil
+	}
+	if _, ok := m.grantDispatch[record.Grant.GrantID]; ok {
+		return GrantDispatchRecord{}, false, fmt.Errorf("duplicate grant id %q", record.Grant.GrantID)
+	}
+	record.Status, record.StateVersion, record.OutboxID = GrantDispatchPending, 1, outbox.ID
+	m.grantDispatch[record.Grant.GrantID] = cloneGrantDispatch(record)
+	m.grantByKey[key] = record.Grant.GrantID
+	m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
+	m.outbox = append(m.outbox, outbox)
+	return cloneGrantDispatch(record), true, nil
+}
+
+func (m *Memory) ClaimGrantDispatch(_ context.Context, tenantID, runnerGroup, runnerID, deliveryToken string, now, leaseExpiresAt time.Time) (GrantDispatchRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]string, 0, len(m.grantDispatch))
+	for id := range m.grantDispatch {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := m.grantDispatch[ids[i]], m.grantDispatch[ids[j]]
+		if left.CreatedAt.Equal(right.CreatedAt) {
+			return ids[i] < ids[j]
+		}
+		return left.CreatedAt.Before(right.CreatedAt)
+	})
+	for _, id := range ids {
+		record := m.grantDispatch[id]
+		if record.Grant.TenantID != tenantID || record.Grant.RunnerGroup != runnerGroup || !record.Grant.ExpiresAt.After(now) || grantComplete(record.Status) {
+			continue
+		}
+		if record.LeaseExpiresAt.After(now) {
+			if record.RunnerID == runnerID {
+				return cloneGrantDispatch(record), nil
+			}
+			continue
+		}
+		record.Status, record.RunnerID, record.DeliveryToken = GrantDispatchLeased, runnerID, deliveryToken
+		record.LeaseExpiresAt, record.UpdatedAt, record.StateVersion = leaseExpiresAt, now, record.StateVersion+1
+		m.grantDispatch[id] = cloneGrantDispatch(record)
+		m.publishOutbox(record.OutboxID, now)
+		return cloneGrantDispatch(record), nil
+	}
+	return GrantDispatchRecord{}, ErrNotFound
+}
+
+func (m *Memory) AcknowledgeGrantDispatch(_ context.Context, grantID, runnerID, token string, now, leaseExpiresAt time.Time) (GrantDispatchRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.grantDispatch[grantID]
+	if !ok {
+		return GrantDispatchRecord{}, ErrNotFound
+	}
+	if record.RunnerID != runnerID || record.DeliveryToken != token || grantComplete(record.Status) || !record.LeaseExpiresAt.After(now) {
+		return GrantDispatchRecord{}, ErrConflict
+	}
+	record.Status, record.AcknowledgedAt, record.LeaseExpiresAt = GrantDispatchAcked, now, leaseExpiresAt
+	record.UpdatedAt, record.StateVersion = now, record.StateVersion+1
+	m.grantDispatch[grantID] = cloneGrantDispatch(record)
+	return cloneGrantDispatch(record), nil
+}
+
+func (m *Memory) CompleteGrantDispatch(_ context.Context, grantID, runnerID, token string, result protocol.Result, now time.Time, audit domain.AuditEvent) (GrantDispatchRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.grantDispatch[grantID]
+	if !ok {
+		return GrantDispatchRecord{}, ErrNotFound
+	}
+	if grantComplete(record.Status) {
+		if record.Result == result {
+			return cloneGrantDispatch(record), nil
+		}
+		return GrantDispatchRecord{}, ErrConflict
+	}
+	if record.RunnerID != runnerID || record.DeliveryToken != token || result.GrantID != grantID || result.RunID != record.Grant.RunID || result.StepID != record.Grant.StepID {
+		return GrantDispatchRecord{}, ErrConflict
+	}
+	record.Status = grantStatusForResult(result.Status)
+	record.Result, record.CompletedAt, record.UpdatedAt = result, now, now
+	record.StateVersion++
+	m.grantDispatch[grantID] = cloneGrantDispatch(record)
+	m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
+	return cloneGrantDispatch(record), nil
+}
+
+func (m *Memory) GetGrantDispatch(_ context.Context, grantID string) (GrantDispatchRecord, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	record, ok := m.grantDispatch[grantID]
+	if !ok {
+		return GrantDispatchRecord{}, ErrNotFound
+	}
+	return cloneGrantDispatch(record), nil
+}
+
+func (m *Memory) publishOutbox(id string, now time.Time) {
+	for index := range m.outbox {
+		if m.outbox[index].ID == id && m.outbox[index].PublishedAt == nil {
+			published := now
+			m.outbox[index].PublishedAt = &published
+			m.outbox[index].Attempts++
+			return
+		}
+	}
+}
+
+func grantComplete(status GrantDispatchStatus) bool {
+	return status == GrantDispatchSucceeded || status == GrantDispatchRejected || status == GrantDispatchUnknown
+}
+
+func grantStatusForResult(status protocol.ResultStatus) GrantDispatchStatus {
+	switch status {
+	case protocol.ResultSucceeded:
+		return GrantDispatchSucceeded
+	case protocol.ResultRejected:
+		return GrantDispatchRejected
+	default:
+		return GrantDispatchUnknown
+	}
+}
+
+func cloneGrantDispatch(record GrantDispatchRecord) GrantDispatchRecord {
+	data, err := json.Marshal(record)
+	if err != nil {
+		panic(err)
+	}
+	var clone GrantDispatchRecord
+	if err := json.Unmarshal(data, &clone); err != nil {
+		panic(err)
+	}
+	return clone
 }
 
 func (m *Memory) SavePlan(plan domain.ReleasePlan) error {
@@ -326,6 +554,7 @@ func runnerNonceKey(tenant, runnerGroup, nonce string) string {
 func runnerIdempotencyKey(tenant, runnerGroup, key string) string {
 	return tenant + "\x00" + runnerGroup + "\x00" + key
 }
+func runnerFleetKey(tenant, runnerID string) string { return tenant + "\x00" + runnerID }
 
 func cloneRun(run *domain.ReleaseRun) *domain.ReleaseRun {
 	data, err := json.Marshal(run)

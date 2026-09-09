@@ -34,7 +34,7 @@ func (r *Runner) Reconcile(ctx context.Context, reconciler Reconciler, limit int
 		if record.Action.Capability == protocol.CapabilityRollback {
 			purpose = credentials.PurposeRollback
 		}
-		credential, err := r.Credentials.Acquire(ctx, CredentialRequest{Provider: provider, TenantID: record.TenantID, Service: record.Target.Service, Environment: record.Target.Environment, Purpose: purpose})
+		credential, err := r.Credentials.Acquire(ctx, CredentialRequest{Provider: provider, TenantID: record.TenantID, Service: record.Target.Service, Environment: record.Target.Environment, Purpose: purpose, GrantID: record.GrantID})
 		if err != nil {
 			continue
 		}

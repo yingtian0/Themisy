@@ -1,6 +1,9 @@
 mode: all
 http:
   address: ":8080"
+  # Required with Runner workload_identity registrations.
+  # tls_cert_file: /run/secrets/control-plane.crt
+  # tls_key_file: /run/secrets/control-plane.key
 database:
   url: postgres://themisy:themisy@localhost:5432/themisy?sslmode=disable
   auto_migrate: true
@@ -11,3 +14,21 @@ temporal:
 planning:
   contracts: examples/contracts
   profiles: examples/profiles
+grants:
+  issuer: https://control-plane.example.invalid
+  ttl: 5m
+  signing:
+    # Development requires a pre-provisioned mode-0600 base64 Ed25519 seed.
+    # Production should use provider: aws-kms and an asymmetric Ed25519 KMS key.
+    provider: development
+    key_id: development-grant-key
+    private_key_file: /run/secrets/themisy-grant-ed25519
+runner_transport:
+  # client_ca_file: /run/secrets/runner-client-ca.crt
+  registrations:
+    - runner_id: runner-local-1
+      tenant_id: tenant-development
+      runner_group: local-development
+      token_file: /run/secrets/themisy-runner-token
+      # Production replaces token_file with a certificate URI SAN.
+      # workload_identity: spiffe://example.internal/themisy/runner-local-1

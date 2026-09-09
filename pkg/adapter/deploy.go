@@ -26,6 +26,8 @@ type RollbackRequest struct {
 type ReconcileRequest struct {
 	IdempotencyKey string    `json:"idempotency_key"`
 	DispatchedAt   time.Time `json:"dispatched_at"`
+	Target         Target    `json:"target,omitempty"`
+	ArtifactDigest string    `json:"artifact_digest,omitempty"`
 }
 
 type ReconcileResult struct {

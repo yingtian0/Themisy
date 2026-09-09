@@ -164,6 +164,36 @@ func TestListApprovalsAndRunnerFreezeStayInsideApplicationBoundary(t *testing.T)
 	}
 }
 
+func TestRunnerHeartbeatCapacityDrainFreezeAndActivate(t *testing.T) {
+	p, _ := planner.New([]domain.Service{{Name: "identity", RunnerGroups: map[domain.Environment]string{domain.EnvironmentStaging: "staging-runner"}}})
+	memory := store.NewMemory()
+	service := NewReleases(p, memory, &fakeWorkflowController{})
+	now := time.Now().UTC()
+	service.now = func() time.Time { return now }
+	audit := domain.AuditEvent{ID: "heartbeat", CorrelationID: "runner/tenant-a/runner-1", ActorType: "runner", ActorID: "runner-1", Action: "runner.heartbeat", ResourceType: "runner", ResourceID: "runner-1", Result: "CONNECTED", Timestamp: now}
+	if _, err := memory.HeartbeatRunner(context.Background(), domain.RunnerInfo{ID: "runner-1", TenantID: "tenant-a", Group: "staging-runner", ReportedCapacity: 4, InFlight: 1, LastSeen: now}, audit); err != nil {
+		t.Fatal(err)
+	}
+	if capacity := service.RunnerCapacity("tenant-a", "staging-runner"); capacity != 3 {
+		t.Fatalf("capacity=%d", capacity)
+	}
+	draining, err := service.DrainRunner("tenant-a", "runner-1", "operator")
+	if err != nil || draining.Status != domain.RunnerDraining || draining.Capacity != 0 {
+		t.Fatalf("draining=%#v err=%v", draining, err)
+	}
+	frozen, err := service.FreezeRunner("tenant-a", "runner-1", "operator")
+	if err != nil || frozen.Status != domain.RunnerFrozen || frozen.Capacity != 0 {
+		t.Fatalf("frozen=%#v err=%v", frozen, err)
+	}
+	active, err := service.ActivateRunner("tenant-a", "runner-1", "operator")
+	if err != nil || active.Status != domain.RunnerReady || active.Capacity != 3 {
+		t.Fatalf("active=%#v err=%v", active, err)
+	}
+	if _, err := service.FreezeRunner("tenant-b", "runner-1", "operator"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("cross-tenant control error=%v", err)
+	}
+}
+
 func code(err error) domain.ReasonCode {
 	value, _ := domain.ReasonOf(err)
 	return value

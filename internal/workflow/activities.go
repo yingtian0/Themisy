@@ -204,7 +204,7 @@ func (a *Activities) Deploy(ctx context.Context, input DeployInput) (DeployResul
 		}
 		return DeployResult{}, temporal.NewNonRetryableApplicationError("reserved execution requires reconciliation", string(ErrorUnknownExternalState), &ClassifiedError{Class: ErrorUnknownExternalState, Operation: "deploy", Err: store.ErrUnknownExternalState})
 	}
-	deployment, err := a.Executor.Deploy(ctx, executor.DeployRequest{Service: input.Service, Environment: input.Environment, DesiredVersion: input.DesiredVersion, IdempotencyKey: input.IdempotencyKey})
+	deployment, err := a.Executor.Deploy(ctx, executor.DeployRequest{RunID: input.RunID, RequestedBy: input.RequestedBy, AgentID: input.AgentID, Service: input.Service, Environment: input.Environment, DesiredVersion: input.DesiredVersion, IdempotencyKey: input.IdempotencyKey})
 	if err != nil {
 		reserved.Status = store.ExecutionUnknown
 		reserved.UpdatedAt = a.Now().UTC()

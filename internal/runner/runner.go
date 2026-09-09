@@ -19,6 +19,7 @@ type Reason string
 const (
 	ReasonDisconnected       Reason = "CONTROL_PLANE_DISCONNECTED"
 	ReasonTenant             Reason = "WRONG_TENANT"
+	ReasonTarget             Reason = "TARGET_NOT_ALLOWED"
 	ReasonReplay             Reason = "NONCE_REPLAY"
 	ReasonIdentity           Reason = "IDENTITY_INVALID"
 	ReasonDelegation         Reason = "DELEGATION_SCOPE_DENIED"
@@ -30,6 +31,9 @@ const (
 	ReasonJournalUnavailable Reason = "AUDIT_JOURNAL_UNAVAILABLE"
 	ReasonCredential         Reason = "CREDENTIAL_UNAVAILABLE"
 	ReasonExternalUnknown    Reason = "EXTERNAL_STATE_UNKNOWN"
+	ReasonDraining           Reason = "RUNNER_DRAINING"
+	ReasonFrozen             Reason = "RUNNER_FROZEN"
+	ReasonCapacity           Reason = "RUNNER_AT_CAPACITY"
 )
 
 type Rejection struct {
@@ -86,6 +90,7 @@ type Runner struct {
 	Credentials  CredentialBroker
 	Adapter      TypedAdapter
 	Connectivity Connectivity
+	Admission    AdmissionGate
 	Now          func() time.Time
 }
 
@@ -102,6 +107,13 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	}
 	if r.RunnerGroup == "" || actionGrant.RunnerGroup != r.RunnerGroup {
 		return r.reject(actionGrant, Reason("WRONG_RUNNER_AUDIENCE"), nil)
+	}
+	authorizer, ok := r.Adapter.(TargetAuthorizer)
+	if !ok {
+		return r.reject(actionGrant, ReasonTarget, errors.New("target authorizer unavailable"))
+	}
+	if err := authorizer.Authorize(actionGrant.Target, actionGrant.Action); err != nil {
+		return r.reject(actionGrant, ReasonTarget, err)
 	}
 	requestHash, err := protocol.GrantHash(actionGrant)
 	if err != nil {
@@ -161,6 +173,19 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	if evaluation.InputHash != actionGrant.PolicyInputHash || evaluation.PolicyHash != actionGrant.PolicyHash {
 		return r.reject(actionGrant, ReasonPolicyMismatch, nil)
 	}
+	if r.Admission != nil {
+		if err := r.Admission.Begin(); err != nil {
+			switch {
+			case errors.Is(err, ErrRunnerDraining):
+				return r.reject(actionGrant, ReasonDraining, err)
+			case errors.Is(err, ErrRunnerFrozen):
+				return r.reject(actionGrant, ReasonFrozen, err)
+			default:
+				return r.reject(actionGrant, ReasonCapacity, err)
+			}
+		}
+		defer r.Admission.End()
+	}
 	now := r.now()
 	record := store.RunnerActionRecord{GrantID: actionGrant.GrantID, RunID: actionGrant.RunID, StepID: actionGrant.StepID, TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Nonce: actionGrant.Nonce, IdempotencyKey: actionGrant.IdempotencyKey, RequestHash: requestHash, Target: actionGrant.Target, Action: actionGrant.Action, CreatedAt: now, UpdatedAt: now}
 	record, created, err := r.Journal.ReserveRunnerAction(ctx, record, journalAudit(auditID(actionGrant.GrantID, "reserve", 1), actionGrant.GrantID, "runner.action.reserve", "AUTHORIZED", now, map[string]any{"request_hash": requestHash}))
@@ -181,7 +206,7 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	if actionGrant.Action.Capability == protocol.CapabilityRollback {
 		purpose = credentials.PurposeRollback
 	}
-	credential, err := r.Credentials.Acquire(ctx, CredentialRequest{Provider: provider, TenantID: actionGrant.TenantID, Service: actionGrant.Target.Service, Environment: actionGrant.Target.Environment, Purpose: purpose})
+	credential, err := r.Credentials.Acquire(ctx, CredentialRequest{Provider: provider, TenantID: actionGrant.TenantID, Service: actionGrant.Target.Service, Environment: actionGrant.Target.Environment, Purpose: purpose, GrantID: actionGrant.GrantID})
 	if err != nil {
 		return r.failReserved(ctx, record, actionGrant, ReasonCredential, err)
 	}

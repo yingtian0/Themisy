@@ -24,6 +24,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		return run, err
 	}
 	activityContext := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Second, MaximumAttempts: 3}})
+	executionContext := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute, ScheduleToCloseTimeout: 12 * time.Minute, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Second, MaximumAttempts: 3}})
 	approvalChannel := workflow.GetSignalChannel(ctx, SignalApproval)
 	pauseChannel := workflow.GetSignalChannel(ctx, SignalPause)
 	resumeChannel := workflow.GetSignalChannel(ctx, SignalResume)
@@ -115,7 +116,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		step = &run.Steps[index]
 		deployInput := DeployInput{RunID: run.ID, RequestedBy: run.RequestedBy, AgentID: run.Agent.ID, Service: step.Service, Environment: string(run.Environment), DesiredVersion: step.Change.DesiredVersion, IdempotencyKey: fmt.Sprintf("%s/%s/%s/%s", run.ID, run.Environment, step.Service, step.Change.DesiredVersion)}
 		var deployed DeployResult
-		if err := workflow.ExecuteActivity(activityContext, ActivityDeploy, deployInput).Get(activityContext, &deployed); err != nil {
+		if err := workflow.ExecuteActivity(executionContext, ActivityDeploy, deployInput).Get(executionContext, &deployed); err != nil {
 			if completeErr := completeScheduling(activityContext, run.ID, step.Service, true); completeErr != nil {
 				return run, completeErr
 			}
@@ -187,7 +188,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 			}
 			step = &run.Steps[index]
 			var rolledBack RollbackResult
-			if err := workflow.ExecuteActivity(activityContext, ActivityRollback, RollbackInput{Deploy: deployInput, Deployment: deployed.Deployment}).Get(activityContext, &rolledBack); err != nil {
+			if err := workflow.ExecuteActivity(executionContext, ActivityRollback, RollbackInput{Deploy: deployInput, Deployment: deployed.Deployment}).Get(executionContext, &rolledBack); err != nil {
 				step.Status = domain.StepEscalated
 				step.Failure = "rollback failed or unknown: " + err.Error()
 				run.Status = domain.RunEscalated

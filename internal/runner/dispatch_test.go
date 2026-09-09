@@ -38,8 +38,9 @@ type sdkProbe struct {
 	err         error
 }
 
-func (*sdkProbe) Name() string    { return "probe" }
-func (*sdkProbe) Version() string { return "probe/v1" }
+func (*sdkProbe) Name() string                           { return "probe" }
+func (*sdkProbe) Version() string                        { return "probe/v1" }
+func (*sdkProbe) Authorize(adapter.Target, string) error { return nil }
 func (p *sdkProbe) Deploy(_ context.Context, _ adapter.DeployRequest, credential credentials.Credential) (adapter.Deployment, error) {
 	p.deployCalls++
 	if len(credential.Value("token")) == 0 {

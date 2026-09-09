@@ -11,6 +11,9 @@ import (
 )
 
 type DeployRequest struct {
+	RunID          string
+	RequestedBy    string
+	AgentID        string
 	Service        string
 	Environment    string
 	DesiredVersion string
@@ -18,9 +21,14 @@ type DeployRequest struct {
 }
 
 type Deployment struct {
-	ExternalID string
-	StartedAt  time.Time
-	FinishedAt time.Time
+	ExternalID     string
+	StartedAt      time.Time
+	FinishedAt     time.Time
+	RunID          string
+	Service        string
+	Environment    string
+	DesiredVersion string
+	IdempotencyKey string
 }
 
 type VerificationResult struct {

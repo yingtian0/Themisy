@@ -192,6 +192,34 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Runner'}
+  '/v1/runners/{id}:drain':
+    post:
+      operationId: drainRunner
+      description: Stop accepting new writes while allowing in-flight work to finish.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TenantID'
+        - $ref: '#/components/parameters/ActorID'
+      responses:
+        '200':
+          description: Draining runner
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Runner'}
+  '/v1/runners/{id}:activate':
+    post:
+      operationId: activateRunner
+      description: Allow an operator-controlled Runner to accept new writes again.
+      parameters:
+        - $ref: '#/components/parameters/ID'
+        - $ref: '#/components/parameters/TenantID'
+        - $ref: '#/components/parameters/ActorID'
+      responses:
+        '200':
+          description: Active runner
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Runner'}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: OIDC}
@@ -249,6 +277,10 @@ components:
         region: {type: string}
         cluster: {type: string}
         requested_by: {type: string}
+        subject_type: {type: string, enum: [user, ci], description: Subject type carried into the signed Action Grant.}
+        subject_issuer: {type: string, format: uri}
+        user_identity_proof: {type: string, description: Short-lived OIDC proof independently verified by the Runner.}
+        delegation_ref: {type: string, description: Reference to a Runner-verifiable delegation.}
         delegated_agent: {$ref: '#/components/schemas/AgentIdentity'}
         changes: {type: array, minItems: 1, items: {$ref: '#/components/schemas/Change'}}
     ReleasePlan:
@@ -298,9 +330,14 @@ components:
         id: {type: string}
         tenant_id: {type: string}
         group: {type: string}
-        status: {type: string, enum: [UNKNOWN, READY, FROZEN]}
+        status: {type: string, enum: [UNKNOWN, READY, DRAINING, FROZEN]}
         capacity: {type: integer, minimum: 0}
+        reported_capacity: {type: integer, minimum: 0}
+        in_flight: {type: integer, minimum: 0}
         last_seen: {type: string, format: date-time}
+        state_version: {type: integer, minimum: 1}
+        controlled_by: {type: string}
+        controlled_at: {type: string, format: date-time}
         frozen_by: {type: string}
         frozen_at: {type: string, format: date-time}
     ContractValidation:

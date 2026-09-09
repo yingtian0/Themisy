@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"themisy/internal/identity"
@@ -14,6 +15,15 @@ import (
 type ConnectionState bool
 
 func (s ConnectionState) Connected() bool { return bool(s) }
+
+type AtomicConnectionState struct{ connected atomic.Bool }
+
+func (s *AtomicConnectionState) Connected() bool { return s != nil && s.connected.Load() }
+func (s *AtomicConnectionState) Set(connected bool) {
+	if s != nil {
+		s.connected.Store(connected)
+	}
+}
 
 type StaticContexts map[string]PinnedContext
 
@@ -63,6 +73,10 @@ type TypedAdapter interface {
 	Execute(context.Context, AdapterRequest, Credential) (AdapterResult, error)
 }
 
+type TargetAuthorizer interface {
+	Authorize(protocol.Target, protocol.Action) error
+}
+
 type Reconciler interface {
 	Reconcile(context.Context, AdapterRequest, Credential) (AdapterResult, bool, error)
 }
@@ -74,7 +88,25 @@ type SDKDispatcher struct {
 	Now     func() time.Time
 }
 
-func (d *SDKDispatcher) CredentialProvider() string { return adapter.ProviderGitHubActions }
+func (d *SDKDispatcher) CredentialProvider() string {
+	if configured, ok := d.Adapter.(interface{ CredentialProvider() string }); ok {
+		return configured.CredentialProvider()
+	}
+	return adapter.ProviderGitHubActions
+}
+
+func (d *SDKDispatcher) Authorize(target protocol.Target, action protocol.Action) error {
+	if d.Adapter == nil {
+		return fmt.Errorf("deploy adapter unavailable")
+	}
+	authorizer, ok := d.Adapter.(interface {
+		Authorize(adapter.Target, string) error
+	})
+	if !ok {
+		return fmt.Errorf("adapter does not expose a Runner target allowlist")
+	}
+	return authorizer.Authorize(adapter.Target{Service: target.Service, Environment: target.Environment}, action.ArtifactDigest)
+}
 
 func (d *SDKDispatcher) Execute(ctx context.Context, request AdapterRequest, credential Credential) (AdapterResult, error) {
 	if d.Adapter == nil {
@@ -109,7 +141,7 @@ func (d *SDKDispatcher) Reconcile(ctx context.Context, request AdapterRequest, c
 	if dispatchedAt.IsZero() {
 		dispatchedAt = d.now().Add(-24 * time.Hour)
 	}
-	result, err := d.Adapter.Reconcile(ctx, adapter.ReconcileRequest{IdempotencyKey: request.IdempotencyKey, DispatchedAt: dispatchedAt}, credential)
+	result, err := d.Adapter.Reconcile(ctx, adapter.ReconcileRequest{IdempotencyKey: request.IdempotencyKey, DispatchedAt: dispatchedAt, Target: adapter.Target{Service: request.Target.Service, Environment: request.Target.Environment}, ArtifactDigest: request.Action.ArtifactDigest}, credential)
 	if err != nil {
 		return AdapterResult{}, false, err
 	}

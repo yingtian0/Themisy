@@ -7,6 +7,7 @@ import "time"
 const (
 	ProviderGitHubActions = "github-actions"
 	ProviderDatadog       = "datadog"
+	ProviderAWS           = "aws"
 )
 
 type Target struct {

@@ -258,8 +258,8 @@ func (s *Server) listRunners(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runnerColonRoute(w http.ResponseWriter, r *http.Request) {
-	id, action, ok := splitOperation(r.PathValue("operation"), "freeze")
-	if !ok || action != "freeze" {
+	id, action, ok := splitOperation(r.PathValue("operation"), "freeze", "drain", "activate")
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -268,7 +268,15 @@ func (s *Server) runnerColonRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: err.Error()})
 		return
 	}
-	runner, err := s.app.FreezeRunner(principal.TenantID, id, principal.Subject)
+	var runner domain.RunnerInfo
+	switch action {
+	case "freeze":
+		runner, err = s.app.FreezeRunner(principal.TenantID, id, principal.Subject)
+	case "drain":
+		runner, err = s.app.DrainRunner(principal.TenantID, id, principal.Subject)
+	case "activate":
+		runner, err = s.app.ActivateRunner(principal.TenantID, id, principal.Subject)
+	}
 	if err != nil {
 		writeError(w, err)
 		return

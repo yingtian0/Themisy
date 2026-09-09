@@ -86,9 +86,54 @@ type RunnerJournal interface {
 	PendingRunnerActions(context.Context, string, string, int) ([]RunnerActionRecord, error)
 }
 
+type GrantDispatchStatus string
+
+const (
+	GrantDispatchPending   GrantDispatchStatus = "PENDING"
+	GrantDispatchLeased    GrantDispatchStatus = "LEASED"
+	GrantDispatchAcked     GrantDispatchStatus = "ACKED"
+	GrantDispatchSucceeded GrantDispatchStatus = "SUCCEEDED"
+	GrantDispatchRejected  GrantDispatchStatus = "REJECTED"
+	GrantDispatchUnknown   GrantDispatchStatus = "UNKNOWN"
+)
+
+// GrantDispatchRecord is the durable Control Plane side of one signed grant.
+// DeliveryToken is an opaque lease capability and must never be logged.
+type GrantDispatchRecord struct {
+	Grant          protocol.ActionGrant
+	Status         GrantDispatchStatus
+	Result         protocol.Result
+	RunnerID       string
+	DeliveryToken  string
+	LeaseExpiresAt time.Time
+	AcknowledgedAt time.Time
+	CompletedAt    time.Time
+	OutboxID       string
+	StateVersion   int64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type GrantDispatchStore interface {
+	CreateGrantDispatch(context.Context, GrantDispatchRecord, domain.AuditEvent, domain.OutboxEvent) (GrantDispatchRecord, bool, error)
+	ClaimGrantDispatch(context.Context, string, string, string, string, time.Time, time.Time) (GrantDispatchRecord, error)
+	AcknowledgeGrantDispatch(context.Context, string, string, string, time.Time, time.Time) (GrantDispatchRecord, error)
+	CompleteGrantDispatch(context.Context, string, string, string, protocol.Result, time.Time, domain.AuditEvent) (GrantDispatchRecord, error)
+	GetGrantDispatch(context.Context, string) (GrantDispatchRecord, error)
+}
+
+type RunnerFleetStore interface {
+	HeartbeatRunner(context.Context, domain.RunnerInfo, domain.AuditEvent) (domain.RunnerInfo, error)
+	GetRunner(context.Context, string, string) (domain.RunnerInfo, error)
+	ListRunnerFleet(context.Context, string) ([]domain.RunnerInfo, error)
+	SetRunnerStatus(context.Context, string, string, domain.RunnerStatus, string, time.Time, domain.AuditEvent) (domain.RunnerInfo, error)
+}
+
 type DurableStore interface {
 	Store
 	RunnerJournal
+	GrantDispatchStore
+	RunnerFleetStore
 	SavePlan(domain.ReleasePlan) error
 	GetPlan(string) (domain.ReleasePlan, error)
 	CreateRunAtomic(*domain.ReleaseRun, []domain.AuditEvent, []domain.OutboxEvent) (*domain.ReleaseRun, bool, error)

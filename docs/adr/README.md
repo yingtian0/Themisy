@@ -13,6 +13,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0005](0005-postgresql-and-audit-state.md) | Accepted | Use PostgreSQL for durable application state and projections, with append-only audit history |
 | [0006](0006-action-grant-and-identity-signatures.md) | Accepted | Canonical Ed25519 Action Grant and Policy Bundle signatures with verified OIDC JWS subjects |
 | [0007](0007-first-deployment-adapter.md) | Accepted | Use a locally allow-listed GitHub Actions workflow as the first typed deployment adapter |
+| [0008](0008-runner-grant-transport-and-ecs.md) | Accepted | Dispatch signed grants over an outbound Runner channel and resolve ECS targets locally |
 
 ## Process
 

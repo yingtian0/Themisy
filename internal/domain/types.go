@@ -38,15 +38,19 @@ type Change struct {
 }
 
 type ReleaseRequest struct {
-	RequestID      string        `json:"request_id"`
-	ReleaseVersion string        `json:"release_version"`
-	TenantID       string        `json:"tenant_id,omitempty"`
-	Environment    Environment   `json:"environment"`
-	Region         string        `json:"region,omitempty"`
-	Cluster        string        `json:"cluster,omitempty"`
-	RequestedBy    string        `json:"requested_by"`
-	Agent          AgentIdentity `json:"delegated_agent"`
-	Changes        []Change      `json:"changes"`
+	RequestID         string        `json:"request_id"`
+	ReleaseVersion    string        `json:"release_version"`
+	TenantID          string        `json:"tenant_id,omitempty"`
+	Environment       Environment   `json:"environment"`
+	Region            string        `json:"region,omitempty"`
+	Cluster           string        `json:"cluster,omitempty"`
+	RequestedBy       string        `json:"requested_by"`
+	SubjectType       string        `json:"subject_type,omitempty"`
+	SubjectIssuer     string        `json:"subject_issuer,omitempty"`
+	UserIdentityProof string        `json:"user_identity_proof,omitempty"`
+	DelegationRef     string        `json:"delegation_ref,omitempty"`
+	Agent             AgentIdentity `json:"delegated_agent"`
+	Changes           []Change      `json:"changes"`
 }
 
 type PlanStep struct {
@@ -177,20 +181,26 @@ type ApprovalSummary struct {
 type RunnerStatus string
 
 const (
-	RunnerUnknown RunnerStatus = "UNKNOWN"
-	RunnerReady   RunnerStatus = "READY"
-	RunnerFrozen  RunnerStatus = "FROZEN"
+	RunnerUnknown  RunnerStatus = "UNKNOWN"
+	RunnerReady    RunnerStatus = "READY"
+	RunnerDraining RunnerStatus = "DRAINING"
+	RunnerFrozen   RunnerStatus = "FROZEN"
 )
 
 type RunnerInfo struct {
-	ID       string       `json:"id"`
-	TenantID string       `json:"tenant_id"`
-	Group    string       `json:"group"`
-	Status   RunnerStatus `json:"status"`
-	Capacity int          `json:"capacity"`
-	LastSeen time.Time    `json:"last_seen,omitempty"`
-	FrozenBy string       `json:"frozen_by,omitempty"`
-	FrozenAt *time.Time   `json:"frozen_at,omitempty"`
+	ID               string       `json:"id"`
+	TenantID         string       `json:"tenant_id"`
+	Group            string       `json:"group"`
+	Status           RunnerStatus `json:"status"`
+	Capacity         int          `json:"capacity"`
+	ReportedCapacity int          `json:"reported_capacity,omitempty"`
+	InFlight         int          `json:"in_flight,omitempty"`
+	LastSeen         time.Time    `json:"last_seen,omitempty"`
+	StateVersion     int64        `json:"state_version,omitempty"`
+	ControlledBy     string       `json:"controlled_by,omitempty"`
+	ControlledAt     *time.Time   `json:"controlled_at,omitempty"`
+	FrozenBy         string       `json:"frozen_by,omitempty"`
+	FrozenAt         *time.Time   `json:"frozen_at,omitempty"`
 }
 
 type ContractValidation struct {

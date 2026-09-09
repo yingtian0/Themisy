@@ -10,6 +10,11 @@ import (
 	"themisy/pkg/protocol"
 )
 
+func PreDispatchEvidenceHash() string {
+	sum := sha256.Sum256([]byte("themisy/pre-dispatch-evidence/v1"))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 const InputVersionV1Alpha1 = "themisy.policy.input/v1alpha1"
 
 // Input is the sole canonical policy input used by both Control Plane and Runner.
@@ -68,6 +73,9 @@ func InputForRelease(run domain.ReleaseRun, step domain.ReleaseStep) Input {
 		for _, planned := range phase.Steps {
 			if planned.Service == step.Service {
 				result.ContractHash, result.ProfileHash = planned.ContractHash, planned.ProfileHash
+				if planned.Scheduling.RunnerGroup != "" {
+					result.RunnerGroup = planned.Scheduling.RunnerGroup
+				}
 				break
 			}
 		}

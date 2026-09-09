@@ -24,6 +24,7 @@ type Request struct {
 	Service     string
 	Environment string
 	Purpose     Purpose
+	GrantID     string
 }
 
 func (r Request) Validate() error {

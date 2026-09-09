@@ -2,13 +2,24 @@ mode: development
 runner_id: runner-local-1
 runner_group: local-development
 tenant_id: tenant-development
+capacity: 1
 health_address: ":8081"
 control_plane:
   address: https://control-plane.example.invalid
   issuer: https://control-plane.example.invalid
+  token_file: ${THEMISY_RUNNER_TOKEN_FILE}
+  # Production uses mTLS workload identity instead of token_file.
+  # client_cert_file: /run/secrets/runner.crt
+  # client_key_file: /run/secrets/runner.key
+  # ca_file: /run/secrets/control-plane-ca.crt
+  trust_key_id: development-grant-key
+  trust_key_file: ${THEMISY_GRANT_PUBLIC_KEY_FILE}
 identity:
   issuer: https://identity.example.invalid
   audience: themisy
+  trust_key_id: development-oidc-key
+  trust_key_file: ${THEMISY_OIDC_PUBLIC_KEY_FILE}
+  delegations_file: ${THEMISY_DELEGATIONS_FILE}
 policy:
   bundle_file: policies/examples/development-bundle.json
 journal:
@@ -19,6 +30,23 @@ credentials:
   github_token_file: ${THEMISY_GITHUB_TOKEN_FILE}
   datadog_credential_file: ${THEMISY_DATADOG_CREDENTIAL_FILE}
 adapters:
+  # ECS provider identifiers live only in this Runner-local allowlist. Grants
+  # contain payment-api + environment + artifact digest, never these ARNs.
+  ecs:
+    targets: []
+    # - service: payment-api
+    #   environment: production
+    #   region: ap-northeast-1
+    #   cluster_arn: arn:aws:ecs:ap-northeast-1:111122223333:cluster/production
+    #   service_arn: arn:aws:ecs:ap-northeast-1:111122223333:service/production/payment-api
+    #   role_arn: arn:aws:iam::111122223333:role/themisy-payment-api-deploy
+    #   role_duration: 15m
+    #   rollback_task_definition: arn:aws:ecs:ap-northeast-1:111122223333:task-definition/payment-api:41
+    #   task_definitions:
+    #     - artifact_digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    #       task_definition_arn: arn:aws:ecs:ap-northeast-1:111122223333:task-definition/payment-api:42
+    #       expected_task_definitions:
+    #         - arn:aws:ecs:ap-northeast-1:111122223333:task-definition/payment-api:41
   github_actions:
     targets:
       - service: identity-api
