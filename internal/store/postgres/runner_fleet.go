@@ -86,9 +86,9 @@ UPDATE runner_fleet SET
   status=$3,
   capacity=CASE WHEN $3='READY' THEN GREATEST(reported_capacity-in_flight,0) ELSE 0 END,
   controlled_by=$4,
-  controlled_at=$5,
+  controlled_at=$5::timestamptz,
   frozen_by=CASE WHEN $3='FROZEN' THEN $4 ELSE NULL END,
-  frozen_at=CASE WHEN $3='FROZEN' THEN $5 ELSE NULL END,
+  frozen_at=CASE WHEN $3='FROZEN' THEN $5::timestamptz ELSE NULL END,
   state_version=state_version+1
 WHERE tenant_id=$1 AND runner_id=$2
 RETURNING `+runnerFleetColumns, tenantID, runnerID, status, actor, now))
