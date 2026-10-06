@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"themisy/internal/domain"
 	"time"
 
 	"themisy/internal/grant"
@@ -64,6 +65,7 @@ type PolicyEvaluator interface {
 type Connectivity interface{ Connected() bool }
 
 type PinnedContext struct {
+	Revision                                                      int64
 	PlanHash, ContractHash, ProfileHash, PolicyHash, EvidenceHash string
 	ApprovalRequired                                              bool
 	Target                                                        protocol.Target
@@ -77,6 +79,10 @@ type ApprovalVerifier interface {
 }
 
 type Runner struct {
+	Reporter interface {
+		ReportRecovery(context.Context, store.RunnerActionRecord) error
+	}
+	RunnerID     string
 	TenantID     string
 	RunnerGroup  string
 	Grants       GrantVerifier
@@ -124,7 +130,7 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	}
 	existing, err := r.Journal.GetRunnerAction(ctx, actionGrant.TenantID, actionGrant.RunnerGroup, actionGrant.Nonce)
 	if err == nil {
-		return replayResult(actionGrant, existing, requestHash)
+		return r.replay(ctx, actionGrant, existing, requestHash)
 	}
 	if !errors.Is(err, store.ErrNotFound) {
 		return r.reject(actionGrant, ReasonJournalUnavailable, err)
@@ -150,6 +156,11 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 		return r.reject(actionGrant, ReasonHashMismatch, nil)
 	}
 	pinned, err := r.Contexts.ResolveContext(ctx, actionGrant.RunID, actionGrant.StepID)
+	if resolver, ok := r.Contexts.(interface {
+		ResolveForGrant(context.Context, protocol.ActionGrant) (PinnedContext, error)
+	}); ok {
+		pinned, err = resolver.ResolveForGrant(ctx, actionGrant)
+	}
 	if err != nil || !matchingHashes(actionGrant, pinned) {
 		return r.reject(actionGrant, ReasonHashMismatch, err)
 	}
@@ -188,12 +199,14 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	}
 	now := r.now()
 	record := store.RunnerActionRecord{GrantID: actionGrant.GrantID, RunID: actionGrant.RunID, StepID: actionGrant.StepID, TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Nonce: actionGrant.Nonce, IdempotencyKey: actionGrant.IdempotencyKey, RequestHash: requestHash, Target: actionGrant.Target, Action: actionGrant.Action, CreatedAt: now, UpdatedAt: now}
-	record, created, err := r.Journal.ReserveRunnerAction(ctx, record, journalAudit(auditID(actionGrant.GrantID, "reserve", 1), actionGrant.GrantID, "runner.action.reserve", "AUTHORIZED", now, map[string]any{"request_hash": requestHash}))
+	record.RunnerID = r.RunnerID
+	record.PlanRevision, record.PlanHash = pinned.Revision, actionGrant.PlanHash
+	record, created, err := r.Journal.ReserveRunnerAction(ctx, record, journalAudit(auditID(actionGrant.GrantID, "reserve", 1), actionGrant.GrantID, "runner.action.reserve", "AUTHORIZED", now, map[string]any{"request_hash": requestHash, "runner_id": r.RunnerID}))
 	if err != nil {
 		return r.reject(actionGrant, ReasonJournalUnavailable, err)
 	}
 	if !created {
-		return replayResult(actionGrant, record, requestHash)
+		return r.replay(ctx, actionGrant, record, requestHash)
 	}
 	if r.Credentials == nil || r.Adapter == nil {
 		return r.failReserved(ctx, record, actionGrant, ReasonCredential, errors.New("credential or adapter unavailable"))
@@ -210,6 +223,24 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	if err != nil {
 		return r.failReserved(ctx, record, actionGrant, ReasonCredential, err)
 	}
+	// Commit dispatch intent before touching the provider. A crash after this
+	// point is ambiguous and must only be resolved by read-only reconciliation.
+	if err := r.Grants.Verify(ctx, actionGrant); err != nil {
+		return r.failReserved(ctx, record, actionGrant, reasonForGrant(err), err)
+	}
+	if resolver, ok := r.Contexts.(interface {
+		ResolveForGrant(context.Context, protocol.ActionGrant) (PinnedContext, error)
+	}); ok {
+		latest, err := resolver.ResolveForGrant(ctx, actionGrant)
+		if err != nil || !matchingHashes(actionGrant, latest) || latest.Revision != pinned.Revision {
+			return r.failReserved(ctx, record, actionGrant, ReasonHashMismatch, err)
+		}
+	}
+	record.Status, record.UpdatedAt = store.RunnerActionDispatched, r.now()
+	if err := r.Journal.CompleteRunnerAction(ctx, record, record.StateVersion, journalAudit(auditID(actionGrant.GrantID, "dispatch", record.StateVersion+1), actionGrant.GrantID, "runner.action.dispatch", "DISPATCHED", record.UpdatedAt, nil)); err != nil {
+		return r.reject(actionGrant, ReasonJournalUnavailable, err)
+	}
+	record.StateVersion++
 	adapterResult, err := r.Adapter.Execute(ctx, AdapterRequest{GrantID: actionGrant.GrantID, RunID: actionGrant.RunID, StepID: actionGrant.StepID, Target: actionGrant.Target, Action: actionGrant.Action, IdempotencyKey: actionGrant.IdempotencyKey, DispatchedAt: now}, credential)
 	if err != nil {
 		return r.failReserved(ctx, record, actionGrant, ReasonExternalUnknown, err)
@@ -217,7 +248,9 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: actionGrant.GrantID, RunID: actionGrant.RunID, StepID: actionGrant.StepID, Status: protocol.ResultSucceeded, ExternalExecutionID: adapterResult.ExternalExecutionID, CompletedAt: adapterResult.CompletedAt.UTC()}
 	record.Status, record.Result, record.UpdatedAt = store.RunnerActionSucceeded, result, r.now()
 	if err := r.Journal.CompleteRunnerAction(ctx, record, record.StateVersion, journalAudit(auditID(actionGrant.GrantID, "complete", record.StateVersion+1), actionGrant.GrantID, "runner.action.complete", "SUCCEEDED", record.UpdatedAt, map[string]any{"external_execution_id": result.ExternalExecutionID})); err != nil {
-		return r.reject(actionGrant, ReasonExternalUnknown, err)
+		// The provider may have committed. Do not report a terminal rejection
+		// that would prevent a later durable reconciliation result.
+		return protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: actionGrant.GrantID, RunID: actionGrant.RunID, StepID: actionGrant.StepID, Status: protocol.ResultUnknown, ReasonCode: string(ReasonExternalUnknown), CompletedAt: r.now()}, &Rejection{Reason: ReasonExternalUnknown, Err: err}
 	}
 	return result, nil
 }
@@ -249,7 +282,21 @@ func replayResult(grant protocol.ActionGrant, record store.RunnerActionRecord, r
 	if record.Status == store.RunnerActionSucceeded {
 		return record.Result, nil
 	}
-	return protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grant.GrantID, RunID: grant.RunID, StepID: grant.StepID, Status: protocol.ResultReconciliation, ReasonCode: string(ReasonReplay)}, &Rejection{Reason: ReasonReplay}
+	return protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grant.GrantID, RunID: grant.RunID, StepID: grant.StepID, Status: protocol.ResultReconciliation, ReasonCode: string(ReasonReplay), CompletedAt: record.UpdatedAt}, &Rejection{Reason: ReasonReplay}
+}
+
+func (r *Runner) replay(_ context.Context, g protocol.ActionGrant, record store.RunnerActionRecord, hash string) (protocol.Result, error) {
+	if record.RequestHash != hash {
+		if audit, ok := r.Journal.(interface{ AppendAudit(domain.AuditEvent) error }); ok {
+			now := r.now()
+			event := journalAudit(fmt.Sprintf("runner/%s/conflict/%d", g.GrantID, now.UnixNano()), g.GrantID, "runner.journal.conflict", "REJECTED", now, map[string]any{"reason": "request_hash_mismatch"})
+			if err := audit.AppendAudit(event); err != nil {
+				return r.reject(g, ReasonJournalUnavailable, err)
+			}
+		}
+		return r.reject(g, ReasonReplay, nil)
+	}
+	return replayResult(g, record, hash)
 }
 func reasonForGrant(err error) Reason {
 	switch {

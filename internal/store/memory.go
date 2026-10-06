@@ -13,6 +13,7 @@ import (
 )
 
 type Memory struct {
+	manifests      map[string]protocol.PlanManifest
 	mu             sync.RWMutex
 	runs           map[string]*domain.ReleaseRun
 	plans          map[string]domain.ReleasePlan
@@ -506,6 +507,13 @@ func (m *Memory) CompleteRunnerAction(_ context.Context, record RunnerActionReco
 	if current.StateVersion != expected {
 		return ErrConflict
 	}
+	if record.Status == RunnerActionDispatched && record.PlanRevision > 0 {
+		for _, manifest := range m.manifests {
+			if manifest.TenantID == record.TenantID && manifest.RunnerGroup == record.RunnerGroup && manifest.RunID == record.RunID && (manifest.Revision > record.PlanRevision || manifest.PlanHash != record.PlanHash) {
+				return ErrConflict
+			}
+		}
+	}
 	record.StateVersion = expected + 1
 	m.runnerActions[key] = record
 	m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
@@ -520,7 +528,7 @@ func (m *Memory) PendingRunnerActions(_ context.Context, tenantID, runnerGroup s
 	}
 	result := []RunnerActionRecord{}
 	for _, record := range m.runnerActions {
-		if record.TenantID == tenantID && record.RunnerGroup == runnerGroup && (record.Status == RunnerActionReserved || record.Status == RunnerActionUnknown) {
+		if record.TenantID == tenantID && record.RunnerGroup == runnerGroup && (record.Status == RunnerActionReserved || record.Status == RunnerActionDispatched || record.Status == RunnerActionUnknown) {
 			result = append(result, record)
 			if limit > 0 && len(result) >= limit {
 				break

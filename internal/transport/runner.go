@@ -100,6 +100,7 @@ func (s *RunnerServer) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/runner/grants:next", s.next)
 	mux.HandleFunc("POST /v1/runner/grants/{id}/ack", s.ack)
 	mux.HandleFunc("POST /v1/runner/grants/{id}/result", s.result)
+	mux.HandleFunc("POST /v1/runner/grants/{id}/reconcile", s.recovery)
 	mux.HandleFunc("POST /v1/runner/heartbeat", s.heartbeat)
 	return mux
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -194,6 +195,22 @@ func TestSignedGrantReachesSeparateRunnerProcess(t *testing.T) {
 		t.Fatalf("issue dispatch=%v err=%v", created, err)
 	}
 	actionGrant := dispatch.Grant
+	manifestSigner, manifestKey, err := grant.NewDevelopmentSigner("manifest-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := application.ApprovedManifest(context.Background(), memory, manifestSigner, "https://approvals.example", application.GrantIssueRequest{RunID: run.ID, StepID: "payment-api", Capability: protocol.CapabilityDeploy}, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestData, err := json.Marshal([]protocol.PlanManifest{manifest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestFile := t.TempDir() + "/manifests.json"
+	if err := os.WriteFile(manifestFile, manifestData, 0600); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer((&RunnerServer{Store: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Token: "test-runner-token"}}, MaxWait: time.Second, PollInterval: 10 * time.Millisecond}).Handler())
 	defer server.Close()
 	marker := t.TempDir() + "/adapter-called"
@@ -203,6 +220,8 @@ func TestSignedGrantReachesSeparateRunnerProcess(t *testing.T) {
 		"THEMISY_TEST_CONTROL_PLANE="+server.URL,
 		"THEMISY_TEST_GRANT_KEY="+base64.RawURLEncoding.EncodeToString(publicKey),
 		"THEMISY_TEST_MARKER="+marker,
+		"THEMISY_TEST_MANIFEST_FILE="+manifestFile,
+		"THEMISY_TEST_MANIFEST_KEY="+base64.RawURLEncoding.EncodeToString(manifestKey),
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("runner subprocess: %v\n%s", err, output)
@@ -225,7 +244,14 @@ func runRunnerHelper(t *testing.T) {
 	now := time.Now().UTC()
 	digest := testTransportDigest()
 	verifier := &grant.Verifier{Issuer: "https://control.example", RunnerGroup: "prod-jp", TenantID: "tenant-1", Keys: grant.StaticKeys{"https://control.example\x00transport-key": ed25519.PublicKey(publicKeyBytes)}, ClockSkew: time.Minute}
-	contexts := runnercore.NewReceivedContexts()
+	manifestKey, err := base64.RawURLEncoding.DecodeString(os.Getenv("THEMISY_TEST_MANIFEST_KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts := &runnercore.ManifestContexts{Store: store.NewMemory(), Issuer: "https://approvals.example", TenantID: "tenant-1", RunnerGroup: "prod-jp", Keys: grant.StaticKeys{"https://approvals.example\x00manifest-key": ed25519.PublicKey(manifestKey)}}
+	if err := contexts.LoadFile(context.Background(), os.Getenv("THEMISY_TEST_MANIFEST_FILE")); err != nil {
+		t.Fatal(err)
+	}
 	connected := &runnercore.AtomicConnectionState{}
 	broker, err := credentials.NewStaticDevelopmentBroker(map[string][]byte{"token": []byte("local-only")}, now.Add(time.Hour))
 	if err != nil {
@@ -242,7 +268,6 @@ func runRunnerHelper(t *testing.T) {
 		if err := verifier.Verify(ctx, actionGrant); err != nil {
 			return err
 		}
-		contexts.BindVerified(actionGrant)
 		return nil
 	}}
 	delivered, err := client.RunOnce(context.Background(), executionRunner)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"themisy/internal/domain"
 	"themisy/internal/store"
@@ -361,7 +362,7 @@ func isUniqueViolation(err error) bool {
 
 func (s *Store) GetRunnerAction(ctx context.Context, tenantID, runnerGroup, nonce string) (store.RunnerActionRecord, error) {
 	return scanRunnerAction(s.pool.QueryRow(ctx, `
-SELECT grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at
+SELECT `+runnerActionColumns+`
 FROM runner_journal WHERE tenant_id=$1 AND runner_group=$2 AND nonce=$3`, tenantID, runnerGroup, nonce))
 }
 
@@ -385,12 +386,12 @@ func (s *Store) ReserveRunnerAction(ctx context.Context, record store.RunnerActi
 	}
 	defer tx.Rollback(ctx)
 	row := tx.QueryRow(ctx, `
-INSERT INTO runner_journal (grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+INSERT INTO runner_journal (grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at,runner_id,plan_revision,plan_hash)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 ON CONFLICT DO NOTHING
-RETURNING grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at`,
+RETURNING `+runnerActionColumns,
 		record.GrantID, record.RunID, record.StepID, record.TenantID, record.RunnerGroup, record.Nonce,
-		record.IdempotencyKey, record.RequestHash, target, action, record.Status, result, record.StateVersion, record.CreatedAt, record.UpdatedAt)
+		record.IdempotencyKey, record.RequestHash, target, action, record.Status, result, record.StateVersion, record.CreatedAt, record.UpdatedAt, record.RunnerID, record.PlanRevision, record.PlanHash)
 	createdRecord, scanErr := scanRunnerAction(row)
 	if scanErr == nil {
 		if err := insertAudit(ctx, tx, audit); err != nil {
@@ -405,7 +406,7 @@ RETURNING grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,r
 		return store.RunnerActionRecord{}, false, scanErr
 	}
 	existing, err := scanRunnerAction(tx.QueryRow(ctx, `
-SELECT grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at
+SELECT `+runnerActionColumns+`
 FROM runner_journal
 WHERE tenant_id=$1 AND runner_group=$2 AND (nonce=$3 OR idempotency_key=$4)
 ORDER BY CASE WHEN nonce=$3 THEN 0 ELSE 1 END LIMIT 1`, record.TenantID, record.RunnerGroup, record.Nonce, record.IdempotencyKey))
@@ -425,10 +426,25 @@ func (s *Store) CompleteRunnerAction(ctx context.Context, record store.RunnerAct
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if record.Status == store.RunnerActionDispatched && record.PlanRevision > 0 {
+		// Serialize dispatch admission with plan activation. A changed plan can
+		// fence a reservation; it cannot retract a provider call already admitted.
+		var revision int64
+		var hash string
+		if err := tx.QueryRow(ctx, `SELECT revision,plan_hash FROM plan_revisions WHERE tenant_id=$1 AND runner_group=$2 AND run_id=$3 FOR SHARE`, record.TenantID, record.RunnerGroup, record.RunID).Scan(&revision, &hash); err != nil {
+			return err
+		}
+		if revision != record.PlanRevision || hash != record.PlanHash {
+			return store.ErrConflict
+		}
+	}
 	tag, err := tx.Exec(ctx, `
-UPDATE runner_journal SET status=$1,result=$2,state_version=$3,updated_at=$4
-WHERE tenant_id=$5 AND runner_group=$6 AND nonce=$7 AND state_version=$8`,
-		record.Status, result, expected+1, record.UpdatedAt, record.TenantID, record.RunnerGroup, record.Nonce, expected)
+UPDATE runner_journal SET status=$1,result=$2,state_version=$3,updated_at=$4,reconcile_owner='',reconcile_until=NULL
+WHERE tenant_id=$5 AND runner_group=$6 AND nonce=$7 AND state_version=$8
+ AND request_hash=$9 AND runner_id=$10
+ AND status IN ('RESERVED','DISPATCHED','UNKNOWN')
+ AND ($1 <> 'DISPATCHED' OR (status='RESERVED' AND reconcile_owner=''))`,
+		record.Status, result, expected+1, record.UpdatedAt, record.TenantID, record.RunnerGroup, record.Nonce, expected, record.RequestHash, record.RunnerID)
 	if err != nil {
 		return err
 	}
@@ -446,8 +462,8 @@ func (s *Store) PendingRunnerActions(ctx context.Context, tenantID, runnerGroup 
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at
-FROM runner_journal WHERE tenant_id=$1 AND runner_group=$2 AND status IN ('RESERVED','UNKNOWN') ORDER BY updated_at LIMIT $3`, tenantID, runnerGroup, limit)
+SELECT `+runnerActionColumns+`
+FROM runner_journal WHERE tenant_id=$1 AND runner_group=$2 AND status IN ('RESERVED','DISPATCHED','UNKNOWN') ORDER BY updated_at LIMIT $3`, tenantID, runnerGroup, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -467,14 +483,18 @@ type runnerActionRow interface{ Scan(...any) error }
 
 func scanRunnerAction(row runnerActionRow) (store.RunnerActionRecord, error) {
 	var record store.RunnerActionRecord
+	var until *time.Time
 	var target, action, result []byte
 	if err := row.Scan(&record.GrantID, &record.RunID, &record.StepID, &record.TenantID, &record.RunnerGroup,
 		&record.Nonce, &record.IdempotencyKey, &record.RequestHash, &target, &action, &record.Status, &result, &record.StateVersion,
-		&record.CreatedAt, &record.UpdatedAt); err != nil {
+		&record.CreatedAt, &record.UpdatedAt, &record.RunnerID, &record.ReconcileOwner, &until, &record.PlanRevision, &record.PlanHash); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.RunnerActionRecord{}, store.ErrNotFound
 		}
 		return store.RunnerActionRecord{}, err
+	}
+	if until != nil {
+		record.ReconcileUntil = *until
 	}
 	if len(target) > 0 {
 		if err := json.Unmarshal(target, &record.Target); err != nil {

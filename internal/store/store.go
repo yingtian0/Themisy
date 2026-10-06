@@ -55,13 +55,21 @@ type ExecutionRecord struct {
 type RunnerActionStatus string
 
 const (
-	RunnerActionReserved  RunnerActionStatus = "RESERVED"
-	RunnerActionSucceeded RunnerActionStatus = "SUCCEEDED"
-	RunnerActionUnknown   RunnerActionStatus = "UNKNOWN"
-	RunnerActionRejected  RunnerActionStatus = "REJECTED"
+	RunnerActionReceived   RunnerActionStatus = "RECEIVED"
+	RunnerActionReserved   RunnerActionStatus = "RESERVED"
+	RunnerActionDispatched RunnerActionStatus = "DISPATCHED"
+	RunnerActionFailed     RunnerActionStatus = "FAILED"
+	RunnerActionSucceeded  RunnerActionStatus = "SUCCEEDED"
+	RunnerActionUnknown    RunnerActionStatus = "UNKNOWN"
+	RunnerActionRejected   RunnerActionStatus = "REJECTED"
 )
 
 type RunnerActionRecord struct {
+	PlanRevision   int64
+	PlanHash       string
+	RunnerID       string
+	ReconcileOwner string
+	ReconcileUntil time.Time
 	GrantID        string
 	RunID          string
 	StepID         string
@@ -84,6 +92,13 @@ type RunnerJournal interface {
 	ReserveRunnerAction(context.Context, RunnerActionRecord, domain.AuditEvent) (RunnerActionRecord, bool, error)
 	CompleteRunnerAction(context.Context, RunnerActionRecord, int64, domain.AuditEvent) error
 	PendingRunnerActions(context.Context, string, string, int) ([]RunnerActionRecord, error)
+}
+
+// RecoveryJournal claims read-only recovery work. A claim never transfers
+// permission to dispatch a provider write.
+type RecoveryJournal interface {
+	RunnerJournal
+	ClaimRunnerActions(context.Context, string, string, string, time.Time, time.Time, int) ([]RunnerActionRecord, error)
 }
 
 type GrantDispatchStatus string
@@ -115,6 +130,7 @@ type GrantDispatchRecord struct {
 }
 
 type GrantDispatchStore interface {
+	ReconcileGrantDispatch(context.Context, string, int64, protocol.Result, domain.AuditEvent) error
 	CreateGrantDispatch(context.Context, GrantDispatchRecord, domain.AuditEvent, domain.OutboxEvent) (GrantDispatchRecord, bool, error)
 	ClaimGrantDispatch(context.Context, string, string, string, string, time.Time, time.Time) (GrantDispatchRecord, error)
 	AcknowledgeGrantDispatch(context.Context, string, string, string, time.Time, time.Time) (GrantDispatchRecord, error)

@@ -24,6 +24,12 @@ policy:
   bundle_file: policies/examples/development-bundle.json
 journal:
   database_url: ${THEMISY_RUNNER_DATABASE_URL}
+manifests:
+  # Provision via a customer-controlled approval pipeline, not Grant transport.
+  file: ${THEMISY_PLAN_MANIFEST_FILE}
+  issuer: https://approvals.example.invalid
+  trust_key_id: approval-manifest-key
+  trust_key_file: ${THEMISY_MANIFEST_PUBLIC_KEY_FILE}
 credentials:
   # These files are written by a customer-managed workload identity helper.
   # They are never returned to the Control Plane or placed in an Action Grant.

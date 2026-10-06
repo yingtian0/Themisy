@@ -149,3 +149,22 @@ The same contracts, protocol, Runner, adapters, and safety tests support:
 - an enterprise self-hosted Control Plane.
 
 Enterprise and managed features may add fleet management, identity integrations, long-term analytics, and operational support. They must not remove core safety enforcement from the OSS Runner or hide required safety invariants behind a commercial tier.
+
+## Runner recovery and independent plan authority
+
+Runner replicas share the customer-owned `themisy_runner` PostgreSQL schema,
+separate from Control Plane projections and migrations. A reservation is never
+transferred into a second provider write. Recovery claims fence stale writers
+and permit read-only observation only. Persisted results are reported back using
+the authenticated recovery route, including after a delivery token expires.
+
+The approval/provisioning path signs a versioned Plan Manifest independently of
+Action Grant dispatch. Runner configuration selects its own manifest issuer/key
+and file distribution path. Verified manifests and monotonic plan revisions are
+stored in the shared database; Grant hashes and approval references are compared
+against that independent source. Grant-derived ReceivedContexts has been removed.
+Plan activation is serialized with database dispatch admission, fencing old
+reservations but not retracting already-admitted external calls.
+
+See [the operating runbook](../runbooks/runner-recovery-and-manifests.md) and
+[manifest/recovery protocol](../protocols/runner-recovery-and-manifest.md).
