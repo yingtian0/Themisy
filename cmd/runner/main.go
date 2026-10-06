@@ -48,6 +48,7 @@ type settings struct {
 	Identity      identitySettings      `yaml:"identity"`
 	Policy        policySettings        `yaml:"policy"`
 	Journal       journalSettings       `yaml:"journal"`
+	Manifests     manifestSettings      `yaml:"manifests"`
 	Adapters      adapterSettings       `yaml:"adapters"`
 	Credentials   credentialSettings    `yaml:"credentials"`
 	Capabilities  []protocol.Capability `yaml:"capabilities"`
@@ -76,6 +77,12 @@ type policySettings struct {
 }
 type journalSettings struct {
 	DatabaseURL string `yaml:"database_url"`
+}
+type manifestSettings struct {
+	File         string `yaml:"file"`
+	Issuer       string `yaml:"issuer"`
+	TrustKeyID   string `yaml:"trust_key_id"`
+	TrustKeyFile string `yaml:"trust_key_file"`
 }
 type adapterSettings struct {
 	GitHubActions githubActionsSettings `yaml:"github_actions"`
@@ -136,6 +143,7 @@ type credentialSettings struct {
 func main() {
 	configPath := flag.String("config", "config/runner.example.yaml", "runner configuration path")
 	check := flag.Bool("check-config", false, "validate configuration and exit")
+	migrateJournal := flag.Bool("migrate-journal", false, "apply Runner-only migrations and exit (migration DB role required)")
 	flag.Parse()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	configuration, err := load(*configPath)
@@ -149,6 +157,13 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if *migrateJournal {
+		if err := postgresstore.MigrateRunner(ctx, configuration.Journal.DatabaseURL); err != nil {
+			logger.Error("migrate runner journal", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	executionRunner, client, reconciler, cleanup, err := buildRunner(ctx, configuration)
 	if err != nil {
 		logger.Error("initialize runner dependencies", "error", err)
@@ -211,6 +226,9 @@ func load(path string) (settings, error) {
 	}
 	if result.Mode == "production" && !strings.HasPrefix(result.ControlPlane.Address, "https://") {
 		return settings{}, fmt.Errorf("production control plane address must use https")
+	}
+	if result.Mode == "production" && (result.Manifests.File == "" || result.Manifests.Issuer == "" || result.Manifests.TrustKeyID == "" || result.Manifests.TrustKeyFile == "") {
+		return settings{}, errors.New("production requires independently signed plan manifests and manifest trust key")
 	}
 	if err := validateAdapters(result); err != nil {
 		return settings{}, err
@@ -300,7 +318,18 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	}
 	dispatcher := &runnercore.SDKDispatcher{Adapter: deployAdapter}
 	grantVerifier := &grant.Verifier{Issuer: configuration.ControlPlane.Issuer, RunnerGroup: configuration.RunnerGroup, TenantID: configuration.TenantID, Keys: grant.StaticKeys{configuration.ControlPlane.Issuer + "\x00" + configuration.ControlPlane.TrustKeyID: grantKey}, ClockSkew: 30 * time.Second}
-	received := runnercore.NewReceivedContexts()
+	manifestStore, ok := journal.(runnercore.ManifestStore)
+	if !ok {
+		return fail(errors.New("journal does not support durable manifests"))
+	}
+	received := &runnercore.ManifestContexts{Store: manifestStore, TenantID: configuration.TenantID, RunnerGroup: configuration.RunnerGroup, Issuer: configuration.Manifests.Issuer}
+	if configuration.Manifests.TrustKeyFile != "" {
+		key, err := grant.LoadEd25519PublicKey(configuration.Manifests.TrustKeyFile)
+		if err != nil {
+			return fail(err)
+		}
+		received.Keys = grant.StaticKeys{configuration.Manifests.Issuer + "\x00" + configuration.Manifests.TrustKeyID: key}
+	}
 	connectivity := &runnercore.AtomicConnectionState{}
 	capacity := configuration.Capacity
 	if capacity < 1 {
@@ -308,6 +337,7 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	}
 	runtimeState := runnercore.NewRuntimeState(capacity)
 	executionRunner := &runnercore.Runner{
+		RunnerID: configuration.RunnerID,
 		TenantID: configuration.TenantID, RunnerGroup: configuration.RunnerGroup, Grants: grantVerifier,
 		Subjects:    &identity.OIDCVerifier{Issuer: configuration.Identity.Issuer, Audience: configuration.Identity.Audience, Keys: identity.StaticOIDCKeys{configuration.Identity.Issuer + "\x00" + configuration.Identity.TrustKeyID: ed25519.PublicKey(oidcKey)}, ClockSkew: 30 * time.Second},
 		Delegations: &identity.DelegationVerifier{Resolver: delegations}, Contexts: received, Approvals: received,
@@ -325,10 +355,10 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 			if err := grantVerifier.Verify(ctx, actionGrant); err != nil {
 				return err
 			}
-			received.BindVerified(actionGrant)
-			return nil
+			return received.LoadFile(ctx, configuration.Manifests.File)
 		},
 	}
+	executionRunner.Reporter = client
 	return executionRunner, client, dispatcher, cleanup, nil
 }
 
@@ -442,9 +472,12 @@ func buildECSTargets(configuration settings) (map[ecsadapter.TargetKey]ecsadapte
 
 func openJournal(ctx context.Context, configuration settings) (store.RunnerJournal, func(), error) {
 	if configuration.Journal.DatabaseURL == "" {
+		if configuration.Mode != "development" {
+			return nil, nil, errors.New("production requires a shared PostgreSQL journal")
+		}
 		return store.NewMemory(), func() {}, nil
 	}
-	persistent, err := postgresstore.New(ctx, configuration.Journal.DatabaseURL)
+	persistent, err := postgresstore.NewRunnerJournal(ctx, configuration.Journal.DatabaseURL)
 	if err != nil {
 		return nil, nil, err
 	}
