@@ -136,4 +136,36 @@ func TestRunnerFleetHeartbeatAndDrainSurviveControlPlaneRestart(t *testing.T) {
 	if err != nil || loaded.Status != domain.RunnerDraining || loaded.Capacity != 0 {
 		t.Fatalf("loaded=%#v err=%v", loaded, err)
 	}
+	for i, status := range []domain.RunnerStatus{domain.RunnerFrozen, domain.RunnerReady, domain.RunnerDraining} {
+		changedAt := now.Add(time.Duration(i+2) * time.Second).Truncate(time.Microsecond)
+		changed, err := reconnected.SetRunnerStatus(ctx, heartbeat.TenantID, runnerID, status, "operator", changedAt, integrationAudit("runner-control-"+string(status)+suffix, correlationID, changedAt))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Reconnect to check persisted controls, not process-local state.
+		restarted, err := postgresstore.New(ctx, databaseURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		heartbeat.LastSeen = changedAt.Add(time.Second)
+		got, err := restarted.HeartbeatRunner(ctx, heartbeat, domain.AuditEvent{})
+		restarted.Close()
+		if err != nil || got.Status != status || got.ControlledBy != "operator" || got.ControlledAt == nil || !got.ControlledAt.Equal(changedAt) || got.StateVersion != changed.StateVersion+1 {
+			t.Fatalf("restart status=%s got=%#v err=%v", status, got, err)
+		}
+		wantCapacity := 0
+		if status == domain.RunnerReady {
+			wantCapacity = 2
+		}
+		if got.Capacity != wantCapacity {
+			t.Fatalf("capacity=%d want=%d", got.Capacity, wantCapacity)
+		}
+		if status == domain.RunnerFrozen {
+			if got.FrozenBy != "operator" || got.FrozenAt == nil || !got.FrozenAt.Equal(changedAt) {
+				t.Fatalf("missing freeze metadata: %#v", got)
+			}
+		} else if got.FrozenBy != "" || got.FrozenAt != nil {
+			t.Fatalf("stale freeze metadata: %#v", got)
+		}
+	}
 }
