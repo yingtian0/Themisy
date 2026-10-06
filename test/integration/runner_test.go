@@ -95,9 +95,24 @@ func TestGrantDispatchSurvivesReconnectAndRecordsAckResult(t *testing.T) {
 		t.Fatalf("ack=%#v err=%v", acked, err)
 	}
 	result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grant.GrantID, RunID: run.ID, StepID: grant.StepID, Status: protocol.ResultSucceeded, CompletedAt: now.Add(2 * time.Second)}
-	completed, err := reconnected.CompleteGrantDispatch(ctx, grant.GrantID, "runner-1", claimed.DeliveryToken, result, result.CompletedAt, integrationAudit("grant-result-"+suffix, run.ID, now))
+	unknown := result
+	unknown.Status = protocol.ResultUnknown
+	uncertain, err := reconnected.CompleteGrantDispatch(ctx, grant.GrantID, "runner-1", claimed.DeliveryToken, unknown, unknown.CompletedAt, integrationAudit("grant-unknown-"+suffix, run.ID, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = reconnected.ReconcileGrantDispatch(ctx, grant.GrantID, uncertain.StateVersion, result, integrationAudit("grant-recovery-"+suffix, run.ID, now.Add(3*time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if err = reconnected.ReconcileGrantDispatch(ctx, grant.GrantID, uncertain.StateVersion, result, integrationAudit("grant-recovery-replay-"+suffix, run.ID, now.Add(4*time.Second))); err != nil {
+		t.Fatalf("idempotent recovery: %v", err)
+	}
+	completed, err := reconnected.GetGrantDispatch(ctx, grant.GrantID)
 	if err != nil || completed.Status != store.GrantDispatchSucceeded {
 		t.Fatalf("complete=%#v err=%v", completed, err)
+	}
+	if err := reconnected.ReconcileGrantDispatch(ctx, grant.GrantID, completed.StateVersion, unknown, integrationAudit("grant-recovery-conflict-"+suffix, run.ID, now)); err != store.ErrConflict {
+		t.Fatalf("terminal conflict accepted: %v", err)
 	}
 }
 

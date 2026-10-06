@@ -17,7 +17,7 @@ test-race:
 
 test-integration:
 	docker compose -f deploy/compose/compose.yaml up -d postgres temporal
-	THEMISY_INTEGRATION=1 go test -tags=integration -count=1 ./test/integration
+	THEMISY_INTEGRATION=1 go test -tags=integration -count=1 ./test/integration ./internal/runner
 
 test-scenario:
 	go test -count=1 ./test/scenario/...
