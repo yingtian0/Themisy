@@ -176,4 +176,26 @@ Release Profiles pin one of `automatic`, `approval-required`, `manual-only`, or 
 
 ## Out of scope for this baseline
 
+### Shared Runner state and independent manifests
+
+- A forged or re-signed Grant is insufficient to change a separately pinned
+  Plan, target, action or approval binding. The manifest approval key and file
+  provisioning path must not be available to the Grant dispatcher.
+- A stale replica cannot reinstall an older plan revision. Activating a new
+  revision fences old reservations at dispatch admission. Already-admitted
+  provider calls cannot be recalled by a database change.
+- Process crashes, delivery lease expiry and provider absence never authorize
+  another write. Recovery claims permit reads and CAS updates, not re-dispatch.
+- PostgreSQL loss fails closed before credentials/new writes. Restoring an old
+  snapshot without recovering later reservations is unsafe; all replicas must
+  remain frozen pending WAL/history reconciliation.
+- Recovery reports are authenticated to tenant/group and compared with the
+  original canonical Grant hash. Terminal discrepancies are audited rather
+  than overwritten. This transport does not replace Result signatures (#9).
+- A compromised Runner or customer journal administrator is inside the trusted
+  computing base. Use least-privilege runtime roles, append-only audit triggers,
+  separate migration identities, TLS and protected backups.
+
+## Remaining release boundaries
+
 This document does not select a signature format, key-management product, identity-provider protocol profile, data-retention period, or managed-service availability SLO. Those choices require packet-specific design, implementation evidence, and ADRs. Air-gapped deployment and full enterprise multi-tenancy are outside OSS v1.0 scope.
