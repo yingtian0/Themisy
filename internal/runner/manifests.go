@@ -108,6 +108,9 @@ func (m *ManifestContexts) manifest(ctx context.Context, g protocol.ActionGrant)
 	if err != nil {
 		return p, err
 	}
+	if p.RunID != g.RunID || p.StepID != g.StepID || p.Action.Capability != g.Action.Capability {
+		return p, errors.New("manifest execution binding mismatch")
+	}
 	return p, m.verify(ctx, p)
 }
 

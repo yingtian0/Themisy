@@ -26,6 +26,7 @@ func TestIndependentManifestRejectsResignedGrantChanges(t *testing.T) {
 		"contract": func(g *protocol.ActionGrant) { g.ContractHash = testDigest("b") },
 		"profile":  func(g *protocol.ActionGrant) { g.ProfileHash = testDigest("b") },
 		"evidence": func(g *protocol.ActionGrant) { g.EvidenceHash = testDigest("b") },
+		"policy":   func(g *protocol.ActionGrant) { g.PolicyHash = testDigest("b") },
 		"target":   func(g *protocol.ActionGrant) { g.Target.Service = "other" },
 		"action":   func(g *protocol.ActionGrant) { g.Action.ArtifactDigest = testDigest("b") },
 		"approval": func(g *protocol.ActionGrant) { g.ApprovalProofs = []string{"other"} },
@@ -33,6 +34,10 @@ func TestIndependentManifestRejectsResignedGrantChanges(t *testing.T) {
 	for name, change := range changes {
 		t.Run(name, func(t *testing.T) {
 			f := newRunnerFixture(t)
+			// Keep identity/delegation valid for the alternate target so this
+			// case exercises independent manifest matching, not scope rejection.
+			f.delegation.ServiceSelectors = append(f.delegation.ServiceSelectors, "other")
+			f.refreshDelegation()
 			m := &ManifestContexts{Store: f.journal, Issuer: "https://approvals.example", TenantID: f.grant.TenantID, RunnerGroup: f.grant.RunnerGroup, Keys: grant.StaticKeys{"https://approvals.example\x00grant-key": f.public}, Now: func() time.Time { return f.now }}
 			if err := m.Pin(context.Background(), fixtureManifest(t, f)); err != nil {
 				t.Fatal(err)
