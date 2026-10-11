@@ -26,6 +26,8 @@ import (
 	postgresstore "themisy/internal/store/postgres"
 	workflowcore "themisy/internal/workflow"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	temporalworkflow "go.temporal.io/sdk/workflow"
@@ -48,14 +50,26 @@ func TestTemporalAPIWorkerRestartApprovalCancelAndReplay(t *testing.T) {
 	}
 	var temporalClient client.Client
 	eventually(t, 60*time.Second, func() error {
-		candidate, err := client.Dial(client.Options{HostPort: address, Namespace: "default"})
+		attemptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		candidate, err := client.DialContext(attemptCtx, client.Options{HostPort: address, Namespace: "default"})
 		if err != nil {
 			return err
 		}
-		_, healthErr := candidate.CheckHealth(context.Background(), &client.CheckHealthRequest{})
+		_, healthErr := candidate.CheckHealth(attemptCtx, &client.CheckHealthRequest{})
 		if healthErr != nil {
 			candidate.Close()
 			return healthErr
+		}
+		// The frontend can be healthy before auto-setup registers the namespace.
+		namespace, err := candidate.WorkflowService().DescribeNamespace(attemptCtx, &workflowservice.DescribeNamespaceRequest{Namespace: "default"})
+		if err != nil {
+			candidate.Close()
+			return err
+		}
+		if namespace.GetNamespaceInfo().GetState() != enumspb.NAMESPACE_STATE_REGISTERED {
+			candidate.Close()
+			return fmt.Errorf("default namespace is not registered: %s", namespace.GetNamespaceInfo().GetState())
 		}
 		temporalClient = candidate
 		return nil
