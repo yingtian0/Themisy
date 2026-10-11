@@ -1,4 +1,4 @@
-.PHONY: run compose-up compose-down test test-race test-integration test-scenario test-policy test-adapter test-planner benchmark benchmark-planner lint vet check fmt fmt-check
+.PHONY: run compose-up compose-down test test-race test-integration test-scenario test-policy test-adapter test-planner benchmark benchmark-planner lint vet check fmt fmt-check test-agent-cycle
 
 run:
 	go run ./cmd/themisy
@@ -46,7 +46,7 @@ lint: vet
 vet:
 	go vet ./...
 
-check: fmt-check test test-race lint
+check: fmt-check test test-race lint test-agent-cycle
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -type f)
@@ -58,3 +58,6 @@ fmt-check:
 		echo "$$unformatted"; \
 		exit 1; \
 	fi
+
+test-agent-cycle:
+	python3 -m unittest discover -s tests/agent_cycle -v
