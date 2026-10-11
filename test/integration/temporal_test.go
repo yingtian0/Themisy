@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,7 +27,9 @@ import (
 	postgresstore "themisy/internal/store/postgres"
 	workflowcore "themisy/internal/workflow"
 
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -48,6 +51,7 @@ func TestTemporalAPIWorkerRestartApprovalCancelAndReplay(t *testing.T) {
 	if address == "" {
 		address = "localhost:7233"
 	}
+	probeWorkflowID := fmt.Sprintf("namespace-readiness-%d", time.Now().UnixNano())
 	var temporalClient client.Client
 	eventually(t, 60*time.Second, func() error {
 		attemptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -70,6 +74,17 @@ func TestTemporalAPIWorkerRestartApprovalCancelAndReplay(t *testing.T) {
 		if namespace.GetNamespaceInfo().GetState() != enumspb.NAMESPACE_STATE_REGISTERED {
 			candidate.Close()
 			return fmt.Errorf("default namespace is not registered: %s", namespace.GetNamespaceInfo().GetState())
+		}
+		// Registration can precede namespace-cache propagation to workflow APIs.
+		// A missing workflow confirms that the namespace itself was resolved;
+		// NamespaceNotFound is a distinct error and must remain retryable here.
+		_, err = candidate.WorkflowService().DescribeWorkflowExecution(attemptCtx, &workflowservice.DescribeWorkflowExecutionRequest{
+			Namespace: "default", Execution: &commonpb.WorkflowExecution{WorkflowId: probeWorkflowID},
+		})
+		var workflowNotFound *serviceerror.NotFound
+		if err != nil && !errors.As(err, &workflowNotFound) {
+			candidate.Close()
+			return err
 		}
 		temporalClient = candidate
 		return nil
