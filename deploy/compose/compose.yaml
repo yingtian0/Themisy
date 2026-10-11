@@ -32,7 +32,7 @@ services:
       - "7233:7233"
 
   themisy-control:
-    image: golang:1.26.6-alpine
+    image: golang:1.26.9-alpine
     working_dir: /workspace
     command: ["go", "run", "./cmd/themisy", "-config", "config/themisy.example.yaml", "-mode", "control"]
     depends_on:
@@ -49,7 +49,7 @@ services:
       - ../..:/workspace
 
   worker:
-    image: golang:1.26.6-alpine
+    image: golang:1.26.9-alpine
     working_dir: /workspace
     command: ["go", "run", "./cmd/themisy", "-config", "config/themisy.example.yaml", "-mode", "worker"]
     depends_on:
@@ -64,7 +64,7 @@ services:
       - ../..:/workspace
 
   runner:
-    image: golang:1.26.6-alpine
+    image: golang:1.26.9-alpine
     working_dir: /workspace
     command: ["go", "run", "./cmd/runner", "-config", "config/runner.example.yaml"]
     depends_on:

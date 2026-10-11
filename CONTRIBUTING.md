@@ -11,7 +11,7 @@ Thank you for helping build a safer change-execution boundary. This project welc
 
 ## Development setup
 
-Go 1.26.6 or later is required.
+Go 1.26.9 or later is required.
 
 ```bash
 make fmt-check

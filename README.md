@@ -52,7 +52,7 @@ See the [architecture overview](docs/architecture/overview.md), [threat model](d
 
 ## Run the prototype
 
-Go 1.26.6 or later is required. YAML decoding uses the maintained `go.yaml.in/yaml/v3` module; no JSON Schema runtime is required.
+Go 1.26.9 or later is required. YAML decoding uses the maintained `go.yaml.in/yaml/v3` module; no JSON Schema runtime is required.
 
 ```bash
 make test
