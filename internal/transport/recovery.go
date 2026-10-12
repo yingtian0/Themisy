@@ -45,13 +45,19 @@ func (s *RunnerServer) recovery(w http.ResponseWriter, r *http.Request) {
 	audit := domain.AuditEvent{ID: auditID(record.Grant.GrantID, now), CorrelationID: record.Grant.RunID, ActorType: "runner", ActorID: identity.RunnerID, Action: "grant.reconcile", ResourceType: "action_grant", ResourceID: record.Grant.GrantID, Result: "RECONCILED", Timestamp: now, Details: map[string]any{"previous_status": record.Status, "observed_status": body.Result.Status}}
 	if hashErr != nil || hash != body.RequestHash || record.Grant.GrantID != body.Result.GrantID {
 		audit.Result = "CONFLICT"
-		_ = s.appendAudit(audit)
+		if err := s.appendAudit(audit); err != nil {
+			writeRunnerError(w, http.StatusServiceUnavailable, "audit store unavailable")
+			return
+		}
 		writeRunnerError(w, 409, "journal/dispatch mismatch")
 		return
 	}
 	if err = s.Store.ReconcileGrantDispatch(r.Context(), record.Grant.GrantID, record.StateVersion, body.Result, audit); err != nil {
 		audit.Result = "CONFLICT"
-		_ = s.appendAudit(audit)
+		if err := s.appendAudit(audit); err != nil {
+			writeRunnerError(w, http.StatusServiceUnavailable, "audit store unavailable")
+			return
+		}
 		writeGrantStoreError(w, err)
 		return
 	}
