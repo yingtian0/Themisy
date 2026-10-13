@@ -109,3 +109,24 @@ DB/Temporal stack. Go 1.26.9 plus x/net v0.60.0 and solver-selected dependencies
 produce zero reachable govulncheck findings locally. Supervisor lifecycle and
 evidence-gate regression verification is in progress; see final checkpoint for
 accepted commits and remote CI rather than inferring completion from this note.
+
+## Final checkpoint — 2026-10-13
+
+The bounded cycle supervisor completed the recovery-audit packet on commit
+`90d5ebd`. Independent review passed, and format, unit, race, lint, and uncached
+transport regression logs all describe that same commit. The fix returns 503 when
+the conflict audit cannot be persisted and preserves the existing 409 response
+when it can; the original dispatch remains unchanged.
+
+Commit `22a7115` adds the opt-in `--ci-pr` host gate. It verifies an existing
+same-repository PR, pushes only the immutable candidate SHA to its branch, and
+requires the latest GitHub Actions runs for all five required jobs to succeed on
+that SHA. It rejects forks, base branches, changed heads, multiple push URLs,
+force pushes, PR creation, and merge. The gate was exercised against PR #18 and
+returned `passed` for `22a7115`; CI run
+https://github.com/yingtian0/Themisy/actions/runs/38332920005 passed all five
+jobs. The Python supervisor suite has 43 passing tests.
+
+No merge, deployment, production credential, AWS staging, runtime-health, or
+signed-result release claim is made. The original user worktree remains
+untouched; the isolated branch and PR remain a draft for review.
