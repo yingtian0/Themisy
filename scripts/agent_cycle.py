@@ -131,6 +131,15 @@ def group_alive(pgid: int) -> bool:
         return False
 
 
+def verify_remote_ci(worktree, pr_number, commit, deadline):
+    # Resolve relative to this script, including when imported by file in tests.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("themisy_agent_ci", Path(__file__).with_name("agent_ci.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.verify_ci(worktree, pr_number, commit, deadline)
+
+
 def stop_process(process: subprocess.Popen) -> None:
     # Always kill remaining group members, even if the leader has already exited.
     try:
@@ -222,7 +231,7 @@ def run(args: argparse.Namespace) -> int:
             raise ValueError("checkpoint belongs to another worktree")
         if state.get("pgid") and group_alive(state["pgid"]):
             raise ValueError("previous process group still exists; stop it before resuming")
-        if state.get("status") in ("running", "interrupted", "timeout"):
+        if state.get("status") in ("running", "interrupted", "timeout", "ci_running", "ci_interrupted"):
             if not args.resume_interrupted:
                 raise ValueError("interrupted cycle: inspect work and confirm stopped workers, then use --resume-interrupted")
             state["interrupted_cycle"] = state.get("active_cycle")
@@ -300,6 +309,24 @@ def run(args: argparse.Namespace) -> int:
                 return 2
             result.update(index=index, completed_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                           events=str(events), output=str(output))
+            if getattr(args, "ci_pr", None) is not None and result["packet"]:
+                state.update(status="ci_running", ci_candidate=result["candidate_commit"],
+                             ci_pr=args.ci_pr, pending_result=result)
+                save(state_file, state)
+                try:
+                    remote = verify_remote_ci(root, args.ci_pr, result["candidate_commit"], args.until)
+                    if remote.get("status") != "passed" or remote.get("commit") != result["candidate_commit"]:
+                        raise ValueError("remote CI returned inconsistent candidate evidence")
+                    result.update(remote_ci=remote, verification="ci_passed")
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    state.update(status="ci_failed", error=str(error))
+                    save(state_file, state)
+                    return 2
+                except BaseException:
+                    state["status"] = "ci_interrupted"
+                    save(state_file, state)
+                    raise
+                state.pop("pending_result", None)
             state["cycles"].append(result)
             state["status"] = result["status"]
             save(state_file, state)
@@ -318,9 +345,12 @@ def main() -> int:
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--task-file", type=Path, help="trusted task scope supplied by the operator")
     parser.add_argument("--max-cycles", type=int, default=0, help="optional per-invocation cycle cap; 0 means deadline only")
+    parser.add_argument("--ci-pr", type=int, help="explicitly push candidate to this existing same-repo PR branch and verify CI")
     parser.add_argument("--resume-interrupted", action="store_true",
                         help="after inspecting interrupted changes and confirming old workers stopped")
     args = parser.parse_args()
+    if args.ci_pr is not None and args.ci_pr <= 0:
+        parser.error("ci-pr must be a positive existing PR number")
     if args.cycle_seconds <= 0 or args.wrap_up_seconds < 0 or args.max_cycles < 0:
         parser.error("cycle-seconds must be positive and wrap-up-seconds nonnegative")
     signal.signal(signal.SIGTERM, interrupted)
