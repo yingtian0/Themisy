@@ -1,6 +1,12 @@
 import datetime as dt
 import importlib.util
 import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -49,15 +55,62 @@ class CITests(unittest.TestCase):
         self.fail(f"unexpected subprocess {args}")
 
     def invoke(self):
-        owner = self
-        class FakeProcess:
-            def __init__(self, args, **kwargs):
-                self.args = args
-                self.returncode = 0
-            def communicate(self, timeout=None):
-                return owner.command(self.args, timeout=timeout), ""
-        with patch.object(ci.subprocess, "Popen", FakeProcess):
+        def command(args, worktree, remaining):
+            return self.command(args, timeout=min(60, remaining()))
+        with patch.object(ci, "run_command", side_effect=command):
             return ci.verify_ci("/unused", 1, self.commit, self.until)
+
+    def test_expired_command_never_spawns(self):
+        with patch.object(ci.subprocess, "Popen") as spawn:
+            with self.assertRaises(TimeoutError):
+                ci.run_command(["git", "push"], "/unused", lambda: (_ for _ in ()).throw(TimeoutError()))
+            spawn.assert_not_called()
+
+    def test_real_command_descendants_cleaned_on_exit_timeout_and_interrupt(self):
+        for mode in ("exit", "timeout", "interrupt"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                pidfile = Path(directory) / "child.pid"
+                child = ("import os,signal,time; from pathlib import Path; "
+                         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                         f"Path({str(pidfile)!r}).write_text(str(os.getpid())); time.sleep(30)")
+                parent = ("import subprocess,sys,time; from pathlib import Path\n"
+                          f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+                          f"while not Path({str(pidfile)!r}).exists(): time.sleep(.01)\n"
+                          + ("print('done')\n" if mode == "exit" else "time.sleep(30)\n"))
+                calls = 0
+                def remaining():
+                    nonlocal calls
+                    calls += 1
+                    if mode == "interrupt" and calls == 2:
+                        end = time.monotonic() + 3
+                        while not pidfile.exists() and time.monotonic() < end:
+                            time.sleep(.01)
+                        raise KeyboardInterrupt()
+                    return 1 if mode == "timeout" else 5
+                started = time.monotonic()
+                try:
+                    if mode == "exit":
+                        self.assertEqual(ci.run_command([sys.executable, "-c", parent], directory, remaining), "done")
+                    else:
+                        with self.assertRaises(subprocess.TimeoutExpired if mode == "timeout" else KeyboardInterrupt):
+                            ci.run_command([sys.executable, "-c", parent], directory, remaining)
+                    self.assertLess(time.monotonic() - started, 5)
+                    self.assertTrue(pidfile.exists())
+                    pid = int(pidfile.read_text())
+                    end = time.monotonic() + 2
+                    while time.monotonic() < end:
+                        status = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+                        if status.returncode or status.stdout.strip().startswith("Z"):
+                            break
+                        time.sleep(.02)
+                    else:
+                        self.fail("CI descendant survived cleanup")
+                finally:
+                    if pidfile.exists():
+                        try:
+                            os.kill(int(pidfile.read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
     def test_full_checks_pass_and_push_only_candidate_without_force(self):
         self.assertEqual(self.invoke()["status"], "passed")

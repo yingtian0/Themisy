@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 import time
 
 REQUIRED = {
@@ -12,6 +13,38 @@ REQUIRED = {
     "Planner determinism and safety scenarios", "PostgreSQL and Temporal recovery",
     "Go vulnerability scan",
 }
+
+
+def run_command(argv, worktree, remaining):
+    # Check before spawn; regular files avoid inherited-pipe hangs after exit.
+    timeout = min(60, remaining())
+    with tempfile.TemporaryFile(mode="w+") as stdout, tempfile.TemporaryFile(mode="w+") as stderr:
+        process = subprocess.Popen(argv, cwd=worktree, text=True,
+                                   stdout=stdout, stderr=stderr, start_new_session=True)
+        try:
+            process.wait(timeout=min(timeout, remaining()))
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                # The leader can exit while a TERM-resistant descendant lives.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=2)
+        stdout.seek(0)
+        stderr.seek(0)
+        output, error = stdout.read(), stderr.read()
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, argv, output, error)
+    return output.strip()
 
 
 def verify_ci(worktree, pr_number, commit, deadline):
@@ -29,28 +62,7 @@ def verify_ci(worktree, pr_number, commit, deadline):
         return seconds
 
     def run(*argv):
-        process = subprocess.Popen(list(argv), cwd=worktree, text=True,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   start_new_session=True)
-        try:
-            output, error = process.communicate(timeout=min(60, remaining()))
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.communicate()
-            raise
-        if process.returncode:
-            raise subprocess.CalledProcessError(process.returncode, argv, output, error)
-        return output.strip()
+        return run_command(list(argv), worktree, remaining)
 
     def git(*args):
         return run("git", *args)

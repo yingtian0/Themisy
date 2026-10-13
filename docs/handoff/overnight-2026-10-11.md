@@ -130,3 +130,14 @@ jobs. The Python supervisor suite has 43 passing tests.
 No merge, deployment, production credential, AWS staging, runtime-health, or
 signed-result release claim is made. The original user worktree remains
 untouched; the isolated branch and PR remain a draft for review.
+
+## Follow-up — CI command process lifetime
+
+The earlier timeout-only cleanup did not cover interrupts, normal leader exit
+with live descendants, or a deadline already expired before command spawn.
+`run_command` now checks the deadline before spawning, cleans the entire process
+group in `finally`, and uses temporary output files to avoid inherited-pipe
+hangs. Real-process regressions cover successful leader exit, timeout, and
+KeyboardInterrupt with a TERM-resistant child; an expired-deadline test proves
+no command is spawned. All 45 Python tests passed locally. Deliberately detached
+sessions remain outside process-group containment. No Go behavior changed.
