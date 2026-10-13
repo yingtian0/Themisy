@@ -357,8 +357,8 @@ func (c *RunnerClient) RunOnce(ctx context.Context, executor GrantExecutor) (boo
 	if err := c.submitResult(ctx, delivery, result); err != nil {
 		return true, err
 	}
-	// Rejections and UNKNOWN are durable results, not transport failures. They
-	// must be reported before the local execution error is discarded.
+	// Local refusals are reported as UNKNOWN, not transport failures. Report
+	// the outcome before discarding the local execution error.
 	_ = executeErr
 	return true, nil
 }
@@ -407,6 +407,11 @@ func (c *RunnerClient) ack(ctx context.Context, delivery Delivery) error {
 }
 
 func (c *RunnerClient) submitResult(ctx context.Context, delivery Delivery, result protocol.Result) error {
+	// A local refusal does not establish that another Runner never executed
+	// this Grant. Keep the shared outcome recoverable without retrying writes.
+	if result.Status == protocol.ResultRejected {
+		result.Status = protocol.ResultUnknown
+	}
 	return c.post(ctx, "/v1/runner/grants/"+url.PathEscape(delivery.Grant.GrantID)+"/result", resultSubmission{ProtocolVersion: protocol.RunnerTransportVersionV1Alpha1, DeliveryToken: delivery.DeliveryToken, Result: result})
 }
 

@@ -43,3 +43,13 @@ advances only after acknowledgement, so a lost response is safe to retry.
 No recovery response authorizes execution. Provider reads happen through typed
 adapters only; UNKNOWN/absent state remains unresolved, never a retry instruction.
 Result/Evidence cryptographic signatures and full runtime health remain #9.
+
+## Local execution refusal during delivery
+
+A replacement Runner's preflight or executor refusal does not prove that another
+Runner has not already performed the write. The delivery client therefore reports
+local REJECTED outcomes as UNKNOWN, retaining the refusal reason and identifiers.
+Preflight failure still prevents executor invocation; executor authorization
+checks remain unchanged. This leaves the Control Plane projection available for
+later journal-backed recovery instead of locking it into a terminal rejection.
+It does not weaken terminal-conflict checks or authorize a provider retry.
