@@ -2,6 +2,10 @@
 
 This document replaces the earlier prototype-first staging plan. Temporal and OPA are architectural commitments for OSS v1.0; they are not optional migrations deferred until after a PostgreSQL worker design.
 
+Current priorities and release gates are in the [implementation strategy](implementation-strategy.md).
+Use the [common workflow](agent-operations/README.md); GitHub Issues own task state
+and acceptance evidence. Dated handoffs are historical snapshots.
+
 ## Delivery model
 
 Work is divided into seven bounded Task Packets. A change set implements one packet only. Before changing code, contributors record the current worktree and baseline test result, read the packet's required material, and preserve existing user changes. A packet is complete only when its required verification succeeds and remaining risks are recorded.
@@ -68,7 +72,9 @@ The [architecture overview](architecture/overview.md) defines component boundari
 
 ## Standard verification
 
-Packet-specific checks supplement, rather than replace, these local checks:
+Select local checks for the changed packages and failure boundaries. These are
+the full-suite targets used by CI; running all of them locally is not required
+for every change:
 
 ```bash
 make fmt-check

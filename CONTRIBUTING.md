@@ -27,6 +27,9 @@ builds every package, enforces the current coverage floor, randomizes test order
 planner safety scenarios, lints workflow files, and scans reachable dependencies with
 `govulncheck`.
 
+Daily work follows the short [Issue-centered workflow](docs/agent-operations/README.md).
+Run relevant local checks; batch complete CI after a coherent change.
+
 ## Change process
 
 1. Keep a change focused on one behavior or one bounded Task Packet.
