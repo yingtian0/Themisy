@@ -23,11 +23,22 @@ type RollbackRequest struct {
 	IdempotencyKey     string     `json:"idempotency_key"`
 }
 
+type ReconcileOperation string
+
+const (
+	ReconcileDeploy   ReconcileOperation = "deploy"
+	ReconcileRollback ReconcileOperation = "rollback"
+)
+
 type ReconcileRequest struct {
-	IdempotencyKey string    `json:"idempotency_key"`
-	DispatchedAt   time.Time `json:"dispatched_at"`
-	Target         Target    `json:"target,omitempty"`
-	ArtifactDigest string    `json:"artifact_digest,omitempty"`
+	// An omitted operation preserves the original deploy reconciliation contract.
+	// Rollback callers must identify their operation explicitly.
+	Operation          ReconcileOperation `json:"operation,omitempty"`
+	OriginalDeployment Deployment         `json:"original_deployment,omitempty"`
+	IdempotencyKey     string             `json:"idempotency_key"`
+	DispatchedAt       time.Time          `json:"dispatched_at"`
+	Target             Target             `json:"target,omitempty"`
+	ArtifactDigest     string             `json:"artifact_digest,omitempty"`
 }
 
 type ReconcileResult struct {

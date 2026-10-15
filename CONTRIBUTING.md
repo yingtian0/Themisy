@@ -11,7 +11,7 @@ Thank you for helping build a safer change-execution boundary. This project welc
 
 ## Development setup
 
-Go 1.26.6 or later is required.
+Go 1.26.9 or later is required.
 
 ```bash
 make fmt-check
@@ -26,6 +26,9 @@ Use `make fmt` to format Go files. Pull-request CI also verifies that module fil
 builds every package, enforces the current coverage floor, randomizes test order, repeats the
 planner safety scenarios, lints workflow files, and scans reachable dependencies with
 `govulncheck`.
+
+Daily work follows the short [Issue-centered workflow](docs/agent-operations/README.md).
+Run relevant local checks; batch complete CI after a coherent change.
 
 ## Change process
 

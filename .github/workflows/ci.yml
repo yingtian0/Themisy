@@ -49,6 +49,9 @@ jobs:
       - name: Check formatting
         run: make fmt-check
 
+      - name: Test agent cycle supervisor
+        run: python3 -m unittest discover -s tests/agent_cycle -v
+
       - name: Run static analysis
         run: go vet ./...
 

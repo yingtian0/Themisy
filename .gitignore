@@ -24,3 +24,7 @@
 # OS-generated files
 .DS_Store
 Thumbs.db
+
+# Python orchestration helper caches
+__pycache__/
+*.pyc

@@ -3,7 +3,11 @@ package runner
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -76,6 +80,73 @@ func TestRunnerRejectsEveryUnsafeGrantBeforeAdapter(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGrantMutationIsRejectedBeforeCredentialsAndAdapter(t *testing.T) {
+	mutations := map[string]func(*protocol.ActionGrant){
+		"plan hash":       func(g *protocol.ActionGrant) { g.PlanHash = testDigest("b") },
+		"contract hash":   func(g *protocol.ActionGrant) { g.ContractHash = testDigest("b") },
+		"profile hash":    func(g *protocol.ActionGrant) { g.ProfileHash = testDigest("b") },
+		"policy hash":     func(g *protocol.ActionGrant) { g.PolicyHash = testDigest("b") },
+		"policy input":    func(g *protocol.ActionGrant) { g.PolicyInputHash = testDigest("b") },
+		"evidence hash":   func(g *protocol.ActionGrant) { g.EvidenceHash = testDigest("b") },
+		"target service":  func(g *protocol.ActionGrant) { g.Target.Service = "other" },
+		"target env":      func(g *protocol.ActionGrant) { g.Target.Environment = "production" },
+		"capability":      func(g *protocol.ActionGrant) { g.Action.Capability = "release.rollback" },
+		"artifact digest": func(g *protocol.ActionGrant) { g.Action.ArtifactDigest = testDigest("b") },
+		"issuer":          func(g *protocol.ActionGrant) { g.Issuer = "https://attacker.example" },
+		"unknown version": func(g *protocol.ActionGrant) { g.ProtocolVersion = "v99" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			f := newRunnerFixture(t)
+			mutate(&f.grant)
+			if _, err := f.runner.Execute(context.Background(), f.grant); err == nil {
+				t.Fatal("mutated Grant accepted")
+			}
+			if f.credentials.Calls() != 0 || f.adapter.Calls() != 0 {
+				t.Fatalf("credentials=%d adapter=%d", f.credentials.Calls(), f.adapter.Calls())
+			}
+		})
+	}
+}
+
+func TestRevokedOrUnavailableGrantTrustBundleRejectsBeforeWrite(t *testing.T) {
+	for _, mode := range []string{"revoked", "malformed", "missing"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newRunnerFixture(t)
+			path := filepath.Join(t.TempDir(), "grant-trust.json")
+			keyStatus := "active"
+			if mode == "revoked" {
+				keyStatus = "revoked"
+			}
+			bundle := grantTrustBundleFixture(f.now, f.grant.Issuer, f.grant.TenantID, "grant-key", f.public, keyStatus)
+			encoded, err := json.Marshal(bundle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode != "missing" {
+				if mode == "malformed" {
+					encoded = []byte("{")
+				}
+				if err := os.WriteFile(path, encoded, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			verifier := f.runner.Grants.(*grant.Verifier)
+			verifier.Keys = grant.FileKeys{Path: path, Issuer: f.grant.Issuer, Tenant: f.grant.TenantID, Now: func() time.Time { return f.now }}
+			if _, err := f.runner.Execute(context.Background(), f.grant); err == nil {
+				t.Fatal("invalid or revoked trust bundle accepted")
+			}
+			if f.credentials.Calls() != 0 || f.adapter.Calls() != 0 {
+				t.Fatalf("credentials=%d adapter=%d", f.credentials.Calls(), f.adapter.Calls())
+			}
+		})
+	}
+}
+
+func grantTrustBundleFixture(now time.Time, issuer, tenant, keyID string, key ed25519.PublicKey, status string) grant.GrantTrustBundle {
+	return grant.GrantTrustBundle{Version: "themisy.grant-trust/v1", Issuer: issuer, TenantID: tenant, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour), Keys: []grant.GrantTrustKey{{KeyID: keyID, PublicKey: base64.RawURLEncoding.EncodeToString(key), Status: status, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour)}}}
 }
 
 func TestRunnerPersistsNonceBeforeWriteAndReplayReturnsRecordedResult(t *testing.T) {

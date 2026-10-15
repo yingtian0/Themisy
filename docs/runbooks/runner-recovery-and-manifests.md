@@ -13,6 +13,31 @@ as schema owner and grant that NOLOGIN role to the workload's login. Runtime
 must not own tables or inherit the migration role. Use TLS with certificate and
 hostname verification (`sslmode=verify-full`) outside isolated local tests.
 
+## Grant signing key rotation and revocation
+
+Production config uses `control_plane.trust_bundle_file`; the legacy
+`trust_key_id` / `trust_key_file` pair is development-only. Keep the bundle
+in a customer-controlled, read-only mounted directory. The Grant dispatcher
+and request submitters must not be able to replace it. Protect the provisioner
+identity, deployment review, host permissions, and backup history.
+
+The [Grant trust bundle format](../protocols/grant-trust-bundle.md) binds one
+issuer and tenant and expires. The Runner reads and validates the file for
+every Grant verification, with no cached-key fallback. For rotation, provision
+the new public key under a new ID while retaining the old ID only for the
+planned overlap. Then replace the bundle atomically with the old entry marked
+`revoked` or removed. Use a temp file in the same protected directory followed
+by an atomic rename. Confirm the new bundle is visible on every replica before
+issuing Grants under the new key. A missing, malformed, stale, or wrongly bound
+bundle stops new Grant verification and therefore new writes.
+
+Set bundle expiry to match the customer's distribution cadence, with margin
+for delayed rollout. An expired bundle does not silently fall back to the prior
+version. Local file replacement does not prevent an administrator restoring an
+old bundle; retain deployment audit history and investigate unexpected
+rollback. This mechanism only covers Action Grant keys. OIDC/JWKS and Policy
+Bundle keys have separate owners.
+
 Existing installations using `public.runner_journal` must stop every Runner and
 copy ALL journal rows and append-only audit events into the new schema before
 starting any replica. Preserve nonce, idempotency key, state_version, owner and

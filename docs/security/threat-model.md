@@ -37,7 +37,7 @@ This is the baseline threat model for the target OSS v1.0 architecture. It must 
 
 The client, agent output, webhook payloads, request-body claims, provider timeout responses, and raw metrics are untrusted. The Control Plane and Runner are separate compromise domains. The Runner owns final enforcement and production credential access, but it is not assumed immune to compromise; it uses workload identity, least privilege, signed inputs, an allowlist, and local journaling to limit blast radius.
 
-Action Grants and Policy Bundles use canonical Ed25519 signatures as defined in ADR-0006. Production private keys remain behind a KMS/HSM signer interface and are never stored in this repository or Runner configuration. OIDC proofs accept only configured EdDSA or RS256 trust keys. Key discovery, rotation, and revocation remain deployment responsibilities and fail closed when trust material is unavailable. A valid signature proves origin and integrity, not sufficient authorization; all local Runner checks remain mandatory.
+Action Grants and Policy Bundles use canonical Ed25519 signatures as defined in ADR-0006. Production private keys remain behind a KMS/HSM signer interface and are never stored in this repository or Runner configuration. OIDC proofs accept only configured EdDSA or RS256 trust keys. Grant key rotation and revocation use a customer-managed, tenant- and issuer-bound local trust bundle. The Runner rereads it for every Grant verification; missing, expired, malformed, revoked, or unknown keys fail closed before credentials. Bundle freshness does not provide rollback-resistant distribution: protecting the file replacement path and backups is a customer deployment responsibility. A valid signature proves origin and integrity, not sufficient authorization; all local Runner checks remain mandatory.
 
 ## Threats and controls
 
@@ -58,6 +58,8 @@ Action Grants and Policy Bundles use canonical Ed25519 signatures as defined in 
 **Required tests:** Single-bit or field-level mutation of every bound field is rejected and invokes neither Credential Broker nor adapter.
 
 **Implemented boundary:** `themisy.protocol/v1alpha1` uses strict JSON decoding and a canonical struct representation. Runner verification fixes the order of protocol, signature/issuer/audience, expiry/replay, verified subject, trusted delegation, pinned context, approval, capability, local OPA, journal reservation, credential acquisition, and typed adapter dispatch.
+
+Grant trust bundles are local configuration, not objects supplied by a Grant or Control Plane request. They bind one issuer and tenant and have an explicit expiry. During rotation, distinct old and new keys may overlap. Revoking an ID or replacing the file takes effect on the next verification; duplicate public-key material under another ID is rejected so changing only the signature key-ID field cannot bypass revocation.
 
 ### Action Grant replay
 

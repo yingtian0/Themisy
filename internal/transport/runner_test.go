@@ -123,7 +123,7 @@ func TestAuthenticationFailureIsAudited(t *testing.T) {
 	}
 }
 
-func TestPreExecutionRejectionReasonIsStoredAndAudited(t *testing.T) {
+func TestPreExecutionRefusalRemainsUnknownAndAudited(t *testing.T) {
 	memory := store.NewMemory()
 	now := time.Now().UTC()
 	actionGrant := protocol.ActionGrant{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: "grant-rejected", RunID: "run-rejected", StepID: "step-1", TenantID: "tenant-1", RunnerGroup: "prod-jp", IdempotencyKey: "key-rejected", Nonce: "nonce-rejected", ExpiresAt: now.Add(time.Minute)}
@@ -141,7 +141,7 @@ func TestPreExecutionRejectionReasonIsStoredAndAudited(t *testing.T) {
 		t.Fatalf("delivered=%v err=%v", delivered, err)
 	}
 	stored, err := memory.GetGrantDispatch(context.Background(), actionGrant.GrantID)
-	if err != nil || stored.Status != store.GrantDispatchRejected || stored.Result.ReasonCode != "WRONG_TENANT" {
+	if err != nil || stored.Status != store.GrantDispatchUnknown || stored.Result.Status != protocol.ResultUnknown || stored.Result.ReasonCode != "WRONG_TENANT" {
 		t.Fatalf("stored=%#v err=%v", stored, err)
 	}
 	events, err := memory.AuditEvents(actionGrant.RunID)
@@ -149,7 +149,7 @@ func TestPreExecutionRejectionReasonIsStoredAndAudited(t *testing.T) {
 		t.Fatalf("events=%#v err=%v", events, err)
 	}
 	resultAudit := events[len(events)-1]
-	if resultAudit.Action != "grant.result" || resultAudit.Details["reason_code"] != "WRONG_TENANT" {
+	if resultAudit.Action != "grant.result" || resultAudit.Result != "UNKNOWN" || resultAudit.Details["reason_code"] != "WRONG_TENANT" {
 		t.Fatalf("result audit=%#v", resultAudit)
 	}
 }

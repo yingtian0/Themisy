@@ -141,17 +141,30 @@ func (d *SDKDispatcher) Reconcile(ctx context.Context, request AdapterRequest, c
 	if dispatchedAt.IsZero() {
 		dispatchedAt = d.now().Add(-24 * time.Hour)
 	}
-	result, err := d.Adapter.Reconcile(ctx, adapter.ReconcileRequest{IdempotencyKey: request.IdempotencyKey, DispatchedAt: dispatchedAt, Target: adapter.Target{Service: request.Target.Service, Environment: request.Target.Environment}, ArtifactDigest: request.Action.ArtifactDigest}, credential)
+	reconcileRequest := adapter.ReconcileRequest{IdempotencyKey: request.IdempotencyKey, DispatchedAt: dispatchedAt, Target: adapter.Target{Service: request.Target.Service, Environment: request.Target.Environment}, ArtifactDigest: request.Action.ArtifactDigest}
+	switch request.Action.Capability {
+	case protocol.CapabilityDeploy:
+		reconcileRequest.Operation = adapter.ReconcileDeploy
+	case protocol.CapabilityRollback:
+		reconcileRequest.Operation = adapter.ReconcileRollback
+		reconcileRequest.OriginalDeployment.ExternalExecutionID = request.Action.ExternalExecutionID
+	default:
+		return AdapterResult{}, false, fmt.Errorf("unsupported typed action %q", request.Action.Capability)
+	}
+	result, err := d.Adapter.Reconcile(ctx, reconcileRequest, credential)
 	if err != nil {
 		return AdapterResult{}, false, err
 	}
-	if result.Status == adapter.ReconcileNotFound || result.Status == adapter.ReconcilePending {
+	switch result.Status {
+	case adapter.ReconcileNotFound, adapter.ReconcilePending:
 		return AdapterResult{}, false, nil
-	}
-	if result.Status == adapter.ReconcileFailed {
+	case adapter.ReconcileFailed:
 		return AdapterResult{}, false, fmt.Errorf("external execution failed during reconciliation")
+	case adapter.ReconcileSucceeded:
+		return AdapterResult{ExternalExecutionID: result.Deployment.ExternalExecutionID, CompletedAt: result.Deployment.FinishedAt}, true, nil
+	default:
+		return AdapterResult{}, false, fmt.Errorf("invalid reconciliation status %q", result.Status)
 	}
-	return AdapterResult{ExternalExecutionID: result.Deployment.ExternalExecutionID, CompletedAt: result.Deployment.FinishedAt}, true, nil
 }
 
 func (d *SDKDispatcher) now() time.Time {
