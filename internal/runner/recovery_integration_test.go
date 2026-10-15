@@ -3,9 +3,11 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
 	"os"
@@ -118,6 +120,96 @@ func TestSharedJournalProcessesAndCrashRecovery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConcurrentDifferentNoncesShareOneIdempotencyReservation(t *testing.T) {
+	if os.Getenv("THEMISY_INTEGRATION") != "1" {
+		t.Fatal("THEMISY_INTEGRATION=1 required")
+	}
+	ctx := context.Background()
+	url := recoveryURL()
+	if err := postgresstore.MigrateRunner(ctx, url); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS recovery_test_writes(test_id text NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS recovery_test_ready(test_id text NOT NULL, replica text NOT NULL, PRIMARY KEY(test_id, replica))`); err != nil {
+		t.Fatal(err)
+	}
+	id := fmt.Sprintf("idem-race-%d", time.Now().UnixNano())
+	command := func(nonce string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRecoveryProcessHelper$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "THEMISY_RECOVERY_HELPER=none", "THEMISY_RECOVERY_ID="+id, "THEMISY_RECOVERY_REPLICA="+nonce, "THEMISY_RECOVERY_NONCE="+nonce)
+		cmd.Env = append(cmd.Env, "THEMISY_RECOVERY_IDEMPOTENCY_KEY="+id+"-shared-key")
+		return cmd
+	}
+	one, two := command("nonce-one"), command("nonce-two")
+	var firstOutput, secondOutput, firstError, secondError bytes.Buffer
+	one.Stdout, one.Stderr = &firstOutput, &firstError
+	two.Stdout, two.Stderr = &secondOutput, &secondError
+	if err := one.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := two.Start(); err != nil {
+		_ = one.Process.Kill()
+		_ = one.Wait()
+		t.Fatal(err)
+	}
+	if err := one.Wait(); err != nil {
+		t.Fatalf("first Runner process: %v stdout=%s stderr=%s", err, firstOutput.String(), firstError.String())
+	}
+	if err := two.Wait(); err != nil {
+		t.Fatalf("second Runner process: %v stdout=%s stderr=%s", err, secondOutput.String(), secondError.String())
+	}
+	var firstResult, secondResult protocol.Result
+	if err := json.NewDecoder(&firstOutput).Decode(&firstResult); err != nil {
+		t.Fatalf("decode first Runner result: %v (%s)", err, firstOutput.String())
+	}
+	if err := json.NewDecoder(&secondOutput).Decode(&secondResult); err != nil {
+		t.Fatalf("decode second Runner result: %v (%s)", err, secondOutput.String())
+	}
+	results := []protocol.Result{firstResult, secondResult}
+	succeeded, replayResponses := 0, 0
+	for _, result := range results {
+		switch {
+		case result.Status == protocol.ResultSucceeded:
+			succeeded++
+		case (result.Status == protocol.ResultRejected || result.Status == protocol.ResultReconciliation) && result.ReasonCode == string(ReasonReplay):
+			replayResponses++
+		}
+	}
+	if succeeded != 1 || replayResponses != 1 {
+		t.Fatalf("Runner results=%+v, want one success and one replay response", results)
+	}
+	var writes, reservations int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM recovery_test_writes WHERE test_id=$1`, id).Scan(&writes); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM themisy_runner.runner_journal WHERE runner_group=$1 AND idempotency_key=$2`, id, id+"-shared-key").Scan(&reservations); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 1 || reservations != 1 {
+		rows, queryErr := conn.Query(ctx, `SELECT tenant_id, runner_group, grant_id, nonce, idempotency_key FROM themisy_runner.runner_journal WHERE grant_id=$1 OR runner_group=$2 OR idempotency_key=$3`, id, id, id+"-shared-key")
+		if queryErr != nil {
+			t.Fatalf("writes=%d idempotency reservations=%d, queryErr=%v", writes, reservations, queryErr)
+		}
+		defer rows.Close()
+		var observed []string
+		for rows.Next() {
+			var tenant, group, grantID, nonce, key string
+			if err := rows.Scan(&tenant, &group, &grantID, &nonce, &key); err != nil {
+				t.Fatal(err)
+			}
+			observed = append(observed, fmt.Sprintf("tenant=%s group=%s grant=%s nonce=%s key=%s", tenant, group, grantID, nonce, key))
+		}
+		t.Fatalf("writes=%d idempotency reservations=%d, journal rows=%v want one each", writes, reservations, observed)
 	}
 }
 
@@ -246,6 +338,9 @@ func TestRecoveryProcessHelper(t *testing.T) {
 	if nonce := os.Getenv("THEMISY_RECOVERY_NONCE"); nonce != "" {
 		f.grant.Nonce = nonce
 	}
+	if idempotencyKey := os.Getenv("THEMISY_RECOVERY_IDEMPOTENCY_KEY"); idempotencyKey != "" {
+		f.grant.IdempotencyKey = idempotencyKey
+	}
 	f.grant.RunnerGroup = id
 	f.runner.RunnerID = os.Getenv("THEMISY_RECOVERY_REPLICA")
 	f.runner.RunnerGroup = id
@@ -270,7 +365,53 @@ func TestRecoveryProcessHelper(t *testing.T) {
 		// Do not pin in the child: both independent processes must read the
 		// previously provisioned shared record after the provisioner closed.
 	}
-	_, _ = f.runner.Execute(ctx, f.grant)
+	if os.Getenv("THEMISY_RECOVERY_IDEMPOTENCY_KEY") != "" {
+		replica := os.Getenv("THEMISY_RECOVERY_REPLICA")
+		barrier, err := pgx.Connect(ctx, recoveryURL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer barrier.Close(ctx)
+		if _, err := barrier.Exec(ctx, `INSERT INTO recovery_test_ready(test_id, replica) VALUES ($1, $2) ON CONFLICT DO NOTHING`, id, replica); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			var ready int
+			if err := barrier.QueryRow(ctx, `SELECT count(*) FROM recovery_test_ready WHERE test_id=$1`, id).Scan(&ready); err != nil {
+				t.Fatal(err)
+			}
+			if ready == 2 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("concurrent recovery peers ready=%d want=2", ready)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	result, err := f.runner.Execute(ctx, f.grant)
+	if os.Getenv("THEMISY_RECOVERY_IDEMPOTENCY_KEY") == "" {
+		// Legacy crash/recovery scenarios intentionally inspect durable effects
+		// from the parent and historically ignored child replay responses.
+		return
+	}
+	if err != nil {
+		var rejection *Rejection
+		if errors.As(err, &rejection) && rejection.Reason == ReasonReplay && (result.Status == protocol.ResultRejected || result.Status == protocol.ResultReconciliation) && result.ReasonCode == string(ReasonReplay) {
+			_ = json.NewEncoder(os.Stdout).Encode(result)
+			return
+		}
+		t.Fatalf("Runner.Execute: result=%+v err=%v", result, err)
+	}
+	if result.Status != protocol.ResultSucceeded {
+		t.Fatalf("Runner.Execute status=%s want=%s", result.Status, protocol.ResultSucceeded)
+	}
+	if os.Getenv("THEMISY_RECOVERY_IDEMPOTENCY_KEY") != "" {
+		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestSharedManifestSurvivesRestartAndReplicas(t *testing.T) {
