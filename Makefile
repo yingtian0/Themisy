@@ -16,8 +16,10 @@ test-race:
 	go test -race ./...
 
 test-integration:
-	docker compose -f deploy/compose/compose.yaml up -d postgres temporal
-	THEMISY_INTEGRATION=1 go test -tags=integration -count=1 -p 1 ./test/integration ./internal/runner ./internal/transport
+	set -eu; \
+	docker compose -f deploy/compose/compose.yaml up -d postgres temporal; \
+	THEMISY_INTEGRATION=1 go test -tags=integration -count=1 -p 1 ./test/integration ./internal/runner ./internal/transport; \
+	THEMISY_INTEGRATION=1 THEMISY_TEST_POSTGRES_SERVICE_STOP=1 go test -tags=integration -count=1 -p 1 -run '^TestPostgresServiceStopFailsClosed$$' ./internal/runner
 
 test-scenario:
 	go test -count=1 ./test/scenario/...
