@@ -526,6 +526,60 @@ func TestUnavailableSharedJournalAcquiresNoCredentials(t *testing.T) {
 	}
 }
 
+func TestControlPlaneDispatchLeaseCannotReplaceRunnerJournal(t *testing.T) {
+	if os.Getenv("THEMISY_INTEGRATION") != "1" {
+		t.Fatal("THEMISY_INTEGRATION=1 required")
+	}
+	ctx := context.Background()
+	databaseURL := recoveryURL()
+	if err := postgresstore.Migrate(databaseURL, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := postgresstore.MigrateRunner(ctx, databaseURL); err != nil {
+		t.Fatal(err)
+	}
+	control, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	f := newRunnerFixture(t)
+	now := f.now
+	grantID := fmt.Sprintf("cp-lease-only-%d", time.Now().UnixNano())
+	f.grant.GrantID = grantID
+	f.grant.RunID = grantID
+	f.grant.Nonce = grantID
+	f.grant.IdempotencyKey = grantID
+	if _, _, err := control.CreateRun(&domain.ReleaseRun{ID: grantID, RequestID: grantID, WorkflowID: grantID, TenantID: f.grant.TenantID, StateVersion: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create Control Plane run: %v", err)
+	}
+	f.resignWithPolicyHash(t)
+	if _, created, err := control.CreateGrantDispatch(ctx, store.GrantDispatchRecord{
+		Grant: f.grant, CreatedAt: now, UpdatedAt: now,
+	}, domain.AuditEvent{ID: grantID + "-audit", CorrelationID: grantID, Timestamp: now}, domain.OutboxEvent{
+		ID: grantID + "-outbox", AggregateType: "action_grant", AggregateID: grantID,
+		EventType: "grant.dispatch.requested", CreatedAt: now, AvailableAt: now,
+	}); err != nil || !created {
+		t.Fatalf("create Control Plane dispatch: created=%v err=%v", created, err)
+	}
+	dispatch, err := control.ClaimGrantDispatch(ctx, f.grant.TenantID, f.grant.RunnerGroup, "runner-1", "delivery-token", now, now.Add(time.Minute))
+	if err != nil || dispatch.Status != store.GrantDispatchLeased {
+		t.Fatalf("expected active Control Plane lease: status=%s err=%v", dispatch.Status, err)
+	}
+	journal, err := postgresstore.NewRunnerJournal(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.Close()
+	f.runner.Journal = journal
+	if _, err := f.runner.Execute(ctx, f.grant); err == nil {
+		t.Fatal("Control Plane dispatch lease bypassed unavailable Runner Journal")
+	}
+	if f.credentials.Calls() != 0 || f.adapter.Calls() != 0 {
+		t.Fatal("dispatch lease authorized a write without a durable Runner reservation")
+	}
+}
+
 type testGrantVerifier struct{ fixture *runnerFixture }
 
 func (v *testGrantVerifier) Verify(ctx context.Context, g protocol.ActionGrant) error {
