@@ -9,6 +9,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -93,6 +96,145 @@ func TestJournalNetworkDisconnectReconnect(t *testing.T) {
 	for i, action := range []string{"runner.action.reserve", "runner.action.dispatch", "runner.action.complete"} {
 		if events[i].Action != action {
 			t.Fatalf("audit[%d]=%s want=%s", i, events[i].Action, action)
+		}
+	}
+}
+
+// This test stops the actual Compose PostgreSQL service. It is kept behind an
+// explicit flag and runs after the ordinary integration suite, so it cannot
+// interrupt unrelated package tests or a developer's arbitrary database.
+func TestPostgresServiceStopFailsClosed(t *testing.T) {
+	if os.Getenv("THEMISY_INTEGRATION") != "1" || os.Getenv("THEMISY_TEST_POSTGRES_SERVICE_STOP") != "1" {
+		t.Skip("requires THEMISY_INTEGRATION=1 and THEMISY_TEST_POSTGRES_SERVICE_STOP=1")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	composeFile, err := filepath.Abs("../../deploy/compose/compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCompose := func(runCtx context.Context, args ...string) (string, error) {
+		t.Helper()
+		base := []string{"compose", "-f", composeFile}
+		cmd := exec.CommandContext(runCtx, "docker", append(base, args...)...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return string(output), fmt.Errorf("docker %v: %w: %s", args, err, output)
+		}
+		return string(output), nil
+	}
+	compose := func(args ...string) error {
+		_, err := runCompose(ctx, args...)
+		return err
+	}
+	databaseURL := recoveryURL()
+	dbURL, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := dbURL.Port()
+	if port == "" {
+		port = "5432"
+	}
+	password, hasPassword := dbURL.User.Password()
+	if host := dbURL.Hostname(); (host != "localhost" && host != "127.0.0.1") || port != "5432" || strings.TrimPrefix(dbURL.Path, "/") != "themisy" || dbURL.User.Username() != "themisy" || !hasPassword || password != "themisy" || dbURL.RawQuery != "sslmode=disable" {
+		t.Fatalf("service-stop test requires the exact Compose connection settings, got %s", dbURL.Redacted())
+	}
+	runningServices, err := runCompose(ctx, "ps", "--status", "running", "--services", "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wasRunning := strings.TrimSpace(runningServices) == "postgres"
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if wasRunning {
+			if _, err := runCompose(cleanupCtx, "start", "postgres"); err != nil {
+				t.Errorf("restore PostgreSQL running state: %v", err)
+			} else if err := waitRunnerPostgres(cleanupCtx, databaseURL); err != nil {
+				t.Errorf("wait for PostgreSQL during cleanup: %v", err)
+			}
+		} else {
+			if _, err := runCompose(cleanupCtx, "stop", "-t", "1", "postgres"); err != nil {
+				t.Errorf("restore PostgreSQL stopped state: %v", err)
+			}
+		}
+	}()
+	if !wasRunning {
+		if err := compose("start", "postgres"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := waitRunnerPostgres(ctx, databaseURL); err != nil {
+		t.Fatal(err)
+	}
+	if err := postgresstore.MigrateRunner(ctx, databaseURL); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := postgresstore.NewRunnerJournal(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	f := newRunnerFixture(t)
+	id := fmt.Sprintf("service-stop-%d", time.Now().UnixNano())
+	f.grant.GrantID, f.grant.Nonce, f.grant.IdempotencyKey = id, id, id
+	f.resignWithPolicyHash(t)
+	f.runner.Journal = journal
+	failClosed := func(wantCredentials, wantWrites int) {
+		t.Helper()
+		attempt, stop := context.WithTimeout(ctx, 3*time.Second)
+		defer stop()
+		result, err := f.runner.Execute(attempt, f.grant)
+		if err == nil || result.ReasonCode != string(ReasonJournalUnavailable) {
+			t.Fatalf("stopped PostgreSQL result=%#v err=%v", result, err)
+		}
+		if f.credentials.Calls() != wantCredentials || f.adapter.Calls() != wantWrites {
+			t.Fatalf("stopped PostgreSQL acquired credentials or wrote: credentials=%d writes=%d want=%d/%d", f.credentials.Calls(), f.adapter.Calls(), wantCredentials, wantWrites)
+		}
+	}
+	if err := compose("stop", "-t", "1", "postgres"); err != nil {
+		t.Fatal(err)
+	}
+	failClosed(0, 0)
+	if err := compose("start", "postgres"); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitRunnerPostgres(ctx, databaseURL); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.runner.Execute(ctx, f.grant)
+	if err != nil || result.Status != protocol.ResultSucceeded {
+		t.Fatalf("execution after PostgreSQL restart=%#v err=%v", result, err)
+	}
+	if f.credentials.Calls() != 1 || f.adapter.Calls() != 1 {
+		t.Fatalf("recovered execution credentials=%d writes=%d want=1/1", f.credentials.Calls(), f.adapter.Calls())
+	}
+	if err := compose("stop", "-t", "1", "postgres"); err != nil {
+		t.Fatal(err)
+	}
+	failClosed(1, 1)
+	if err := compose("start", "postgres"); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitRunnerPostgres(ctx, databaseURL); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitRunnerPostgres(ctx context.Context, databaseURL string) error {
+	var lastErr error
+	for {
+		journal, err := postgresstore.NewRunnerJournal(ctx, databaseURL)
+		if err == nil {
+			journal.Close()
+			return nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("PostgreSQL did not become ready: %w (last error: %v)", ctx.Err(), lastErr)
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }
