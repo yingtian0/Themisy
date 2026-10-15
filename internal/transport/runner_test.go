@@ -2,11 +2,17 @@ package transport
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -51,6 +57,94 @@ func TestMTLSAuthenticatorBindsWorkloadIdentityToRunner(t *testing.T) {
 	request.TLS.VerifiedChains = nil
 	if _, err := hybrid.Authenticate(request); err == nil {
 		t.Fatal("unverified client certificate downgraded to bearer authentication")
+	}
+}
+
+func TestRunnerTransportRequiresVerifiedMTLSIdentity(t *testing.T) {
+	now := time.Now().UTC()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Themisy test CA"}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCAs := x509.NewCertPool()
+	clientCAs.AddCert(ca)
+	issueLeaf := func(serial int64, workload string, usage x509.ExtKeyUsage) tls.Certificate {
+		t.Helper()
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		uri, err := url.Parse(workload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: workload}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{usage}, URIs: []*url.URL{uri}}
+		der, err := x509.CreateCertificate(rand.Reader, template, ca, &key.PublicKey, caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
+	}
+	const workloadID = "spiffe://example.internal/themisy/runner-1"
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "localhost"}, DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, ca, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCert, err := x509.ParseCertificate(serverDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPlane := httptest.NewUnstartedServer((&RunnerServer{Store: store.NewMemory(), Auth: MTLSRunnerAuthenticator{workloadID: {RunnerID: "runner-1", TenantID: "tenant-1", RunnerGroup: "prod-jp"}}}).Handler())
+	controlPlane.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{{Certificate: [][]byte{serverDER}, PrivateKey: serverKey, Leaf: serverCert}}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientCAs}
+	controlPlane.StartTLS()
+	defer controlPlane.Close()
+	trustedServer := controlPlane.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: trustedServer, Certificates: []tls.Certificate{issueLeaf(3, workloadID, x509.ExtKeyUsageClientAuth)}}}
+	defer transport.CloseIdleConnections()
+	response, err := (&http.Client{Transport: transport}).Get(controlPlane.URL + "/v1/runner/grants:next?wait=0s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("verified Runner identity status=%d, want %d", response.StatusCode, http.StatusNoContent)
+	}
+
+	transport.TLSClientConfig.Certificates = []tls.Certificate{issueLeaf(4, "spiffe://example.internal/themisy/unregistered", x509.ExtKeyUsageClientAuth)}
+	transport.CloseIdleConnections()
+	response, err = (&http.Client{Transport: transport}).Get(controlPlane.URL + "/v1/runner/grants:next?wait=0s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unregistered workload identity status=%d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+
+	transport.TLSClientConfig.Certificates = nil
+	transport.CloseIdleConnections()
+	response, err = (&http.Client{Transport: transport}).Get(controlPlane.URL + "/v1/runner/grants:next?wait=0s")
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("Control Plane accepted a client without a verified certificate")
 	}
 }
 
