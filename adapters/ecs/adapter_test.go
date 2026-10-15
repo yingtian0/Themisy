@@ -46,6 +46,15 @@ func TestDeployRejectsUnknownLogicalTargetAndUnexpectedCurrentTaskDefinition(t *
 	}
 }
 
+func TestDeployRejectsArtifactDigestWithoutTrustedTaskDefinition(t *testing.T) {
+	fixture := newFixture(t)
+	request := fixture.request
+	request.ArtifactDigest = "sha256:" + strings.Repeat("b", 64)
+	if _, err := fixture.adapter.Deploy(context.Background(), request, credentials.Credential{}); !adapter.IsClass(err, adapter.ErrorTerminal) || fixture.client.updateCalls != 0 {
+		t.Fatalf("unmapped digest err=%v calls=%d", err, fixture.client.updateCalls)
+	}
+}
+
 func TestAmbiguousUpdateIsUnknownAndNeverRetried(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.client.updateErr = context.DeadlineExceeded
