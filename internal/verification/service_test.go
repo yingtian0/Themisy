@@ -2,6 +2,8 @@ package verification
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +16,8 @@ func TestServiceObtainsCredentialLocallyAndValidatesEvidence(t *testing.T) {
 	request := adapter.VerificationRequest{Target: adapter.Target{Service: "identity", Environment: "production"}, Deployment: adapter.Deployment{ExternalExecutionID: "run-1"}, Window: adapter.ObservationWindow{From: now.Add(-time.Minute), To: now}}
 	evidence := adapter.Evidence{Status: adapter.VerificationPass, ReasonCode: "THRESHOLD_MET", Source: "datadog", QueryHash: digest('a'), Window: request.Window, ObservedAt: now, ObservedValue: 0.2, Threshold: 1, AdapterVersion: "datadog/v1"}
 	evidence.EvidenceHash, _ = adapter.EvidenceHash(evidence)
-	broker := &recordingBroker{credential: credentials.New(map[string][]byte{"api_key": []byte("secret")}, now.Add(time.Hour))}
+	secrets := []string{"private-api-key", "private-app-key"}
+	broker := &recordingBroker{credential: credentials.New(map[string][]byte{"api_key": []byte(secrets[0]), "app_key": []byte(secrets[1])}, now.Add(time.Hour))}
 	verifier := &staticVerifier{evidence: evidence}
 	service := &Service{TenantID: "tenant-1", Broker: broker, Adapter: verifier}
 	actual, err := service.Verify(context.Background(), request)
@@ -23,6 +26,15 @@ func TestServiceObtainsCredentialLocallyAndValidatesEvidence(t *testing.T) {
 	}
 	if broker.request.Provider != adapter.ProviderDatadog || broker.request.Service != "identity" {
 		t.Fatalf("credential request=%#v", broker.request)
+	}
+	encoded, err := json.Marshal(actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("credential value leaked into verification evidence: %s", encoded)
+		}
 	}
 }
 

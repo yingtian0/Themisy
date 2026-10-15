@@ -17,7 +17,9 @@ Control Plane signing uses either an asymmetric Ed25519 AWS KMS key or an explic
 
 The ECS adapter accepts only a logical `(service, environment)` and an artifact digest from the Grant. Runner-local configuration maps that tuple and digest to a fixed Region, cluster ARN, service ARN, allowed predecessor task definitions, desired task definition, rollback task definition, and IAM role. The adapter calls `DescribeServices`, checks the current task definition against the configured predecessor set, and then calls `UpdateService` with SDK retry attempts fixed to one. Any error or incomplete response after `UpdateService` is classified as `UNKNOWN_EXTERNAL_STATE`; only `Reconcile` may determine whether the desired task definition became active.
 
-The Runner obtains temporary AWS credentials from its workload identity with STS `AssumeRole`. The role is selected from the same local allowlist. The Grant ID is placed in both the role session name and the `ThemisyGrantID` session tag for CloudTrail correlation. Temporary credentials stay inside the Runner and the opaque credential type.
+The Runner obtains temporary AWS credentials from its workload identity with STS `AssumeRole`. Deploy and rollback roles are distinct entries in the Runner-local allowlist, keyed by tenant, service, environment, and purpose. The Grant ID is placed in the role session name; Grant ID, Run ID, service, and environment are attached as session tags for CloudTrail correlation. Temporary credentials stay inside the Runner and the opaque credential type.
+
+Runner ECS configuration uses `deploy_role_arn` and, when rollback is enabled, a distinct `rollback_role_arn`. The former shared `role_arn` field is rejected by strict configuration decoding; update existing Runner configuration before upgrading.
 
 ## Alternatives considered
 

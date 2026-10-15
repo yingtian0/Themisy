@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,6 +169,19 @@ func TestRunnerPersistsNonceBeforeWriteAndReplayReturnsRecordedResult(t *testing
 	}
 }
 
+func TestCredentialAcquisitionOccursAfterJournalReservation(t *testing.T) {
+	fixture := newRunnerFixture(t)
+	broker := &reservationCheckingCredentials{journal: fixture.journal, actionGrant: fixture.grant, now: fixture.now}
+	fixture.runner.Credentials = broker
+	result, err := fixture.runner.Execute(context.Background(), fixture.grant)
+	if err != nil || result.Status != protocol.ResultSucceeded {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if broker.calls != 1 || broker.request.RunID != fixture.grant.RunID || broker.request.Service != fixture.grant.Target.Service || broker.request.Environment != fixture.grant.Target.Environment {
+		t.Fatalf("broker calls=%d request=%#v", broker.calls, broker.request)
+	}
+}
+
 func TestConcurrentDuplicateGrantCreatesAtMostOneWrite(t *testing.T) {
 	fixture := newRunnerFixture(t)
 	start := make(chan struct{})
@@ -210,6 +224,9 @@ func TestDisconnectedRunnerMayReconcileButCannotStartWrite(t *testing.T) {
 	}
 	if fixture.adapter.Calls() != 0 || fixture.credentials.Calls() != 1 {
 		t.Fatalf("reconcile started a write or failed to obtain one read credential")
+	}
+	if fixture.credentials.request.RunID != fixture.grant.RunID || fixture.credentials.request.Service != fixture.grant.Target.Service || fixture.credentials.request.Environment != fixture.grant.Target.Environment {
+		t.Fatalf("reconciliation credential request=%#v", fixture.credentials.request)
 	}
 }
 
@@ -311,21 +328,47 @@ func (a *countingAdapter) Execute(_ context.Context, _ AdapterRequest, _ Credent
 func (a *countingAdapter) Calls() int { a.mu.Lock(); defer a.mu.Unlock(); return a.calls }
 
 type countingCredentials struct {
-	mu    sync.Mutex
-	calls int
-	now   time.Time
+	mu      sync.Mutex
+	calls   int
+	now     time.Time
+	request CredentialRequest
 }
 
 type staticReconciler struct{ result AdapterResult }
+
+type reservationCheckingCredentials struct {
+	journal     store.RunnerJournal
+	actionGrant protocol.ActionGrant
+	now         time.Time
+	calls       int
+	request     CredentialRequest
+}
+
+func (b *reservationCheckingCredentials) Acquire(ctx context.Context, request CredentialRequest) (Credential, error) {
+	b.calls++
+	b.request = request
+	record, err := b.journal.GetRunnerAction(ctx, request.TenantID, b.actionGrant.RunnerGroup, b.actionGrant.Nonce)
+	if err != nil {
+		return Credential{}, err
+	}
+	if record.Status != store.RunnerActionReserved {
+		return Credential{}, fmt.Errorf("credential requested before reservation: %s", record.Status)
+	}
+	if request.RunID != b.actionGrant.RunID || request.Service != b.actionGrant.Target.Service || request.Environment != b.actionGrant.Target.Environment {
+		return Credential{}, fmt.Errorf("credential request does not match reserved Grant context")
+	}
+	return credentials.New(map[string][]byte{"token": []byte("redacted")}, b.now.Add(time.Minute)), nil
+}
 
 func (r staticReconciler) Reconcile(context.Context, AdapterRequest, Credential) (AdapterResult, bool, error) {
 	return r.result, true, nil
 }
 
-func (b *countingCredentials) Acquire(_ context.Context, _ CredentialRequest) (Credential, error) {
+func (b *countingCredentials) Acquire(_ context.Context, request CredentialRequest) (Credential, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls++
+	b.request = request
 	return credentials.New(map[string][]byte{"token": []byte("redacted")}, b.now.Add(time.Minute)), nil
 }
 func (b *countingCredentials) Calls() int { b.mu.Lock(); defer b.mu.Unlock(); return b.calls }

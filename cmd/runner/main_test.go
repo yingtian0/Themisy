@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	ecsadapter "themisy/adapters/ecs"
 	"themisy/internal/grant"
 	"themisy/internal/identity"
+	"themisy/pkg/credentials"
 	"themisy/pkg/protocol"
 )
 
@@ -145,6 +147,48 @@ capabilities: [cloud.generic]
 `)
 	if _, err := load(path); err == nil || !strings.Contains(err.Error(), "unsupported capability") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestECSTargetsUseDistinctPurposeScopedRoles(t *testing.T) {
+	configuration := settings{TenantID: "tenant-1", Adapters: adapterSettings{ECS: ecsSettings{Targets: []ecsTargetSettings{{
+		Service: "payment-api", Environment: "production", Region: "ap-northeast-1",
+		ClusterARN:      "arn:aws:ecs:ap-northeast-1:111122223333:cluster/prod",
+		ServiceARN:      "arn:aws:ecs:ap-northeast-1:111122223333:service/prod/payment-api",
+		DeployRoleARN:   "arn:aws:iam::111122223333:role/payment-deploy",
+		RollbackRoleARN: "arn:aws:iam::111122223333:role/payment-rollback",
+		ExternalID:      "customer-id", RoleDuration: "20m",
+		RollbackTaskDefinition: "arn:aws:ecs:ap-northeast-1:111122223333:task-definition/payment-api:41",
+	}}}}}
+	targets, roles, err := buildECSTargets(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := credentials.AWSRoleKey{TenantID: "tenant-1", Service: "payment-api", Environment: "production"}
+	deploy, deployOK := roles[credentials.AWSRoleKey{TenantID: key.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeDeploy}]
+	rollback, rollbackOK := roles[credentials.AWSRoleKey{TenantID: key.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeRollback}]
+	if !deployOK || !rollbackOK || deploy.RoleARN == rollback.RoleARN || deploy.RoleARN != configuration.Adapters.ECS.Targets[0].DeployRoleARN || rollback.RoleARN != configuration.Adapters.ECS.Targets[0].RollbackRoleARN {
+		t.Fatalf("deploy role=%#v rollback role=%#v", deploy, rollback)
+	}
+	if deploy.ExternalID != "customer-id" || rollback.ExternalID != "customer-id" || deploy.Duration != 20*time.Minute || rollback.Duration != 20*time.Minute {
+		t.Fatalf("deploy role=%#v rollback role=%#v", deploy, rollback)
+	}
+	if target := targets[ecsadapter.TargetKey{Service: key.Service, Environment: key.Environment}]; target.RollbackTaskDefinition != configuration.Adapters.ECS.Targets[0].RollbackTaskDefinition {
+		t.Fatalf("rollback target=%#v", target)
+	}
+}
+
+func TestECSTargetsRequireSeparateRollbackRole(t *testing.T) {
+	configuration := settings{TenantID: "tenant-1", Adapters: adapterSettings{ECS: ecsSettings{Targets: []ecsTargetSettings{{
+		Service: "payment-api", Environment: "production", Region: "ap-northeast-1",
+		ClusterARN:             "arn:aws:ecs:ap-northeast-1:111122223333:cluster/prod",
+		ServiceARN:             "arn:aws:ecs:ap-northeast-1:111122223333:service/prod/payment-api",
+		DeployRoleARN:          "arn:aws:iam::111122223333:role/payment-deploy",
+		RollbackRoleARN:        "arn:aws:iam::111122223333:role/payment-deploy",
+		RollbackTaskDefinition: "arn:aws:ecs:ap-northeast-1:111122223333:task-definition/payment-api:41",
+	}}}}}
+	if _, _, err := buildECSTargets(configuration); err == nil || !strings.Contains(err.Error(), "must be distinct") {
+		t.Fatalf("shared deploy/rollback role error=%v", err)
 	}
 }
 
