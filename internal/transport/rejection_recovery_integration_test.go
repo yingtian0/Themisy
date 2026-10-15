@@ -16,8 +16,10 @@ import (
 	"themisy/internal/application"
 	"themisy/internal/domain"
 	"themisy/internal/grant"
+	runnercore "themisy/internal/runner"
 	"themisy/internal/store"
 	postgresstore "themisy/internal/store/postgres"
+	"themisy/pkg/credentials"
 	"themisy/pkg/protocol"
 )
 
@@ -201,4 +203,169 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 			}
 		})
 	}
+}
+
+func TestPostgresThreeWayRecoveryMismatchIsAudited(t *testing.T) {
+	if os.Getenv("THEMISY_INTEGRATION") != "1" {
+		t.Fatal("THEMISY_INTEGRATION=1 required")
+	}
+	databaseURL := os.Getenv("THEMISY_DATABASE_URL")
+	if databaseURL == "" {
+		databaseURL = "postgres://themisy:themisy@localhost:5432/themisy?sslmode=disable"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := postgresstore.Migrate(databaseURL, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := postgresstore.MigrateRunner(ctx, databaseURL); err != nil {
+		t.Fatal(err)
+	}
+	control, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if control != nil {
+			control.Close()
+		}
+	}()
+	journal, err := postgresstore.NewRunnerJournal(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if journal != nil {
+			journal.Close()
+		}
+	}()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	run := approvedTransportRun(now)
+	run.ID = fmt.Sprintf("three-way-%d", time.Now().UnixNano())
+	run.RequestID, run.WorkflowID = run.ID, run.ID
+	run.Plan.Phases[0].Steps[0].Scheduling.RunnerGroup = run.ID
+	if _, _, err := control.CreateRun(run); err != nil {
+		t.Fatal(err)
+	}
+	signer, _, err := grant.NewDevelopmentSigner("key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer, err := application.NewGrants(control, signer, "https://control.example", 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, _, err := issuer.Issue(ctx, application.GrantIssueRequest{RunID: run.ID, StepID: "payment-api", Capability: protocol.CapabilityDeploy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := protocol.GrantHash(issued.Grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The Control Plane already has a terminal observation that disagrees with
+	// the later read-only observation returned by the external runtime.
+	controlResult := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: issued.Grant.GrantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultSucceeded, ExternalExecutionID: "control-plane-deployment", CompletedAt: now}
+	if err := control.ReconcileGrantDispatch(ctx, issued.Grant.GrantID, issued.StateVersion, controlResult, domain.AuditEvent{ID: run.ID + "-cp-result", CorrelationID: run.ID, Action: "grant.reconcile", Result: "RECONCILED", Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+	record, created, err := journal.ReserveRunnerAction(ctx, store.RunnerActionRecord{GrantID: issued.Grant.GrantID, RunID: run.ID, StepID: "payment-api", TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, Nonce: issued.Grant.Nonce, IdempotencyKey: issued.Grant.IdempotencyKey, RequestHash: hash, Target: issued.Grant.Target, Action: issued.Grant.Action, RunnerID: "original", CreatedAt: now, UpdatedAt: now}, domain.AuditEvent{ID: run.ID + "-reserve", CorrelationID: run.ID, Action: "runner.action.reserve", Result: "AUTHORIZED", Timestamp: now})
+	if err != nil || !created {
+		t.Fatalf("reserve created=%t err=%v", created, err)
+	}
+	record.Status, record.UpdatedAt = store.RunnerActionDispatched, now
+	if err := journal.CompleteRunnerAction(ctx, record, record.StateVersion, domain.AuditEvent{ID: run.ID + "-dispatch", CorrelationID: run.ID, Action: "runner.action.dispatch", Result: "DISPATCHED", Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+	auth := StaticRunnerAuthenticator{"reconciler": {TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, Token: "secret"}}
+	server := httptest.NewServer((&RunnerServer{Store: control, Audit: control, Auth: auth, Now: func() time.Time { return now }}).Handler())
+	defer server.Close()
+	client := &RunnerClient{BaseURL: server.URL, RunnerID: "reconciler", Token: "secret"}
+	observation := "runtime-deployment"
+	reads := 0
+	reconciler := threeWayReconcilerFunc(func(context.Context, runnercore.AdapterRequest, runnercore.Credential) (runnercore.AdapterResult, bool, error) {
+		reads++
+		return runnercore.AdapterResult{ExternalExecutionID: observation, CompletedAt: now}, true, nil
+	})
+	worker := &runnercore.Runner{TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, RunnerID: "reconciler", Journal: journal, Credentials: threeWayCredentialBroker{credential: credentials.New(map[string][]byte{"token": []byte("read-only")}, now.Add(time.Hour))}, Reporter: client, Now: func() time.Time { return now }}
+	if err := worker.Reconcile(ctx, reconciler, 10); err == nil {
+		t.Fatal("Control Plane mismatch was not returned to the recovery worker")
+	}
+	if reads != 1 {
+		t.Fatalf("external runtime read count=%d want=1", reads)
+	}
+	durable, err := journal.GetRunnerAction(ctx, issued.Grant.TenantID, issued.Grant.RunnerGroup, issued.Grant.Nonce)
+	if err != nil || durable.Status != store.RunnerActionSucceeded || durable.Result.ExternalExecutionID != observation {
+		t.Fatalf("Runner Journal observation=%#v err=%v", durable, err)
+	}
+	loaded, err := control.GetGrantDispatch(ctx, issued.Grant.GrantID)
+	if err != nil || loaded.Status != store.GrantDispatchSucceeded || loaded.Result.ExternalExecutionID != controlResult.ExternalExecutionID {
+		t.Fatalf("Control Plane result changed after mismatch: %#v err=%v", loaded, err)
+	}
+	events, err := control.AuditEvents(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicts := 0
+	for _, event := range events {
+		if event.Action == "grant.reconcile" && event.Result == "CONFLICT" && event.ResourceID == issued.Grant.GrantID {
+			conflicts++
+		}
+	}
+	if conflicts != 1 {
+		t.Fatalf("durable mismatch audit count=%d events=%#v", conflicts, events)
+	}
+	for _, event := range events {
+		if event.Action == "grant.reconcile" && event.Result == "CONFLICT" && event.ResourceID == issued.Grant.GrantID {
+			if event.Details["stored_result_status"] != string(protocol.ResultSucceeded) || event.Details["reported_result_status"] != string(protocol.ResultSucceeded) || event.Details["stored_external_execution_id"] != controlResult.ExternalExecutionID || event.Details["reported_external_execution_id"] != observation {
+				t.Fatalf("conflict audit does not identify the three-way mismatch: %#v", event.Details)
+			}
+		}
+	}
+	server.Close()
+	control.Close()
+	control = nil
+	journal.Close()
+	journal = nil
+	control, err = postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err = postgresstore.NewRunnerJournal(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, err = journal.GetRunnerAction(ctx, issued.Grant.TenantID, issued.Grant.RunnerGroup, issued.Grant.Nonce)
+	if err != nil || durable.Result.ExternalExecutionID != observation {
+		t.Fatalf("Runner Journal result did not survive reopen: %#v err=%v", durable, err)
+	}
+	loaded, err = control.GetGrantDispatch(ctx, issued.Grant.GrantID)
+	if err != nil || loaded.Result.ExternalExecutionID != controlResult.ExternalExecutionID {
+		t.Fatalf("Control Plane result did not survive reopen: %#v err=%v", loaded, err)
+	}
+	events, err = control.AuditEvents(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicts = 0
+	for _, event := range events {
+		if event.Action == "grant.reconcile" && event.Result == "CONFLICT" && event.ResourceID == issued.Grant.GrantID {
+			conflicts++
+		}
+	}
+	if conflicts != 1 {
+		t.Fatalf("mismatch audit did not survive reopen: %#v", events)
+	}
+}
+
+type threeWayCredentialBroker struct{ credential credentials.Credential }
+
+func (b threeWayCredentialBroker) Acquire(context.Context, runnercore.CredentialRequest) (runnercore.Credential, error) {
+	return b.credential, nil
+}
+
+type threeWayReconcilerFunc func(context.Context, runnercore.AdapterRequest, runnercore.Credential) (runnercore.AdapterResult, bool, error)
+
+func (f threeWayReconcilerFunc) Reconcile(ctx context.Context, request runnercore.AdapterRequest, credential runnercore.Credential) (runnercore.AdapterResult, bool, error) {
+	return f(ctx, request, credential)
 }
