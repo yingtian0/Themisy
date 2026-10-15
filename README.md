@@ -83,7 +83,7 @@ Packet 04 provides a Runner process scaffold with validated GitHub Actions and D
 go run ./cmd/runner -config config/runner.example.yaml -check-config
 ```
 
-The Runner execution core invokes the public typed Adapter SDK only after Grant, identity, policy, audit, and replay checks. It exposes no arbitrary command, HTTP, workflow path, or cloud API field. Production configuration requires durable journal storage, customer-managed trust keys, allow-listed GitHub/Datadog targets, and Runner-local short-lived credential files. The inbound Action Grant transport is not enabled in this prototype, so the health endpoint continues to report `accepting_actions: false`; Packet 05's control-plane interfaces do not bypass that boundary.
+The Runner receives Action Grants over an outbound HTTPS long-poll; it does not expose an inbound Action endpoint. Production configuration requires mTLS workload identity, durable journal storage, customer-managed trust keys, allow-listed targets, and Runner-local short-lived credentials. The separate health-only endpoint is configurable and defaults to `:8081`. The execution core invokes the typed Adapter SDK only after Grant, identity, policy, audit, and replay checks, and exposes no arbitrary command, HTTP, workflow path, or cloud API field. See Issue #5 and the transport tests for the current boundary and its verification.
 
 GitHub target workflows must declare the fixed `themisy_*` inputs and use the correlation run name `themisy:${{ inputs.themisy_idempotency_key }}`. A dispatch timeout is reconciled by that title and is never blindly retried. See ADR-0007 before enabling a staging adapter.
 
