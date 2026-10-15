@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 	"themisy/internal/domain"
 	"themisy/internal/grant"
@@ -150,6 +151,81 @@ func TestRunnerReservationRollsBackWhenAuditInsertFails(t *testing.T) {
 	events, err := journal.AuditEvents(id)
 	if err != nil || len(events) != 1 {
 		t.Fatalf("audit rows=%d err=%v, want only preexisting duplicate", len(events), err)
+	}
+}
+
+func TestConcurrentReconcileClaimsFenceExpiredWorker(t *testing.T) {
+	if os.Getenv("THEMISY_INTEGRATION") != "1" {
+		t.Fatal("THEMISY_INTEGRATION=1 required")
+	}
+	ctx := context.Background()
+	url := recoveryURL()
+	if err := postgresstore.MigrateRunner(ctx, url); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := postgresstore.NewRunnerJournal(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	id := fmt.Sprintf("claim-fence-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	record := store.RunnerActionRecord{GrantID: id, RunID: id, StepID: "payment-api", TenantID: "tenant-claim", RunnerGroup: id, Nonce: id + "-nonce", IdempotencyKey: id + "-key", RequestHash: "request-hash", RunnerID: "writer", CreatedAt: now, UpdatedAt: now}
+	record, created, err := journal.ReserveRunnerAction(ctx, record, domain.AuditEvent{ID: id + "-reserve", CorrelationID: id, ActorType: "runner", ActorID: "writer", Action: "runner.action.reserve", ResourceType: "runner_action", ResourceID: id, Result: "RESERVED", Timestamp: now})
+	if err != nil || !created {
+		t.Fatalf("reserve created=%t err=%v", created, err)
+	}
+
+	type claimResult struct {
+		records []store.RunnerActionRecord
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan claimResult, 2)
+	var workers sync.WaitGroup
+	for _, owner := range []string{"reconciler-a", "reconciler-b"} {
+		workers.Add(1)
+		go func(owner string) {
+			defer workers.Done()
+			<-start
+			records, err := journal.ClaimRunnerActions(ctx, record.TenantID, record.RunnerGroup, owner, now, now.Add(time.Minute), 1)
+			results <- claimResult{records: records, err: err}
+		}(owner)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	var first store.RunnerActionRecord
+	claimed := 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if len(result.records) == 1 {
+			first = result.records[0]
+			claimed++
+		} else if len(result.records) != 0 {
+			t.Fatalf("worker claimed %d records", len(result.records))
+		}
+	}
+	if claimed != 1 {
+		t.Fatalf("simultaneous workers claimed=%d want=1", claimed)
+	}
+
+	// Once the lease expires, a new worker may claim for read-only recovery.
+	// The former owner must remain fenced by state_version.
+	later := now.Add(2 * time.Minute)
+	second, err := journal.ClaimRunnerActions(ctx, record.TenantID, record.RunnerGroup, "reconciler-c", later, later.Add(time.Minute), 1)
+	if err != nil || len(second) != 1 || second[0].StateVersion != first.StateVersion+1 {
+		t.Fatalf("replacement claim=%#v err=%v", second, err)
+	}
+	stale := first
+	stale.Status = store.RunnerActionUnknown
+	stale.UpdatedAt = later
+	staleAudit := domain.AuditEvent{ID: id + "-stale", CorrelationID: id, ActorType: "runner", ActorID: "stale-owner", Action: "runner.reconcile.unresolved", ResourceType: "runner_action", ResourceID: id, Result: "UNKNOWN", Timestamp: later}
+	if err := journal.CompleteRunnerAction(ctx, stale, first.StateVersion, staleAudit); err != store.ErrConflict {
+		t.Fatalf("expired worker update was not fenced: %v", err)
 	}
 }
 
