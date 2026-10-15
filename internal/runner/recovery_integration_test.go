@@ -120,6 +120,39 @@ func TestSharedJournalProcessesAndCrashRecovery(t *testing.T) {
 	}
 }
 
+func TestRunnerReservationRollsBackWhenAuditInsertFails(t *testing.T) {
+	if os.Getenv("THEMISY_INTEGRATION") != "1" {
+		t.Fatal("THEMISY_INTEGRATION=1 required")
+	}
+	ctx := context.Background()
+	url := recoveryURL()
+	if err := postgresstore.MigrateRunner(ctx, url); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := postgresstore.NewRunnerJournal(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	id := fmt.Sprintf("audit-atomic-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	event := domain.AuditEvent{ID: id + "-reserve", CorrelationID: id, ActorType: "runner", ActorID: "runner-1", Action: "runner.action.reserve", ResourceType: "runner_action", ResourceID: id, Result: "RESERVED", Timestamp: now}
+	if err := journal.AppendAudit(event); err != nil {
+		t.Fatal(err)
+	}
+	record := store.RunnerActionRecord{GrantID: id, RunID: id, StepID: "payment-api", TenantID: "tenant-atomic", RunnerGroup: "group-atomic", Nonce: id + "-nonce", IdempotencyKey: id + "-key", RequestHash: "request-hash", RunnerID: "runner-1", CreatedAt: now, UpdatedAt: now}
+	if _, created, err := journal.ReserveRunnerAction(ctx, record, event); err == nil || created {
+		t.Fatalf("duplicate audit ID did not abort reservation: created=%t err=%v", created, err)
+	}
+	if _, err := journal.GetRunnerAction(ctx, record.TenantID, record.RunnerGroup, record.Nonce); err != store.ErrNotFound {
+		t.Fatalf("reservation survived audit failure: err=%v", err)
+	}
+	events, err := journal.AuditEvents(id)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("audit rows=%d err=%v, want only preexisting duplicate", len(events), err)
+	}
+}
+
 func TestRecoveryProcessHelper(t *testing.T) {
 	mode := os.Getenv("THEMISY_RECOVERY_HELPER")
 	if mode == "" {
