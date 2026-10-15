@@ -42,7 +42,11 @@ func (s *RunnerServer) recovery(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, hashErr := protocol.GrantHash(record.Grant)
 	now := s.now()
-	audit := domain.AuditEvent{ID: auditID(record.Grant.GrantID, now), CorrelationID: record.Grant.RunID, ActorType: "runner", ActorID: identity.RunnerID, Action: "grant.reconcile", ResourceType: "action_grant", ResourceID: record.Grant.GrantID, Result: "RECONCILED", Timestamp: now, Details: map[string]any{"previous_status": record.Status, "observed_status": body.Result.Status}}
+	audit := domain.AuditEvent{ID: auditID(record.Grant.GrantID, now), CorrelationID: record.Grant.RunID, ActorType: "runner", ActorID: identity.RunnerID, Action: "grant.reconcile", ResourceType: "action_grant", ResourceID: record.Grant.GrantID, Result: "RECONCILED", Timestamp: now, Details: map[string]any{
+		"previous_status": record.Status, "observed_status": body.Result.Status,
+		"stored_result_status": record.Result.Status, "stored_external_execution_id": record.Result.ExternalExecutionID,
+		"reported_result_status": body.Result.Status, "reported_external_execution_id": body.Result.ExternalExecutionID,
+	}}
 	if hashErr != nil || hash != body.RequestHash || record.Grant.GrantID != body.Result.GrantID {
 		audit.Result = "CONFLICT"
 		if err := s.appendAudit(audit); err != nil {
