@@ -219,7 +219,7 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	if actionGrant.Action.Capability == protocol.CapabilityRollback {
 		purpose = credentials.PurposeRollback
 	}
-	credential, err := r.Credentials.Acquire(ctx, CredentialRequest{Provider: provider, TenantID: actionGrant.TenantID, Service: actionGrant.Target.Service, Environment: actionGrant.Target.Environment, Purpose: purpose, GrantID: actionGrant.GrantID})
+	credential, err := r.Credentials.Acquire(ctx, CredentialRequest{Provider: provider, TenantID: actionGrant.TenantID, RunID: actionGrant.RunID, Service: actionGrant.Target.Service, Environment: actionGrant.Target.Environment, Purpose: purpose, GrantID: actionGrant.GrantID})
 	if err != nil {
 		return r.failReserved(ctx, record, actionGrant, ReasonCredential, err)
 	}

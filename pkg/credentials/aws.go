@@ -14,11 +14,14 @@ import (
 )
 
 const (
-	ProviderAWS        = "aws"
-	AWSAccessKeyID     = "aws_access_key_id"
-	AWSSecretAccessKey = "aws_secret_access_key"
-	AWSSessionToken    = "aws_session_token"
-	AWSGrantTagKey     = "ThemisyGrantID"
+	ProviderAWS          = "aws"
+	AWSAccessKeyID       = "aws_access_key_id"
+	AWSSecretAccessKey   = "aws_secret_access_key"
+	AWSSessionToken      = "aws_session_token"
+	AWSGrantTagKey       = "ThemisyGrantID"
+	AWSRunTagKey         = "ThemisyRunID"
+	AWSServiceTagKey     = "ThemisyService"
+	AWSEnvironmentTagKey = "ThemisyEnvironment"
 )
 
 type AWSRoleKey struct {
@@ -49,7 +52,7 @@ func (b *AWSBroker) Acquire(ctx context.Context, request Request) (Credential, e
 	if err := request.Validate(); err != nil {
 		return Credential{}, err
 	}
-	if request.Provider != ProviderAWS || request.GrantID == "" || b.Client == nil {
+	if request.Provider != ProviderAWS || request.GrantID == "" || request.RunID == "" || b.Client == nil {
 		return Credential{}, errors.New("AWS workload credential request is incomplete")
 	}
 	role, ok := b.Roles[AWSRoleKey{TenantID: request.TenantID, Service: request.Service, Environment: request.Environment, Purpose: request.Purpose}]
@@ -68,7 +71,12 @@ func (b *AWSBroker) Acquire(ctx context.Context, request Request) (Credential, e
 		RoleArn:         aws.String(role.RoleARN),
 		RoleSessionName: aws.String(sessionName(request.GrantID)),
 		DurationSeconds: aws.Int32(seconds),
-		Tags:            []types.Tag{{Key: aws.String(AWSGrantTagKey), Value: aws.String(request.GrantID)}},
+		Tags: []types.Tag{
+			{Key: aws.String(AWSGrantTagKey), Value: aws.String(request.GrantID)},
+			{Key: aws.String(AWSRunTagKey), Value: aws.String(request.RunID)},
+			{Key: aws.String(AWSServiceTagKey), Value: aws.String(request.Service)},
+			{Key: aws.String(AWSEnvironmentTagKey), Value: aws.String(request.Environment)},
+		},
 	}
 	if role.ExternalID != "" {
 		input.ExternalId = aws.String(role.ExternalID)

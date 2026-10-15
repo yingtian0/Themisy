@@ -14,8 +14,8 @@ func TestAWSBrokerUsesTrustedRoleAndRecordsGrantInSession(t *testing.T) {
 	now := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
 	client := &fakeSTS{output: &sts.AssumeRoleOutput{Credentials: &types.Credentials{AccessKeyId: aws.String("access"), SecretAccessKey: aws.String("secret"), SessionToken: aws.String("session"), Expiration: aws.Time(now.Add(time.Hour))}}}
 	key := AWSRoleKey{TenantID: "tenant-1", Service: "payment-api", Environment: "production", Purpose: PurposeDeploy}
-	broker := &AWSBroker{Client: client, Roles: map[AWSRoleKey]AWSRole{key: {RoleARN: "arn:aws:iam::111122223333:role/themisy-payment", Duration: 20 * time.Minute}}}
-	credential, err := broker.Acquire(context.Background(), Request{Provider: ProviderAWS, TenantID: key.TenantID, Service: key.Service, Environment: key.Environment, Purpose: key.Purpose, GrantID: "grant_01/test"})
+	broker := &AWSBroker{Client: client, Roles: map[AWSRoleKey]AWSRole{key: {RoleARN: "arn:aws:iam::111122223333:role/themisy-payment", ExternalID: "customer-external-id", Duration: 20 * time.Minute}}}
+	credential, err := broker.Acquire(context.Background(), Request{Provider: ProviderAWS, TenantID: key.TenantID, RunID: "run-42", Service: key.Service, Environment: key.Environment, Purpose: key.Purpose, GrantID: "grant_01/test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,17 +25,41 @@ func TestAWSBrokerUsesTrustedRoleAndRecordsGrantInSession(t *testing.T) {
 	if aws.ToString(client.input.RoleArn) != broker.Roles[key].RoleARN || aws.ToString(client.input.RoleSessionName) != "themisy-grant_01-test" {
 		t.Fatalf("assume role input=%#v", client.input)
 	}
-	if len(client.input.Tags) != 1 || aws.ToString(client.input.Tags[0].Key) != AWSGrantTagKey || aws.ToString(client.input.Tags[0].Value) != "grant_01/test" {
+	if aws.ToString(client.input.ExternalId) != "customer-external-id" || aws.ToInt32(client.input.DurationSeconds) != 1200 {
+		t.Fatalf("external ID or duration missing: %#v", client.input)
+	}
+	wantTags := map[string]string{AWSGrantTagKey: "grant_01/test", AWSRunTagKey: "run-42", AWSServiceTagKey: "payment-api", AWSEnvironmentTagKey: "production"}
+	if len(client.input.Tags) != len(wantTags) {
 		t.Fatalf("tags=%#v", client.input.Tags)
+	}
+	for _, tag := range client.input.Tags {
+		key, value := aws.ToString(tag.Key), aws.ToString(tag.Value)
+		if wantTags[key] != value {
+			t.Fatalf("tag %q=%q, want %q", key, value, wantTags[key])
+		}
+		delete(wantTags, key)
+	}
+	if len(wantTags) != 0 {
+		t.Fatalf("missing session tags: %#v", wantTags)
 	}
 }
 
 func TestAWSBrokerCannotSelectRoleFromGrantFields(t *testing.T) {
 	client := &fakeSTS{}
 	broker := &AWSBroker{Client: client, Roles: map[AWSRoleKey]AWSRole{}}
-	_, err := broker.Acquire(context.Background(), Request{Provider: ProviderAWS, TenantID: "tenant-1", Service: "arn:aws:iam::999999999999:role/attacker", Environment: "production", Purpose: PurposeDeploy, GrantID: "grant-1"})
+	_, err := broker.Acquire(context.Background(), Request{Provider: ProviderAWS, TenantID: "tenant-1", RunID: "run-1", Service: "arn:aws:iam::999999999999:role/attacker", Environment: "production", Purpose: PurposeDeploy, GrantID: "grant-1"})
 	if err == nil || client.input != nil {
 		t.Fatalf("err=%v input=%#v", err, client.input)
+	}
+}
+
+func TestAWSBrokerRejectsMissingRunIDBeforeSTS(t *testing.T) {
+	client := &fakeSTS{}
+	key := AWSRoleKey{TenantID: "tenant-1", Service: "payment-api", Environment: "production", Purpose: PurposeDeploy}
+	broker := &AWSBroker{Client: client, Roles: map[AWSRoleKey]AWSRole{key: {RoleARN: "arn:aws:iam::111122223333:role/themisy-payment"}}}
+	_, err := broker.Acquire(context.Background(), Request{Provider: ProviderAWS, TenantID: key.TenantID, Service: key.Service, Environment: key.Environment, Purpose: key.Purpose, GrantID: "grant-1"})
+	if err == nil || client.input != nil {
+		t.Fatalf("missing RunID reached STS: err=%v input=%#v", err, client.input)
 	}
 }
 

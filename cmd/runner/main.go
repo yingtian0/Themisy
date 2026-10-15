@@ -99,7 +99,8 @@ type ecsTargetSettings struct {
 	Region                 string                      `yaml:"region"`
 	ClusterARN             string                      `yaml:"cluster_arn"`
 	ServiceARN             string                      `yaml:"service_arn"`
-	RoleARN                string                      `yaml:"role_arn"`
+	DeployRoleARN          string                      `yaml:"deploy_role_arn"`
+	RollbackRoleARN        string                      `yaml:"rollback_role_arn"`
 	ExternalID             string                      `yaml:"external_id"`
 	RoleDuration           string                      `yaml:"role_duration"`
 	RollbackTaskDefinition string                      `yaml:"rollback_task_definition"`
@@ -478,8 +479,17 @@ func buildECSTargets(configuration settings) (map[ecsadapter.TargetKey]ecsadapte
 	roles := make(map[credentials.AWSRoleKey]credentials.AWSRole, len(configuration.Adapters.ECS.Targets)*2)
 	for _, configured := range configuration.Adapters.ECS.Targets {
 		key := ecsadapter.TargetKey{Service: configured.Service, Environment: configured.Environment}
-		if configured.RoleARN == "" {
-			return nil, nil, fmt.Errorf("ECS role ARN for %s/%s is required", key.Service, key.Environment)
+		if configured.DeployRoleARN == "" {
+			return nil, nil, fmt.Errorf("ECS deploy role ARN for %s/%s is required", key.Service, key.Environment)
+		}
+		if configured.RollbackTaskDefinition != "" && configured.RollbackRoleARN == "" {
+			return nil, nil, fmt.Errorf("ECS rollback role ARN for %s/%s is required when rollback is enabled", key.Service, key.Environment)
+		}
+		if configured.RollbackRoleARN != "" && configured.RollbackRoleARN == configured.DeployRoleARN {
+			return nil, nil, fmt.Errorf("ECS deploy and rollback roles for %s/%s must be distinct", key.Service, key.Environment)
+		}
+		if configured.RollbackTaskDefinition == "" && configured.RollbackRoleARN != "" {
+			return nil, nil, fmt.Errorf("ECS rollback role ARN for %s/%s requires a rollback task definition", key.Service, key.Environment)
 		}
 		if _, duplicate := targets[key]; duplicate {
 			return nil, nil, fmt.Errorf("duplicate ECS target %s/%s", key.Service, key.Environment)
@@ -503,8 +513,9 @@ func buildECSTargets(configuration settings) (map[ecsadapter.TargetKey]ecsadapte
 			definitions[definition.ArtifactDigest] = ecsadapter.TaskDefinition{ARN: definition.TaskDefinitionARN, ExpectedTaskDefinitions: append([]string(nil), definition.ExpectedTaskDefinitions...)}
 		}
 		targets[key] = ecsadapter.Target{Region: configured.Region, ClusterARN: configured.ClusterARN, ServiceARN: configured.ServiceARN, TaskDefinitions: definitions, RollbackTaskDefinition: configured.RollbackTaskDefinition}
-		for _, purpose := range []credentials.Purpose{credentials.PurposeDeploy, credentials.PurposeRollback} {
-			roles[credentials.AWSRoleKey{TenantID: configuration.TenantID, Service: key.Service, Environment: key.Environment, Purpose: purpose}] = credentials.AWSRole{RoleARN: configured.RoleARN, ExternalID: configured.ExternalID, Duration: duration}
+		roles[credentials.AWSRoleKey{TenantID: configuration.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeDeploy}] = credentials.AWSRole{RoleARN: configured.DeployRoleARN, ExternalID: configured.ExternalID, Duration: duration}
+		if configured.RollbackRoleARN != "" {
+			roles[credentials.AWSRoleKey{TenantID: configuration.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeRollback}] = credentials.AWSRole{RoleARN: configured.RollbackRoleARN, ExternalID: configured.ExternalID, Duration: duration}
 		}
 	}
 	return targets, roles, nil

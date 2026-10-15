@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -21,6 +22,7 @@ const (
 type Request struct {
 	Provider    string
 	TenantID    string
+	RunID       string
 	Service     string
 	Environment string
 	Purpose     Purpose
@@ -45,6 +47,16 @@ func (r Request) Validate() error {
 type Credential struct {
 	values    map[string][]byte
 	ExpiresAt time.Time
+}
+
+// String, GoString, and LogValue keep credential bytes out of accidental
+// formatting and structured logs. Callers must explicitly extract a value
+// only at the provider boundary that consumes it.
+func (Credential) String() string       { return "[REDACTED]" }
+func (Credential) GoString() string     { return "credentials.Credential{[REDACTED]}" }
+func (Credential) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
+func (Credential) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("[REDACTED]"))
 }
 
 func New(values map[string][]byte, expiresAt time.Time) Credential {
