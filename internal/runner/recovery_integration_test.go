@@ -364,6 +364,20 @@ func TestRecoveryProcessHelper(t *testing.T) {
 		f.runner.Approvals = m
 		// Do not pin in the child: both independent processes must read the
 		// previously provisioned shared record after the provisioner closed.
+		// Resolve explicitly in every process: successful journal replay happens
+		// before manifest lookup in Execute and must not stand in for this proof.
+		loaded, err := m.manifest(ctx, f.grant)
+		if err != nil {
+			t.Fatalf("read and verify shared manifest: %v", err)
+		}
+		actualHash, err := protocol.ManifestHash(loaded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedHash, err := protocol.ManifestHash(p)
+		if err != nil || actualHash != expectedHash {
+			t.Fatalf("shared manifest differs from provisioned manifest: %v", err)
+		}
 	}
 	if os.Getenv("THEMISY_RECOVERY_IDEMPOTENCY_KEY") != "" {
 		replica := os.Getenv("THEMISY_RECOVERY_REPLICA")
@@ -391,6 +405,12 @@ func TestRecoveryProcessHelper(t *testing.T) {
 		}
 	}
 	result, err := f.runner.Execute(ctx, f.grant)
+	if os.Getenv("THEMISY_RECOVERY_MANIFEST") != "" {
+		if err != nil || result.Status != protocol.ResultSucceeded {
+			t.Fatalf("manifest-backed execute/replay: result=%+v err=%v", result, err)
+		}
+		return
+	}
 	if os.Getenv("THEMISY_RECOVERY_IDEMPOTENCY_KEY") == "" {
 		// Legacy crash/recovery scenarios intentionally inspect durable effects
 		// from the parent and historically ignored child replay responses.
@@ -547,7 +567,13 @@ func TestControlPlaneDispatchLeaseCannotReplaceRunnerJournal(t *testing.T) {
 	now := f.now
 	grantID := fmt.Sprintf("cp-lease-only-%d", time.Now().UnixNano())
 	f.grant.GrantID = grantID
+	contexts := f.runner.Contexts.(StaticContexts)
+	pinned := contexts[f.grant.RunID+"\x00"+f.grant.StepID]
 	f.grant.RunID = grantID
+	contexts[f.grant.RunID+"\x00"+f.grant.StepID] = pinned
+	f.grant.RunnerGroup = grantID
+	f.runner.RunnerGroup = grantID
+	f.runner.Grants = &testGrantVerifier{fixture: f}
 	f.grant.Nonce = grantID
 	f.grant.IdempotencyKey = grantID
 	if _, _, err := control.CreateRun(&domain.ReleaseRun{ID: grantID, RequestID: grantID, WorkflowID: grantID, TenantID: f.grant.TenantID, StateVersion: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -563,7 +589,7 @@ func TestControlPlaneDispatchLeaseCannotReplaceRunnerJournal(t *testing.T) {
 		t.Fatalf("create Control Plane dispatch: created=%v err=%v", created, err)
 	}
 	dispatch, err := control.ClaimGrantDispatch(ctx, f.grant.TenantID, f.grant.RunnerGroup, "runner-1", "delivery-token", now, now.Add(time.Minute))
-	if err != nil || dispatch.Status != store.GrantDispatchLeased {
+	if err != nil || dispatch.Status != store.GrantDispatchLeased || dispatch.Grant.GrantID != grantID {
 		t.Fatalf("expected active Control Plane lease: status=%s err=%v", dispatch.Status, err)
 	}
 	journal, err := postgresstore.NewRunnerJournal(ctx, databaseURL)
@@ -572,11 +598,29 @@ func TestControlPlaneDispatchLeaseCannotReplaceRunnerJournal(t *testing.T) {
 	}
 	journal.Close()
 	f.runner.Journal = journal
-	if _, err := f.runner.Execute(ctx, f.grant); err == nil {
+	if result, err := f.runner.Execute(ctx, dispatch.Grant); err == nil || result.ReasonCode != string(ReasonJournalUnavailable) {
 		t.Fatal("Control Plane dispatch lease bypassed unavailable Runner Journal")
 	}
 	if f.credentials.Calls() != 0 || f.adapter.Calls() != 0 {
 		t.Fatal("dispatch lease authorized a write without a durable Runner reservation")
+	}
+	current, err := control.GetGrantDispatch(ctx, grantID)
+	if err != nil || current.Status != store.GrantDispatchLeased || current.StateVersion != dispatch.StateVersion {
+		t.Fatalf("leased dispatch changed after local refusal: status=%s err=%v", current.Status, err)
+	}
+	// The exact leased grant is otherwise executable; this prevents an unrelated
+	// authorization rejection from being mistaken for a journal safety proof.
+	journal, err = postgresstore.NewRunnerJournal(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	f.runner.Journal = journal
+	if result, err := f.runner.Execute(ctx, dispatch.Grant); err != nil || result.Status != protocol.ResultSucceeded {
+		t.Fatalf("positive control after journal reconnect: result=%+v err=%v", result, err)
+	}
+	if f.credentials.Calls() != 1 || f.adapter.Calls() != 1 {
+		t.Fatal("positive control did not acquire credentials and write exactly once")
 	}
 }
 
