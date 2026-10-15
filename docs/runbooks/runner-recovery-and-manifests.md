@@ -121,6 +121,14 @@ identity claims are true. Authoritative fact collection and IdP roles remain
 - Roll out the same trust configuration to all replicas before activating new
   manifests. Expired/missing approval material means zero new writes.
 
+For the local Compose operational drill, run `make verify-runner-journal-backup-restore`.
+It dumps only `themisy_runner`, restores into a uniquely named temporary database,
+probes the restored nonce and idempotency uniqueness constraints inside a rolled
+back transaction, then removes only the database it created. It does not touch
+the source database. This verifies the local backup/restore mechanics; production
+restore still requires the customer's isolated target, WAL/PITR recovery point,
+and reconciliation of writes after the snapshot before any Runner resumes.
+
 ## Verification
 
 `make test-integration` runs real PostgreSQL/Temporal tests plus separate-process
