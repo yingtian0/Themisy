@@ -1,4 +1,4 @@
-.PHONY: run compose-up compose-down test test-race test-integration test-scenario test-policy test-adapter test-planner benchmark benchmark-planner lint vet check fmt fmt-check test-agent-cycle
+.PHONY: run compose-up compose-down test test-race test-integration verify-runner-journal-backup-restore test-scenario test-policy test-adapter test-planner benchmark benchmark-planner lint vet check fmt fmt-check test-agent-cycle
 
 run:
 	go run ./cmd/themisy
@@ -19,7 +19,11 @@ test-integration:
 	set -eu; \
 	docker compose -f deploy/compose/compose.yaml up -d postgres temporal; \
 	THEMISY_INTEGRATION=1 go test -tags=integration -count=1 -p 1 ./test/integration ./internal/runner ./internal/transport; \
-	THEMISY_INTEGRATION=1 THEMISY_TEST_POSTGRES_SERVICE_STOP=1 go test -tags=integration -count=1 -p 1 -run '^TestPostgresServiceStopFailsClosed$$' ./internal/runner
+	THEMISY_INTEGRATION=1 THEMISY_TEST_POSTGRES_SERVICE_STOP=1 go test -tags=integration -count=1 -p 1 -run '^TestPostgresServiceStopFailsClosed$$' ./internal/runner; \
+	$(MAKE) verify-runner-journal-backup-restore
+
+verify-runner-journal-backup-restore:
+	./scripts/verify-runner-journal-backup-restore.sh
 
 test-scenario:
 	go test -count=1 ./test/scenario/...
