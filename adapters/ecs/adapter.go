@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscredentials "github.com/aws/aws-sdk-go-v2/credentials"
 	awsecs "github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 )
 
 const (
@@ -61,6 +62,42 @@ func AWSClientFactory(base aws.Config) ClientFactory {
 func (a *Adapter) Name() string               { return Name }
 func (a *Adapter) Version() string            { return Version }
 func (a *Adapter) CredentialProvider() string { return adapter.ProviderAWS }
+
+// Status returns a read-only snapshot for an allow-listed logical target.
+func (a *Adapter) Status(ctx context.Context, request adapter.StatusRequest, credential appcredentials.Credential) (adapter.DeploymentStatus, error) {
+	if request.Target.Service == "" || request.Target.Environment == "" {
+		return adapter.DeploymentStatus{}, terminal("status", "", errors.New("target service and environment are required"))
+	}
+	target, ok := a.config.Targets[TargetKey{Service: request.Target.Service, Environment: request.Target.Environment}]
+	if !ok {
+		return adapter.DeploymentStatus{}, terminal("status", "", errors.New("logical ECS target is not allow-listed"))
+	}
+	client, err := a.clients(ctx, target.Region, credential)
+	if err != nil {
+		return adapter.DeploymentStatus{}, retryable("status", request.Target.Service+"/"+request.Target.Environment, err)
+	}
+	service, err := describeService(ctx, client, target)
+	if err != nil {
+		return adapter.DeploymentStatus{}, retryable("describe-services", request.Target.Service+"/"+request.Target.Environment, err)
+	}
+	status := adapter.DeploymentStatus{
+		ServiceStatus:  aws.ToString(service.Status),
+		TaskDefinition: aws.ToString(service.TaskDefinition),
+		DesiredCount:   service.DesiredCount,
+		RunningCount:   service.RunningCount,
+		PendingCount:   service.PendingCount,
+	}
+	for _, deployment := range service.Deployments {
+		status.Deployments = append(status.Deployments, adapter.ServiceDeploymentStatus{
+			TaskDefinition: aws.ToString(deployment.TaskDefinition),
+			Status:         aws.ToString(deployment.Status),
+			RolloutState:   string(deployment.RolloutState),
+			RunningCount:   deployment.RunningCount,
+			DesiredCount:   deployment.DesiredCount,
+		})
+	}
+	return status, nil
+}
 
 func (a *Adapter) Authorize(target adapter.Target, artifactDigest string) error {
 	_, _, err := a.resolve(target, artifactDigest)
@@ -151,14 +188,22 @@ func (a *Adapter) deployment(idempotencyKey string) adapter.Deployment {
 }
 
 func describe(ctx context.Context, client API, target Target) (string, error) {
-	output, err := client.DescribeServices(ctx, &awsecs.DescribeServicesInput{Cluster: aws.String(target.ClusterARN), Services: []string{target.ServiceARN}})
+	service, err := describeService(ctx, client, target)
 	if err != nil {
 		return "", err
 	}
-	if output == nil || len(output.Failures) != 0 || len(output.Services) != 1 || output.Services[0].TaskDefinition == nil {
-		return "", errors.New("ECS DescribeServices returned an ambiguous service set")
+	return aws.ToString(service.TaskDefinition), nil
+}
+
+func describeService(ctx context.Context, client API, target Target) (types.Service, error) {
+	output, err := client.DescribeServices(ctx, &awsecs.DescribeServicesInput{Cluster: aws.String(target.ClusterARN), Services: []string{target.ServiceARN}})
+	if err != nil {
+		return types.Service{}, err
 	}
-	return aws.ToString(output.Services[0].TaskDefinition), nil
+	if output == nil || len(output.Failures) != 0 || len(output.Services) != 1 || output.Services[0].TaskDefinition == nil {
+		return types.Service{}, errors.New("ECS DescribeServices returned an ambiguous service set")
+	}
+	return output.Services[0], nil
 }
 
 func configuredTaskDefinition(target Target, value string) bool {

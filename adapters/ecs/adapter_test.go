@@ -71,6 +71,30 @@ func TestReconcileObservesActualTaskDefinitionWithoutWrite(t *testing.T) {
 	}
 }
 
+func TestStatusReadsAllowListedServiceAndDoesNotWrite(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.client.status = "ACTIVE"
+	fixture.client.desiredCount = 3
+	fixture.client.runningCount = 2
+	fixture.client.pendingCount = 1
+	fixture.client.deploymentState = "IN_PROGRESS"
+	status, err := fixture.adapter.Status(context.Background(), adapter.StatusRequest{Target: fixture.request.Target}, credentials.Credential{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ServiceStatus != "ACTIVE" || status.TaskDefinition != fixture.target.RollbackTaskDefinition || status.DesiredCount != 3 || status.RunningCount != 2 || status.PendingCount != 1 || len(status.Deployments) != 1 || status.Deployments[0].RolloutState != "IN_PROGRESS" {
+		t.Fatalf("status=%#v", status)
+	}
+	if fixture.client.describeCalls != 1 || fixture.client.updateCalls != 0 {
+		t.Fatalf("describe=%d update=%d", fixture.client.describeCalls, fixture.client.updateCalls)
+	}
+	reads := fixture.client.describeCalls
+	request := adapter.StatusRequest{Target: adapter.Target{Service: "arn:aws:ecs:attacker", Environment: "production"}}
+	if _, err := fixture.adapter.Status(context.Background(), request, credentials.Credential{}); !adapter.IsClass(err, adapter.ErrorTerminal) || fixture.client.describeCalls != reads || fixture.client.updateCalls != 0 {
+		t.Fatalf("untrusted target err=%v describe=%d update=%d", err, fixture.client.describeCalls, fixture.client.updateCalls)
+	}
+}
+
 type ecsFixture struct {
 	adapter    *Adapter
 	client     *fakeECS
@@ -101,14 +125,25 @@ func newFixture(t *testing.T) ecsFixture {
 
 type fakeECS struct {
 	current          string
+	status           string
+	desiredCount     int32
+	runningCount     int32
+	pendingCount     int32
+	deploymentState  string
 	updateInput      *awsecs.UpdateServiceInput
 	updateErr        error
 	updateCalls      int
+	describeCalls    int
 	retryMaxAttempts int
 }
 
 func (f *fakeECS) DescribeServices(_ context.Context, _ *awsecs.DescribeServicesInput, _ ...func(*awsecs.Options)) (*awsecs.DescribeServicesOutput, error) {
-	return &awsecs.DescribeServicesOutput{Services: []types.Service{{TaskDefinition: aws.String(f.current)}}}, nil
+	f.describeCalls++
+	return &awsecs.DescribeServicesOutput{Services: []types.Service{{
+		Status: aws.String(f.status), TaskDefinition: aws.String(f.current),
+		DesiredCount: f.desiredCount, RunningCount: f.runningCount, PendingCount: f.pendingCount,
+		Deployments: []types.Deployment{{TaskDefinition: aws.String(f.current), Status: aws.String("PRIMARY"), RolloutState: types.DeploymentRolloutState(f.deploymentState), DesiredCount: f.desiredCount, RunningCount: f.runningCount}},
+	}}}, nil
 }
 
 func (f *fakeECS) UpdateService(_ context.Context, input *awsecs.UpdateServiceInput, options ...func(*awsecs.Options)) (*awsecs.UpdateServiceOutput, error) {
