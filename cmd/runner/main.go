@@ -54,14 +54,15 @@ type settings struct {
 	Capabilities  []protocol.Capability `yaml:"capabilities"`
 }
 type controlPlaneSettings struct {
-	Address        string `yaml:"address"`
-	Issuer         string `yaml:"issuer"`
-	TokenFile      string `yaml:"token_file"`
-	ClientCertFile string `yaml:"client_cert_file"`
-	ClientKeyFile  string `yaml:"client_key_file"`
-	CAFile         string `yaml:"ca_file"`
-	TrustKeyID     string `yaml:"trust_key_id"`
-	TrustKeyFile   string `yaml:"trust_key_file"`
+	Address         string `yaml:"address"`
+	Issuer          string `yaml:"issuer"`
+	TokenFile       string `yaml:"token_file"`
+	ClientCertFile  string `yaml:"client_cert_file"`
+	ClientKeyFile   string `yaml:"client_key_file"`
+	CAFile          string `yaml:"ca_file"`
+	TrustBundleFile string `yaml:"trust_bundle_file"`
+	TrustKeyID      string `yaml:"trust_key_id"`
+	TrustKeyFile    string `yaml:"trust_key_file"`
 }
 type identitySettings struct {
 	Issuer          string `yaml:"issuer"`
@@ -221,8 +222,8 @@ func load(path string) (settings, error) {
 			return settings{}, fmt.Errorf("unsupported capability %q", capability)
 		}
 	}
-	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.ControlPlane.TrustKeyID == "" || result.ControlPlane.TrustKeyFile == "" || result.Identity.TrustKeyID == "" || result.Identity.TrustKeyFile == "" || result.Identity.DelegationsFile == "" || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
-		return settings{}, fmt.Errorf("production requires durable journal and customer-managed grant, OIDC, and policy trust keys")
+	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.Identity.TrustKeyID == "" || result.Identity.TrustKeyFile == "" || result.Identity.DelegationsFile == "" || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
+		return settings{}, fmt.Errorf("production requires durable journal and customer-managed OIDC and policy trust keys")
 	}
 	if result.Mode == "production" && !strings.HasPrefix(result.ControlPlane.Address, "https://") {
 		return settings{}, fmt.Errorf("production control plane address must use https")
@@ -233,7 +234,46 @@ func load(path string) (settings, error) {
 	if err := validateAdapters(result); err != nil {
 		return settings{}, err
 	}
+	if err := validateGrantTrust(result.Mode, result.ControlPlane); err != nil {
+		return settings{}, err
+	}
 	return result, nil
+}
+
+func validateGrantTrust(mode string, configuration controlPlaneSettings) error {
+	hasBundle := configuration.TrustBundleFile != ""
+	hasLegacy := configuration.TrustKeyID != "" || configuration.TrustKeyFile != ""
+	if hasBundle && hasLegacy {
+		return errors.New("configure either the Grant trust bundle or the legacy development key, not both")
+	}
+	if hasLegacy && (configuration.TrustKeyID == "" || configuration.TrustKeyFile == "") {
+		return errors.New("legacy Grant trust key ID and file must be configured together")
+	}
+	if mode == "production" && !hasBundle {
+		return errors.New("production requires a refreshable Grant trust bundle")
+	}
+	if mode == "development" && !hasBundle && !hasLegacy {
+		return errors.New("development requires a Grant trust bundle or explicit development trust key")
+	}
+	return nil
+}
+
+func loadGrantTrustKeys(ctx context.Context, configuration settings) (grant.KeyResolver, error) {
+	if configuration.ControlPlane.TrustBundleFile != "" {
+		keys := grant.FileKeys{Path: configuration.ControlPlane.TrustBundleFile, Issuer: configuration.ControlPlane.Issuer, Tenant: configuration.TenantID}
+		if err := keys.Validate(ctx); err != nil {
+			return nil, err
+		}
+		return keys, nil
+	}
+	if configuration.Mode != "development" {
+		return nil, errors.New("legacy Grant trust keys are development-only")
+	}
+	key, err := grant.LoadEd25519PublicKey(configuration.ControlPlane.TrustKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	return grant.StaticKeys{configuration.ControlPlane.Issuer + "\x00" + configuration.ControlPlane.TrustKeyID: key}, nil
 }
 
 func validateAdapters(configuration settings) error {
@@ -288,9 +328,9 @@ func validateAdapters(configuration settings) error {
 }
 
 func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runner, *runnertransport.RunnerClient, runnercore.Reconciler, func(), error) {
-	grantKey, err := grant.LoadEd25519PublicKey(configuration.ControlPlane.TrustKeyFile)
+	grantKeys, err := loadGrantTrustKeys(ctx, configuration)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("load Control Plane grant trust key: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("load Control Plane grant trust: %w", err)
 	}
 	oidcKey, err := grant.LoadEd25519PublicKey(configuration.Identity.TrustKeyFile)
 	if err != nil {
@@ -317,7 +357,7 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 		return fail(err)
 	}
 	dispatcher := &runnercore.SDKDispatcher{Adapter: deployAdapter}
-	grantVerifier := &grant.Verifier{Issuer: configuration.ControlPlane.Issuer, RunnerGroup: configuration.RunnerGroup, TenantID: configuration.TenantID, Keys: grant.StaticKeys{configuration.ControlPlane.Issuer + "\x00" + configuration.ControlPlane.TrustKeyID: grantKey}, ClockSkew: 30 * time.Second}
+	grantVerifier := &grant.Verifier{Issuer: configuration.ControlPlane.Issuer, RunnerGroup: configuration.RunnerGroup, TenantID: configuration.TenantID, Keys: grantKeys, ClockSkew: 30 * time.Second}
 	manifestStore, ok := journal.(runnercore.ManifestStore)
 	if !ok {
 		return fail(errors.New("journal does not support durable manifests"))

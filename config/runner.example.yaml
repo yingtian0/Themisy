@@ -12,6 +12,9 @@ control_plane:
   # client_cert_file: /run/secrets/runner.crt
   # client_key_file: /run/secrets/runner.key
   # ca_file: /run/secrets/control-plane-ca.crt
+  # Production uses a customer-managed bundle reread for each Grant check.
+  # trust_bundle_file: /run/config/grant-trust.json
+  # The single-key settings below are development-only.
   trust_key_id: development-grant-key
   trust_key_file: ${THEMISY_GRANT_PUBLIC_KEY_FILE}
 identity:

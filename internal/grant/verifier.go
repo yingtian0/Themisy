@@ -71,7 +71,7 @@ func (v *Verifier) Verify(ctx context.Context, actionGrant protocol.ActionGrant)
 		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
 	}
 	value, err := base64.RawURLEncoding.DecodeString(actionGrant.Signature.Value)
-	if err != nil || !ed25519.Verify(publicKey, payload, value) {
+	if err != nil || len(publicKey) != ed25519.PublicKeySize || !ed25519.Verify(publicKey, payload, value) {
 		return ErrInvalidSignature
 	}
 	now := time.Now().UTC()
