@@ -20,5 +20,6 @@ type Result struct {
 	ReasonCode          string       `json:"reason_code,omitempty"`
 	ExternalExecutionID string       `json:"external_execution_id,omitempty"`
 	CompletedAt         time.Time    `json:"completed_at"`
+	EvidenceHash        string       `json:"evidence_hash,omitempty"`
 	Signature           Signature    `json:"signature,omitempty"`
 }

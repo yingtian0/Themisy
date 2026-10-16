@@ -13,6 +13,7 @@ import (
 	"time"
 
 	ecsadapter "themisy/adapters/ecs"
+	"themisy/internal/config"
 	"themisy/internal/grant"
 	"themisy/internal/identity"
 	"themisy/pkg/credentials"
@@ -85,7 +86,8 @@ func TestBuildRunnerComposesExecutableDependencies(t *testing.T) {
 	githubToken := writeSecret(t, directory, "github.json", `{"token":"not-read-during-build","expires_at":"2099-01-01T00:00:00Z"}`)
 	delegationData, _ := json.Marshal([]identity.Delegation{{ID: "delegation-1", Issuer: "https://idp.example", UserSubject: "user-1", AgentID: "agent-1", Actions: []protocol.Capability{protocol.CapabilityDeploy}, ServiceSelectors: []string{"payment-api"}, Environments: []string{"staging"}, MaximumRisk: "medium", ExpiresAt: time.Now().Add(time.Hour)}})
 	delegations := writeSecret(t, directory, "delegations.json", string(delegationData))
-	configuration := settings{Mode: "development", RunnerID: "runner-1", RunnerGroup: "staging", TenantID: "tenant-1", ControlPlane: controlPlaneSettings{Address: "https://control.example", Issuer: "https://control.example", TokenFile: token, TrustKeyID: "grant-key", TrustKeyFile: grantKey}, Identity: identitySettings{Issuer: "https://idp.example", Audience: "themisy", TrustKeyID: "oidc-key", TrustKeyFile: oidcKey, DelegationsFile: delegations}, Capabilities: []protocol.Capability{protocol.CapabilityDeploy}, Credentials: credentialSettings{GitHubTokenFile: githubToken}, Adapters: adapterSettings{GitHubActions: githubActionsSettings{Targets: []githubTargetSettings{{Service: "payment-api", Environment: "staging", Owner: "example", Repository: "payment", DeployWorkflow: "deploy.yml", RollbackWorkflow: "rollback.yml", Ref: "main"}}}}}
+	reportKey := writeSecret(t, directory, "report.key", base64.RawURLEncoding.EncodeToString(make([]byte, 32)))
+	configuration := settings{ResultSigning: config.GrantSigning{Provider: "development", KeyID: "runner-report", PrivateKeyFile: reportKey}, Mode: "development", RunnerID: "runner-1", RunnerGroup: "staging", TenantID: "tenant-1", ControlPlane: controlPlaneSettings{Address: "https://control.example", Issuer: "https://control.example", TokenFile: token, TrustKeyID: "grant-key", TrustKeyFile: grantKey}, Identity: identitySettings{Issuer: "https://idp.example", Audience: "themisy", TrustKeyID: "oidc-key", TrustKeyFile: oidcKey, DelegationsFile: delegations}, Capabilities: []protocol.Capability{protocol.CapabilityDeploy}, Credentials: credentialSettings{GitHubTokenFile: githubToken}, Adapters: adapterSettings{GitHubActions: githubActionsSettings{Targets: []githubTargetSettings{{Service: "payment-api", Environment: "staging", Owner: "example", Repository: "payment", DeployWorkflow: "deploy.yml", RollbackWorkflow: "rollback.yml", Ref: "main"}}}}}
 	executionRunner, client, reconciler, cleanup, err := buildRunner(context.Background(), configuration)
 	if err != nil {
 		t.Fatal(err)
@@ -230,4 +232,28 @@ func writeConfig(t *testing.T, contents string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestResultSignerRejectsMissingAndProductionDevelopmentKeys(t *testing.T) {
+	for _, s := range []settings{{Mode: "development"}, {Mode: "production", ResultSigning: config.GrantSigning{Provider: "development", KeyID: "key", PrivateKeyFile: "must-not-load"}}, {Mode: "development", ResultSigning: config.GrantSigning{Provider: "unknown", KeyID: "key"}}, {Mode: "production", ResultSigning: config.GrantSigning{Provider: "aws-kms", KeyID: "key"}}} {
+		if _, err := loadResultSigner(context.Background(), s); err == nil {
+			t.Fatal("invalid result signer accepted")
+		}
+	}
+}
+
+func TestRunnerExampleIncludesValidResultSigner(t *testing.T) {
+	t.Setenv("THEMISY_RESULT_PRIVATE_KEY_FILE", "/run/secrets/runner-result-key")
+	t.Setenv("THEMISY_GRANT_PUBLIC_KEY_FILE", "/run/config/grant.pub")
+	if _, err := load("../../config/runner.example.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("../../config/runner.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := strings.Replace(string(raw), "  key_id: development-result-key", "  key_id: \"\"", 1)
+	if _, err := load(writeConfig(t, invalid)); err == nil || !strings.Contains(err.Error(), "result_signing") {
+		t.Fatalf("check-config accepted missing result signer: %v", err)
+	}
 }

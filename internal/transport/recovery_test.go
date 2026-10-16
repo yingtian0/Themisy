@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"themisy/internal/application"
 	"themisy/internal/domain"
 	"themisy/internal/grant"
+	"themisy/internal/resultreport"
 	"themisy/internal/store"
 	"themisy/pkg/protocol"
 	"time"
@@ -39,9 +41,9 @@ func TestRecoveryReportsAfterExpiryAndRejectsConflicts(t *testing.T) {
 	}
 	// Recovery must not require a still-valid delivery token or Grant lifetime.
 	auth := StaticRunnerAuthenticator{"replacement": {TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, Token: "secret"}, "other": {TenantID: "other", RunnerGroup: issued.Grant.RunnerGroup, Token: "secret"}}
-	server := httptest.NewServer((&RunnerServer{Store: memory, Audit: memory, Auth: auth, Now: func() time.Time { return now.Add(time.Hour) }}).Handler())
+	server := httptest.NewServer((&RunnerServer{ResultVerifier: testReportVerifier(), Store: memory, Audit: memory, Auth: auth, Now: func() time.Time { return now.Add(time.Hour) }}).Handler())
 	defer server.Close()
-	client := &RunnerClient{BaseURL: server.URL, RunnerID: "replacement", Token: "secret"}
+	client := &RunnerClient{ResultSigner: testReportSigner(), TenantID: "tenant-1", RunnerGroup: "prod-jp", BaseURL: server.URL, RunnerID: "replacement", Token: "secret"}
 	hash, _ := protocol.GrantHash(issued.Grant)
 	record := store.RunnerActionRecord{GrantID: issued.Grant.GrantID, RequestHash: hash, Result: protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: issued.Grant.GrantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultUnknown, CompletedAt: now}}
 	if err := client.ReportRecovery(ctx, record); err != nil {
@@ -52,8 +54,19 @@ func TestRecoveryReportsAfterExpiryAndRejectsConflicts(t *testing.T) {
 	if err := client.ReportRecovery(ctx, record); err != nil {
 		t.Fatal(err)
 	}
+	client.ResultSigner = &resultreport.Signer{Signer: reportTestKey{rotated: true}, KeyID: "report-rotated"}
 	if err := client.ReportRecovery(ctx, record); err != nil {
 		t.Fatalf("idempotent report: %v", err)
+	}
+	eventsAfterRetry, _ := memory.AuditEvents(run.ID)
+	signedAuditCount := 0
+	for _, event := range eventsAfterRetry {
+		if event.Details["signed_report"] != nil {
+			signedAuditCount++
+		}
+	}
+	if signedAuditCount != 3 {
+		t.Fatalf("signed accepted/retry audits=%d", signedAuditCount)
 	}
 	loaded, err := memory.GetGrantDispatch(ctx, record.GrantID)
 	if err != nil || loaded.Status != store.GrantDispatchSucceeded {
@@ -79,7 +92,7 @@ func TestRecoveryReportsAfterExpiryAndRejectsConflicts(t *testing.T) {
 			conflicts++
 		}
 	}
-	if conflicts != 2 {
+	if conflicts != 1 {
 		t.Fatalf("conflict audits=%d", conflicts)
 	}
 }
@@ -127,12 +140,16 @@ func TestRecoveryConflictAuditPersistence(t *testing.T) {
 				}
 				body := recoveryReport{ProtocolVersion: protocol.RunnerTransportVersionV1Alpha1, RequestHash: hash, Result: result}
 				if conflict == "hash_mismatch" {
-					body.RequestHash = "wrong"
+					body.RequestHash = "sha256:" + strings.Repeat("0", 64)
 				} else {
 					body.Result.ExternalExecutionID = "conflicting-deployment"
 				}
+				body.Report, err = testReportSigner().Sign(ctx, resultreport.Identity{RunnerID: "replacement", TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup}, body.RequestHash, body.Result)
+				if err != nil {
+					t.Fatal(err)
+				}
 				audit := &recoveryAuditSink{memory: memory, unavailable: unavailable}
-				server := &RunnerServer{Store: memory, Audit: audit, Auth: StaticRunnerAuthenticator{"replacement": {TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, Token: "secret"}}, Now: func() time.Time { return now.Add(time.Hour) }}
+				server := &RunnerServer{ResultVerifier: testReportVerifier(), Store: memory, Audit: audit, Auth: StaticRunnerAuthenticator{"replacement": {TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, Token: "secret"}}, Now: func() time.Time { return now.Add(time.Hour) }}
 				payload, err := json.Marshal(body)
 				if err != nil {
 					t.Fatal(err)
@@ -142,6 +159,16 @@ func TestRecoveryConflictAuditPersistence(t *testing.T) {
 				request.Header.Set("Authorization", "Bearer secret")
 				response := httptest.NewRecorder()
 				server.Handler().ServeHTTP(response, request)
+				if conflict == "hash_mismatch" {
+					want := http.StatusForbidden
+					if unavailable {
+						want = http.StatusServiceUnavailable
+					}
+					if response.Code != want || len(audit.attempts) != 1 || audit.attempts[0].Result != "REJECTED" {
+						t.Fatalf("invalid hash accepted or audited: %d", response.Code)
+					}
+					return
+				}
 				wantStatus := http.StatusConflict
 				if unavailable {
 					wantStatus = http.StatusServiceUnavailable

@@ -5,14 +5,16 @@ import (
 	"net/http"
 	"net/url"
 	"themisy/internal/domain"
+	"themisy/internal/resultreport"
 	"themisy/internal/store"
 	"themisy/pkg/protocol"
 )
 
 type recoveryReport struct {
-	ProtocolVersion string          `json:"protocol_version"`
-	RequestHash     string          `json:"request_hash"`
-	Result          protocol.Result `json:"result"`
+	ProtocolVersion string                `json:"protocol_version"`
+	RequestHash     string                `json:"request_hash"`
+	Result          protocol.Result       `json:"result"`
+	Report          protocol.ResultReport `json:"report"`
 }
 
 // Recovery is authenticated by the registered Runner group, not a delivery
@@ -31,19 +33,25 @@ func (s *RunnerServer) recovery(w http.ResponseWriter, r *http.Request) {
 		writeRunnerError(w, 422, "invalid recovery report")
 		return
 	}
+	body.Result.CompletedAt = body.Result.CompletedAt.UTC()
+	body.Report.Result.CompletedAt = body.Report.Result.CompletedAt.UTC()
 	record, err := s.Store.GetGrantDispatch(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeGrantStoreError(w, err)
 		return
 	}
 	if record.Grant.TenantID != identity.TenantID || record.Grant.RunnerGroup != identity.RunnerGroup {
-		writeRunnerError(w, 403, "recovery identity mismatch")
+		s.rejectReport(w, r, identity, record.Grant, "grant.reconcile")
+		return
+	}
+	if body.Result != body.Report.Result || body.RequestHash != body.Report.RequestHash || s.ResultVerifier.Verify(r.Context(), resultreport.Identity{RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup}, record.Grant, body.Report) != nil {
+		s.rejectReport(w, r, identity, record.Grant, "grant.reconcile")
 		return
 	}
 	hash, hashErr := protocol.GrantHash(record.Grant)
 	now := s.now()
 	audit := domain.AuditEvent{ID: auditID(record.Grant.GrantID, now), CorrelationID: record.Grant.RunID, ActorType: "runner", ActorID: identity.RunnerID, Action: "grant.reconcile", ResourceType: "action_grant", ResourceID: record.Grant.GrantID, Result: "RECONCILED", Timestamp: now, Details: map[string]any{
-		"previous_status": record.Status, "observed_status": body.Result.Status,
+		"signed_report": body.Report, "previous_status": record.Status, "observed_status": body.Result.Status,
 		"stored_result_status": record.Result.Status, "stored_external_execution_id": record.Result.ExternalExecutionID,
 		"reported_result_status": body.Result.Status, "reported_external_execution_id": body.Result.ExternalExecutionID,
 	}}
@@ -68,5 +76,9 @@ func (s *RunnerServer) recovery(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 func (c *RunnerClient) ReportRecovery(ctx context.Context, r store.RunnerActionRecord) error {
-	return c.post(ctx, "/v1/runner/grants/"+url.PathEscape(r.GrantID)+"/reconcile", recoveryReport{ProtocolVersion: protocol.RunnerTransportVersionV1Alpha1, RequestHash: r.RequestHash, Result: r.Result})
+	report, err := c.ResultSigner.Sign(ctx, resultreport.Identity{RunnerID: c.RunnerID, TenantID: c.TenantID, RunnerGroup: c.RunnerGroup}, r.RequestHash, r.Result)
+	if err != nil {
+		return err
+	}
+	return c.post(ctx, "/v1/runner/grants/"+url.PathEscape(r.GrantID)+"/reconcile", recoveryReport{ProtocolVersion: protocol.RunnerTransportVersionV1Alpha1, RequestHash: r.RequestHash, Result: report.Result, Report: report})
 }

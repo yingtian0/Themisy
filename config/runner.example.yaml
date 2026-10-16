@@ -1,4 +1,9 @@
 mode: development
+result_signing:
+  provider: development
+  key_id: development-result-key
+  private_key_file: ${THEMISY_RESULT_PRIVATE_KEY_FILE}
+  # Production requires provider: aws-kms, a dedicated key_id, and aws_region.
 runner_id: runner-local-1
 runner_group: local-development
 tenant_id: tenant-development

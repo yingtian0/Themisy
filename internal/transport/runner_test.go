@@ -112,7 +112,7 @@ func TestRunnerTransportRequiresVerifiedMTLSIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	controlPlane := httptest.NewUnstartedServer((&RunnerServer{Store: store.NewMemory(), Auth: MTLSRunnerAuthenticator{workloadID: {RunnerID: "runner-1", TenantID: "tenant-1", RunnerGroup: "prod-jp"}}}).Handler())
+	controlPlane := httptest.NewUnstartedServer((&RunnerServer{ResultVerifier: testReportVerifier(), Store: store.NewMemory(), Auth: MTLSRunnerAuthenticator{workloadID: {RunnerID: "runner-1", TenantID: "tenant-1", RunnerGroup: "prod-jp"}}}).Handler())
 	controlPlane.TLS = &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{{Certificate: [][]byte{serverDER}, PrivateKey: serverKey, Leaf: serverCert}}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientCAs}
 	controlPlane.StartTLS()
 	defer controlPlane.Close()
@@ -151,10 +151,10 @@ func TestRunnerTransportRequiresVerifiedMTLSIdentity(t *testing.T) {
 func TestHeartbeatAppliesDrainAndPreventsDispatch(t *testing.T) {
 	memory := store.NewMemory()
 	authenticator := StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}
-	server := httptest.NewServer((&RunnerServer{Store: memory, Fleet: memory, Audit: memory, Auth: authenticator, RequireHeartbeat: true, HeartbeatInterval: time.Second}).Handler())
+	server := httptest.NewServer((&RunnerServer{ResultVerifier: testReportVerifier(), Store: memory, Fleet: memory, Audit: memory, Auth: authenticator, RequireHeartbeat: true, HeartbeatInterval: time.Second}).Handler())
 	defer server.Close()
 	runtimeState := runnercore.NewRuntimeState(2)
-	client := &RunnerClient{BaseURL: server.URL, RunnerID: "runner-1", Token: "secret", Runtime: runtimeState, Capacity: 2}
+	client := &RunnerClient{ResultSigner: testReportSigner(), TenantID: "tenant-1", RunnerGroup: "prod-jp", BaseURL: server.URL, RunnerID: "runner-1", Token: "secret", Runtime: runtimeState, Capacity: 2}
 	if err := client.heartbeat(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestHeartbeatAppliesDrainAndPreventsDispatch(t *testing.T) {
 
 func TestAuthenticationFailureIsAudited(t *testing.T) {
 	memory := store.NewMemory()
-	server := httptest.NewServer((&RunnerServer{Store: memory, Fleet: memory, Audit: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}}).Handler())
+	server := httptest.NewServer((&RunnerServer{ResultVerifier: testReportVerifier(), Store: memory, Fleet: memory, Audit: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}}).Handler())
 	defer server.Close()
 	request, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/runner/grants:next?wait=0s", nil)
 	request.Header.Set(runnerIDHeader, "runner-1")
@@ -220,16 +220,18 @@ func TestAuthenticationFailureIsAudited(t *testing.T) {
 func TestPreExecutionRefusalRemainsUnknownAndAudited(t *testing.T) {
 	memory := store.NewMemory()
 	now := time.Now().UTC()
-	actionGrant := protocol.ActionGrant{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: "grant-rejected", RunID: "run-rejected", StepID: "step-1", TenantID: "tenant-1", RunnerGroup: "prod-jp", IdempotencyKey: "key-rejected", Nonce: "nonce-rejected", ExpiresAt: now.Add(time.Minute)}
-	record := store.GrantDispatchRecord{Grant: actionGrant, CreatedAt: now, UpdatedAt: now}
-	issueAudit := domain.AuditEvent{ID: "issue-rejected", CorrelationID: actionGrant.RunID, ActorType: "system", ActorID: "test", Action: "grant.issue", ResourceType: "action_grant", ResourceID: actionGrant.GrantID, Result: "AUTHORIZED", Timestamp: now}
-	outbox := domain.OutboxEvent{ID: "outbox-rejected", AggregateType: "action_grant", AggregateID: actionGrant.GrantID, EventType: "grant.dispatch.requested", CreatedAt: now, AvailableAt: now}
-	if _, _, err := memory.CreateGrantDispatch(context.Background(), record, issueAudit, outbox); err != nil {
-		t.Fatal(err)
+	validSigner, _, _ := grant.NewDevelopmentSigner("fixture")
+	issuer, _ := application.NewGrants(memory, validSigner, "https://control.example", time.Minute)
+	run := approvedTransportRun(now)
+	memory.CreateRun(run)
+	issued, _, issueErr := issuer.Issue(context.Background(), application.GrantIssueRequest{RunID: run.ID, StepID: "payment-api", Capability: protocol.CapabilityDeploy})
+	if issueErr != nil {
+		t.Fatal(issueErr)
 	}
-	server := httptest.NewServer((&RunnerServer{Store: memory, Audit: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}}).Handler())
+	actionGrant := issued.Grant
+	server := httptest.NewServer((&RunnerServer{ResultVerifier: testReportVerifier(), Store: memory, Audit: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: "tenant-1", RunnerGroup: "prod-jp", Token: "secret"}}}).Handler())
 	defer server.Close()
-	client := &RunnerClient{BaseURL: server.URL, RunnerID: "runner-1", Token: "secret", Wait: time.Millisecond, BeforeExecute: func(context.Context, protocol.ActionGrant) error { return grant.ErrWrongTenant }}
+	client := &RunnerClient{ResultSigner: testReportSigner(), TenantID: "tenant-1", RunnerGroup: "prod-jp", BaseURL: server.URL, RunnerID: "runner-1", Token: "secret", Wait: time.Millisecond, BeforeExecute: func(context.Context, protocol.ActionGrant) error { return grant.ErrWrongTenant }}
 	delivered, err := client.RunOnce(context.Background(), rejectingProbe{})
 	if err != nil || !delivered {
 		t.Fatalf("delivered=%v err=%v", delivered, err)
@@ -305,7 +307,7 @@ func TestSignedGrantReachesSeparateRunnerProcess(t *testing.T) {
 	if err := os.WriteFile(manifestFile, manifestData, 0600); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer((&RunnerServer{Store: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Token: "test-runner-token"}}, MaxWait: time.Second, PollInterval: 10 * time.Millisecond}).Handler())
+	server := httptest.NewServer((&RunnerServer{ResultVerifier: testReportVerifier(), Store: memory, Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Token: "test-runner-token"}}, MaxWait: time.Second, PollInterval: 10 * time.Millisecond}).Handler())
 	defer server.Close()
 	marker := t.TempDir() + "/adapter-called"
 	command := exec.Command(os.Args[0], "-test.run=TestSignedGrantReachesSeparateRunnerProcess")
@@ -358,7 +360,7 @@ func runRunnerHelper(t *testing.T) {
 		Policy: policy.NewEngine(helperPolicy{policyHash: digest}), Journal: store.NewMemory(), Credentials: broker,
 		Adapter: helperAdapter{marker: os.Getenv("THEMISY_TEST_MARKER")}, Connectivity: connected,
 	}
-	client := &RunnerClient{BaseURL: os.Getenv("THEMISY_TEST_CONTROL_PLANE"), RunnerID: "runner-1", Token: "test-runner-token", Wait: time.Second, Connectivity: connected, BeforeExecute: func(ctx context.Context, actionGrant protocol.ActionGrant) error {
+	client := &RunnerClient{ResultSigner: testReportSigner(), TenantID: "tenant-1", RunnerGroup: "prod-jp", BaseURL: os.Getenv("THEMISY_TEST_CONTROL_PLANE"), RunnerID: "runner-1", Token: "test-runner-token", Wait: time.Second, Connectivity: connected, BeforeExecute: func(ctx context.Context, actionGrant protocol.ActionGrant) error {
 		if err := verifier.Verify(ctx, actionGrant); err != nil {
 			return err
 		}

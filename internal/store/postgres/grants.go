@@ -126,6 +126,12 @@ RETURNING `+grantColumns, grantID, runnerID, token, result.RunID, status, encode
 	if errors.Is(err, store.ErrNotFound) {
 		existing, getErr := scanGrantDispatch(tx.QueryRow(ctx, `SELECT `+grantColumns+` FROM action_grants WHERE id=$1`, grantID))
 		if getErr == nil && existing.RunnerID == runnerID && existing.DeliveryToken == token && existing.Result == result {
+			if err := insertAudit(ctx, tx, audit); err != nil {
+				return store.GrantDispatchRecord{}, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return store.GrantDispatchRecord{}, err
+			}
 			return existing, nil
 		}
 		return store.GrantDispatchRecord{}, store.ErrConflict

@@ -198,15 +198,17 @@ func (m *Memory) CompleteGrantDispatch(_ context.Context, grantID, runnerID, tok
 	if !ok {
 		return GrantDispatchRecord{}, ErrNotFound
 	}
+	if record.RunnerID != runnerID || record.DeliveryToken != token || result.GrantID != grantID || result.RunID != record.Grant.RunID || result.StepID != record.Grant.StepID {
+		return GrantDispatchRecord{}, ErrConflict
+	}
 	if grantComplete(record.Status) {
 		if record.Result == result {
+			m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
 			return cloneGrantDispatch(record), nil
 		}
 		return GrantDispatchRecord{}, ErrConflict
 	}
-	if record.RunnerID != runnerID || record.DeliveryToken != token || result.GrantID != grantID || result.RunID != record.Grant.RunID || result.StepID != record.Grant.StepID {
-		return GrantDispatchRecord{}, ErrConflict
-	}
+
 	record.Status = grantStatusForResult(result.Status)
 	record.Result, record.CompletedAt, record.UpdatedAt = result, now, now
 	record.StateVersion++

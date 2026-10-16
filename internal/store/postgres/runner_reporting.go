@@ -56,7 +56,10 @@ func (s *Store) ReconcileGrantDispatch(ctx context.Context, id string, expected 
 		return store.ErrConflict
 	}
 	if record.Result == result {
-		return nil
+		if err := insertAudit(ctx, tx, audit); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
 	}
 	if record.StateVersion != expected || record.Status == store.GrantDispatchSucceeded || record.Status == store.GrantDispatchRejected {
 		return store.ErrConflict

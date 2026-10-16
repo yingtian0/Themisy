@@ -46,3 +46,14 @@ func TestRunnerWorkloadIdentityRequiresServerMTLS(t *testing.T) {
 		t.Fatal("non-SPIFFE workload identity was accepted")
 	}
 }
+
+func TestRunnerRegistrationRequiresDedicatedResultTrust(t *testing.T) {
+	c, err := Load("../../config/themisy.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.RunnerTransport.Registrations[0].ResultTrustBundleFile = ""
+	if c.Validate() == nil {
+		t.Fatal("registration without dedicated result trust accepted")
+	}
+}

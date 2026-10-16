@@ -4,6 +4,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"themisy/internal/resultreport"
 	"time"
 
 	"themisy/internal/application"
@@ -76,7 +78,7 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 				"original":    {TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Token: "secret"},
 				"replacement": {TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Token: "secret"},
 			}
-			handler := (&RunnerServer{Store: control, Audit: control, Auth: auth, Lease: time.Minute, Now: func() time.Time { return now }}).Handler()
+			handler := (&RunnerServer{ResultVerifier: testReportVerifier(), Store: control, Audit: control, Auth: auth, Lease: time.Minute, Now: func() time.Time { return now }}).Handler()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// The original write and journal commit succeed, but its result is lost.
 				if r.Header.Get(runnerIDHeader) == "original" && strings.HasSuffix(r.URL.Path, "/result") {
@@ -86,7 +88,7 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 				handler.ServeHTTP(w, r)
 			}))
 			defer server.Close()
-			original := &RunnerClient{BaseURL: server.URL, RunnerID: "original", Token: "secret", Wait: time.Millisecond}
+			original := &RunnerClient{ResultSigner: testReportSigner(), TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, BaseURL: server.URL, RunnerID: "original", Token: "secret", Wait: time.Millisecond}
 			writes := 0
 			executor := recoveryExecutorFunc(func(ctx context.Context, g protocol.ActionGrant) (protocol.Result, error) {
 				hash, err := protocol.GrantHash(g)
@@ -112,7 +114,7 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 				t.Fatalf("lost report: delivered=%v err=%v", delivered, err)
 			}
 			now = now.Add(2 * time.Minute)
-			replacement := &RunnerClient{BaseURL: server.URL, RunnerID: "replacement", Token: "secret", Wait: time.Millisecond}
+			replacement := &RunnerClient{ResultSigner: testReportSigner(), TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, BaseURL: server.URL, RunnerID: "replacement", Token: "secret", Wait: time.Millisecond}
 			replacementCalls := 0
 			var replacementExecutor GrantExecutor = recoveryExecutorFunc(func(context.Context, protocol.ActionGrant) (protocol.Result, error) {
 				replacementCalls++
@@ -152,7 +154,7 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			server = httptest.NewServer((&RunnerServer{Store: control, Audit: control, Auth: auth, Lease: time.Minute, Now: func() time.Time { return now }}).Handler())
+			server = httptest.NewServer((&RunnerServer{ResultVerifier: testReportVerifier(), Store: control, Audit: control, Auth: auth, Lease: time.Minute, Now: func() time.Time { return now }}).Handler())
 			defer server.Close()
 			replacement.BaseURL = server.URL
 			durable, err := journal.GetRunnerAction(ctx, actionGrant.TenantID, actionGrant.RunnerGroup, actionGrant.Nonce)
@@ -167,6 +169,19 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 			now = now.Add(2 * time.Minute)
 			if _, err := control.ClaimGrantDispatch(ctx, actionGrant.TenantID, actionGrant.RunnerGroup, "replacement", "another-token", now, now.Add(time.Minute)); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("refusal was redispatched: %v", err)
+			}
+			// A duplicate audit ID forces the state/audit transaction to roll back.
+			priorAudits, err := control.AuditEvents(run.ID)
+			if err != nil || len(priorAudits) == 0 {
+				t.Fatalf("load prior audit: %v", err)
+			}
+			rollbackAudit := domain.AuditEvent{ID: priorAudits[0].ID, CorrelationID: run.ID, Action: "grant.reconcile", Result: "RECONCILED", Timestamp: now}
+			if err := control.ReconcileGrantDispatch(ctx, actionGrant.GrantID, dispatch.StateVersion, durable.Result, rollbackAudit); err == nil {
+				t.Fatal("audit insert failure committed recovery")
+			}
+			afterRollback, err := control.GetGrantDispatch(ctx, actionGrant.GrantID)
+			if err != nil || afterRollback.StateVersion != dispatch.StateVersion || afterRollback.Status != store.GrantDispatchUnknown {
+				t.Fatalf("recovery survived audit rollback: %#v err=%v", afterRollback, err)
 			}
 			if err := replacement.ReportRecovery(ctx, durable); err != nil {
 				t.Fatalf("durable success recovery blocked: %v", err)
@@ -188,6 +203,20 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 				}
 				if event.Action == "grant.reconcile" && event.Result == "RECONCILED" {
 					reconciled = true
+					raw, err := json.Marshal(event.Details["signed_report"])
+					if err != nil {
+						t.Fatal(err)
+					}
+					var proof protocol.ResultReport
+					if err := json.Unmarshal(raw, &proof); err != nil {
+						t.Fatal(err)
+					}
+					if err := testReportVerifier().Verify(ctx, resultreport.Identity{RunnerID: "replacement", TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup}, actionGrant, proof); err != nil {
+						t.Fatalf("persisted report proof invalid: %v", err)
+					}
+					if proof.Result != durable.Result {
+						t.Fatal("persisted proof differs from durable observation")
+					}
 				}
 			}
 			if !reconciled || !refused {
@@ -278,9 +307,9 @@ func TestPostgresThreeWayRecoveryMismatchIsAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := StaticRunnerAuthenticator{"reconciler": {TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, Token: "secret"}}
-	server := httptest.NewServer((&RunnerServer{Store: control, Audit: control, Auth: auth, Now: func() time.Time { return now }}).Handler())
+	server := httptest.NewServer((&RunnerServer{ResultVerifier: testReportVerifier(), Store: control, Audit: control, Auth: auth, Now: func() time.Time { return now }}).Handler())
 	defer server.Close()
-	client := &RunnerClient{BaseURL: server.URL, RunnerID: "reconciler", Token: "secret"}
+	client := &RunnerClient{ResultSigner: testReportSigner(), TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, BaseURL: server.URL, RunnerID: "reconciler", Token: "secret"}
 	observation := "runtime-deployment"
 	reads := 0
 	reconciler := threeWayReconcilerFunc(func(context.Context, runnercore.AdapterRequest, runnercore.Credential) (runnercore.AdapterResult, bool, error) {

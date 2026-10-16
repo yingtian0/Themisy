@@ -24,6 +24,7 @@ import (
 	"themisy/internal/planner"
 	"themisy/internal/policy"
 	"themisy/internal/profile"
+	"themisy/internal/resultreport"
 	"themisy/internal/scheduler"
 	postgresstore "themisy/internal/store/postgres"
 	runnertransport "themisy/internal/transport"
@@ -188,12 +189,19 @@ func buildGrantPath(ctx context.Context, settings config.Config, persistentStore
 	if settings.Mode == "worker" {
 		return grants, http.NotFoundHandler(), nil
 	}
+	resultKeys := resultreport.ScopedKeys{}
 	bearer := runnertransport.StaticRunnerAuthenticator{}
 	workloads := runnertransport.MTLSRunnerAuthenticator{}
 	for _, registration := range settings.RunnerTransport.Registrations {
 		if registration.RunnerID == "" || registration.TenantID == "" || registration.RunnerGroup == "" || (registration.TokenFile == "" && registration.WorkloadIdentity == "") {
 			return nil, nil, errors.New("runner registration is incomplete")
 		}
+		scope := resultreport.Identity{RunnerID: registration.RunnerID, TenantID: registration.TenantID, RunnerGroup: registration.RunnerGroup}
+		keys := resultreport.FileKeys{Path: registration.ResultTrustBundleFile, Identity: scope}
+		if err := keys.Validate(ctx); err != nil {
+			return nil, nil, fmt.Errorf("result trust: %w", err)
+		}
+		resultKeys[scope] = keys
 		identity := runnertransport.RunnerIdentity{RunnerID: registration.RunnerID, TenantID: registration.TenantID, RunnerGroup: registration.RunnerGroup}
 		if registration.TokenFile != "" {
 			token, err := readSecretFile(registration.TokenFile)
@@ -212,7 +220,7 @@ func buildGrantPath(ctx context.Context, settings config.Config, persistentStore
 	if len(bearer) == 0 && len(workloads) == 0 {
 		return nil, nil, errors.New("at least one runner registration is required")
 	}
-	server := &runnertransport.RunnerServer{Store: persistentStore, Fleet: persistentStore, Audit: persistentStore, Auth: runnertransport.HybridRunnerAuthenticator{MTLS: workloads, Bearer: bearer}, RequireHeartbeat: true}
+	server := &runnertransport.RunnerServer{ResultVerifier: &resultreport.Verifier{Keys: resultKeys}, Store: persistentStore, Fleet: persistentStore, Audit: persistentStore, Auth: runnertransport.HybridRunnerAuthenticator{MTLS: workloads, Bearer: bearer}, RequireHeartbeat: true}
 	return grants, server.Handler(), nil
 }
 

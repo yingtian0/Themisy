@@ -21,9 +21,11 @@ import (
 	"themisy/adapters/datadog"
 	ecsadapter "themisy/adapters/ecs"
 	"themisy/adapters/githubactions"
+	"themisy/internal/config"
 	"themisy/internal/grant"
 	"themisy/internal/identity"
 	"themisy/internal/policy"
+	"themisy/internal/resultreport"
 	runnercore "themisy/internal/runner"
 	"themisy/internal/store"
 	postgresstore "themisy/internal/store/postgres"
@@ -33,11 +35,13 @@ import (
 	"themisy/pkg/protocol"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"go.yaml.in/yaml/v3"
 )
 
 type settings struct {
+	ResultSigning config.GrantSigning   `yaml:"result_signing"`
 	Mode          string                `yaml:"mode"`
 	RunnerID      string                `yaml:"runner_id"`
 	RunnerGroup   string                `yaml:"runner_group"`
@@ -238,6 +242,9 @@ func load(path string) (settings, error) {
 	if err := validateGrantTrust(result.Mode, result.ControlPlane); err != nil {
 		return settings{}, err
 	}
+	if err := validateResultSigning(result.Mode, result.ResultSigning); err != nil {
+		return settings{}, err
+	}
 	return result, nil
 }
 
@@ -329,6 +336,10 @@ func validateAdapters(configuration settings) error {
 }
 
 func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runner, *runnertransport.RunnerClient, runnercore.Reconciler, func(), error) {
+	reportSigner, err := loadResultSigner(ctx, configuration)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
 	grantKeys, err := loadGrantTrustKeys(ctx, configuration)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("load Control Plane grant trust: %w", err)
@@ -390,6 +401,7 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 		return fail(err)
 	}
 	client := &runnertransport.RunnerClient{
+		ResultSigner: reportSigner, TenantID: configuration.TenantID, RunnerGroup: configuration.RunnerGroup,
 		BaseURL: configuration.ControlPlane.Address, RunnerID: configuration.RunnerID, Token: token,
 		HTTP: httpClient, Wait: 30 * time.Second, Connectivity: connectivity, Runtime: runtimeState, Capacity: capacity,
 		BeforeExecute: func(ctx context.Context, actionGrant protocol.ActionGrant) error {
@@ -642,4 +654,64 @@ func healthHandler(configuration settings, connectivity runnercore.Connectivity,
 		fmt.Fprintf(writer, `{"status":"alive","accepting_actions":%t,"runner_id":%q,"runner_group":%q,"mode":%q,"capacity":%d,"in_flight":%d}`, accepting, configuration.RunnerID, configuration.RunnerGroup, runtimeState.Mode(), capacity, inFlight)
 	})
 	return mux
+}
+
+func loadResultSigner(ctx context.Context, configuration settings) (*resultreport.Signer, error) {
+	if err := validateResultSigning(configuration.Mode, configuration.ResultSigning); err != nil {
+		return nil, err
+	}
+	s := configuration.ResultSigning
+	if s.KeyID == "" {
+		return nil, errors.New("result_signing.key_id is required")
+	}
+	var signer grant.Signer
+	switch s.Provider {
+	case "development":
+		if configuration.Mode != "development" {
+			return nil, errors.New("development result signer requires development mode")
+		}
+		loaded, _, err := grant.LoadDevelopmentSigner(s.PrivateKeyFile, s.KeyID)
+		if err != nil {
+			return nil, err
+		}
+		signer = loaded
+	case "aws-kms":
+		if s.AWSRegion == "" {
+			return nil, errors.New("result signing aws_region is required")
+		}
+		cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(s.AWSRegion))
+		if err != nil {
+			return nil, err
+		}
+		loaded, err := grant.NewAWSKMSSigner(kms.NewFromConfig(cfg), s.KeyID)
+		if err != nil {
+			return nil, err
+		}
+		signer = loaded
+	default:
+		return nil, errors.New("result signing provider must be development or aws-kms")
+	}
+	return &resultreport.Signer{Signer: signer, KeyID: s.KeyID}, nil
+}
+
+func validateResultSigning(mode string, s config.GrantSigning) error {
+	if s.KeyID == "" {
+		return errors.New("result_signing.key_id is required")
+	}
+	switch s.Provider {
+	case "development":
+		if mode != "development" {
+			return errors.New("development result signer requires development mode")
+		}
+		if s.PrivateKeyFile == "" {
+			return errors.New("development result signing requires private_key_file")
+		}
+	case "aws-kms":
+		if s.AWSRegion == "" {
+			return errors.New("result signing aws_region is required")
+		}
+	default:
+		return errors.New("result signing provider must be development or aws-kms")
+	}
+	return nil
 }

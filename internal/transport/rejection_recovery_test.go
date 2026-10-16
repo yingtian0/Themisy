@@ -42,7 +42,7 @@ func TestRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.T) {
 				"original":    {TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Token: "secret"},
 				"replacement": {TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Token: "secret"},
 			}
-			handler := (&RunnerServer{Store: memory, Audit: memory, Auth: auth, Lease: time.Minute, Now: func() time.Time { return now }}).Handler()
+			handler := (&RunnerServer{ResultVerifier: testReportVerifier(), Store: memory, Audit: memory, Auth: auth, Lease: time.Minute, Now: func() time.Time { return now }}).Handler()
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// The original write and journal commit succeed, but its result is lost.
 				if r.Header.Get(runnerIDHeader) == "original" && strings.HasSuffix(r.URL.Path, "/result") {
@@ -52,7 +52,7 @@ func TestRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.T) {
 				handler.ServeHTTP(w, r)
 			}))
 			defer server.Close()
-			original := &RunnerClient{BaseURL: server.URL, RunnerID: "original", Token: "secret", Wait: time.Millisecond}
+			original := &RunnerClient{ResultSigner: testReportSigner(), TenantID: "tenant-1", RunnerGroup: "prod-jp", BaseURL: server.URL, RunnerID: "original", Token: "secret", Wait: time.Millisecond}
 			writes := 0
 			executor := recoveryExecutorFunc(func(ctx context.Context, g protocol.ActionGrant) (protocol.Result, error) {
 				hash, err := protocol.GrantHash(g)
@@ -75,7 +75,7 @@ func TestRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.T) {
 				t.Fatalf("lost report: delivered=%v err=%v", delivered, err)
 			}
 			now = now.Add(2 * time.Minute)
-			replacement := &RunnerClient{BaseURL: server.URL, RunnerID: "replacement", Token: "secret", Wait: time.Millisecond}
+			replacement := &RunnerClient{ResultSigner: testReportSigner(), TenantID: "tenant-1", RunnerGroup: "prod-jp", BaseURL: server.URL, RunnerID: "replacement", Token: "secret", Wait: time.Millisecond}
 			var replacementExecutor GrantExecutor = rejectingProbe{}
 			if refusal == "before_execute" {
 				replacement.BeforeExecute = func(context.Context, protocol.ActionGrant) error { return grant.ErrWrongTenant }

@@ -18,6 +18,7 @@ import (
 
 	"themisy/internal/domain"
 	grantvalidation "themisy/internal/grant"
+	"themisy/internal/resultreport"
 	"themisy/internal/runner"
 	"themisy/internal/store"
 	"themisy/pkg/protocol"
@@ -66,6 +67,7 @@ func (a StaticRunnerAuthenticator) Authenticate(request *http.Request) (RunnerId
 }
 
 type RunnerServer struct {
+	ResultVerifier    *resultreport.Verifier
 	Store             store.GrantDispatchStore
 	Fleet             store.RunnerFleetStore
 	Audit             interface{ AppendAudit(domain.AuditEvent) error }
@@ -90,9 +92,10 @@ type acknowledgement struct {
 }
 
 type resultSubmission struct {
-	ProtocolVersion string          `json:"protocol_version"`
-	DeliveryToken   string          `json:"delivery_token"`
-	Result          protocol.Result `json:"result"`
+	ProtocolVersion string                `json:"protocol_version"`
+	DeliveryToken   string                `json:"delivery_token"`
+	Result          protocol.Result       `json:"result"`
+	Report          protocol.ResultReport `json:"report"`
 }
 
 func (s *RunnerServer) Handler() http.Handler {
@@ -207,13 +210,24 @@ func (s *RunnerServer) result(writer http.ResponseWriter, request *http.Request)
 		writeRunnerError(writer, http.StatusUnprocessableEntity, "invalid runner result envelope")
 		return
 	}
+	body.Result.CompletedAt = body.Result.CompletedAt.UTC()
+	body.Report.Result.CompletedAt = body.Report.Result.CompletedAt.UTC()
 	grantID := request.PathValue("id")
 	if body.Result.ProtocolVersion != protocol.VersionV1Alpha1 || body.Result.GrantID != grantID || body.Result.CompletedAt.IsZero() || !validResultStatus(body.Result.Status) {
 		writeRunnerError(writer, http.StatusUnprocessableEntity, "invalid runner result")
 		return
 	}
+	record, err := s.Store.GetGrantDispatch(request.Context(), grantID)
+	if err != nil {
+		writeGrantStoreError(writer, err)
+		return
+	}
+	if body.Result != body.Report.Result || s.ResultVerifier.Verify(request.Context(), resultreport.Identity{RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup}, record.Grant, body.Report) != nil {
+		s.rejectReport(writer, request, identity, record.Grant, "grant.result")
+		return
+	}
 	now := s.now()
-	audit := domain.AuditEvent{ID: auditID(grantID, now), CorrelationID: body.Result.RunID, ActorType: "runner", ActorID: identity.RunnerID, Action: "grant.result", ResourceType: "action_grant", ResourceID: grantID, Result: string(body.Result.Status), Details: map[string]any{"step_id": body.Result.StepID, "reason_code": body.Result.ReasonCode, "external_execution_id": body.Result.ExternalExecutionID}, Timestamp: now}
+	audit := domain.AuditEvent{ID: auditID(grantID, now), CorrelationID: body.Result.RunID, ActorType: "runner", ActorID: identity.RunnerID, Action: "grant.result", ResourceType: "action_grant", ResourceID: grantID, Result: string(body.Result.Status), Details: map[string]any{"signed_report": body.Report, "step_id": body.Result.StepID, "reason_code": body.Result.ReasonCode, "external_execution_id": body.Result.ExternalExecutionID}, Timestamp: now}
 	if _, err := s.Store.CompleteGrantDispatch(request.Context(), grantID, identity.RunnerID, body.DeliveryToken, body.Result, now, audit); err != nil {
 		writeGrantStoreError(writer, err)
 		return
@@ -282,6 +296,9 @@ type GrantExecutor interface {
 }
 
 type RunnerClient struct {
+	ResultSigner      *resultreport.Signer
+	TenantID          string
+	RunnerGroup       string
 	BaseURL           string
 	RunnerID          string
 	Token             string
@@ -412,7 +429,15 @@ func (c *RunnerClient) submitResult(ctx context.Context, delivery Delivery, resu
 	if result.Status == protocol.ResultRejected {
 		result.Status = protocol.ResultUnknown
 	}
-	return c.post(ctx, "/v1/runner/grants/"+url.PathEscape(delivery.Grant.GrantID)+"/result", resultSubmission{ProtocolVersion: protocol.RunnerTransportVersionV1Alpha1, DeliveryToken: delivery.DeliveryToken, Result: result})
+	hash, err := protocol.GrantHash(delivery.Grant)
+	if err != nil {
+		return err
+	}
+	report, err := c.ResultSigner.Sign(ctx, resultreport.Identity{RunnerID: c.RunnerID, TenantID: c.TenantID, RunnerGroup: c.RunnerGroup}, hash, result)
+	if err != nil {
+		return err
+	}
+	return c.post(ctx, "/v1/runner/grants/"+url.PathEscape(delivery.Grant.GrantID)+"/result", resultSubmission{ProtocolVersion: protocol.RunnerTransportVersionV1Alpha1, DeliveryToken: delivery.DeliveryToken, Result: report.Result, Report: report})
 }
 
 func (c *RunnerClient) heartbeatLoop(ctx context.Context) {
@@ -681,4 +706,16 @@ func auditID(grantID string, now time.Time) string {
 		return fmt.Sprintf("grant-result/%s/%d", grantID, now.UnixNano())
 	}
 	return "grant-result/" + value
+}
+
+// Rejection audits contain only authenticated identity and stored Grant metadata.
+// Unverified report fields, credentials and delivery tokens never enter audit.
+func (s *RunnerServer) rejectReport(w http.ResponseWriter, r *http.Request, identity RunnerIdentity, g protocol.ActionGrant, action string) {
+	now := s.now()
+	event := domain.AuditEvent{ID: auditID(g.GrantID, now), CorrelationID: g.RunID, ActorType: "runner", ActorID: identity.RunnerID, Action: action, ResourceType: "action_grant", ResourceID: g.GrantID, Result: "REJECTED", Timestamp: now, Details: map[string]any{"reason_code": "INVALID_RESULT_REPORT", "tenant_id": identity.TenantID, "runner_group": identity.RunnerGroup}}
+	if s.Audit == nil || s.appendAudit(event) != nil {
+		writeRunnerError(w, http.StatusServiceUnavailable, "audit store unavailable")
+		return
+	}
+	writeRunnerError(w, http.StatusForbidden, "invalid signed result report")
 }
