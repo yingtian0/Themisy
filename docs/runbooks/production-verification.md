@@ -17,9 +17,22 @@ there is no new Workflow branch or Temporal version marker.
 
 ## Migration
 
-Before upgrading workers, inventory active Production runs and their pinned
-Profiles, Plans, approvals, and execution journals. Pause unsafe runs and drain
-old workers: a worker running old Activity code does not provide these guards.
+Before upgrading workers, freeze the affected Runner groups and pause unsafe
+Production runs. Inventory their pinned Profiles, Plans, approvals, execution
+journals, and all pre-issued or leased Action Grants, including in-flight and
+UNKNOWN executions. Drain old workers: a worker running old Activity code does
+not provide these guards. Pausing a Workflow or replacing its worker does not
+recall a previously signed Grant or stop a write already in flight; independently
+leased Grants may still reach a Runner.
+
+Keep the affected Runner groups frozen until outstanding unsafe Grants have
+expired or have been fenced through supported manifest revision/revocation
+controls. Follow the [Runner recovery and manifest runbook](runner-recovery-and-manifests.md)
+for revision fencing and read-only reconciliation of existing writes. Reconcile
+in-flight and UNKNOWN executions before unfreezing; expiry or lease loss does
+not authorize another write. Use supported operator controls, without direct
+database edits or rewriting Temporal history.
+
 Update the source Profiles to explicitly require verification, then generate new
 Plans and obtain new approvals bound to those hashes. Do not edit flags in an
 old pinned Plan or reuse its approval. Cancel unsafe pending runs and submit the
