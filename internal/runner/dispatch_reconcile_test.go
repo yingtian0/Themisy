@@ -128,3 +128,30 @@ func TestSDKDispatcherReconcilePreservesOperation(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerSDKRuntimeUnknownRecoversWithoutRedispatch(t *testing.T) {
+	fixture := newRunnerFixture(t)
+	provider := &reconcileSDKProbe{sdkProbe: sdkProbe{err: &adapter.Error{Class: adapter.ErrorUnknown, Operation: "runtime-verification", Err: errors.New("rollout pending")}}, result: adapter.ReconcileResult{Status: adapter.ReconcilePending}, reconcileErr: &adapter.Error{Class: adapter.ErrorUnknown, Operation: "runtime-verification", Err: errors.New("rollout pending")}}
+	dispatcher := &SDKDispatcher{Adapter: provider}
+	fixture.runner.Adapter = dispatcher
+	result, err := fixture.runner.Execute(context.Background(), fixture.grant)
+	if err == nil || result.Status != protocol.ResultUnknown {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if err := fixture.runner.Reconcile(context.Background(), dispatcher, 10); err != nil {
+		t.Fatal(err)
+	}
+	record, err := fixture.journal.GetRunnerAction(context.Background(), fixture.grant.TenantID, fixture.grant.RunnerGroup, fixture.grant.Nonce)
+	if err != nil || record.Status != store.RunnerActionUnknown {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+	provider.reconcileErr = nil
+	provider.result = adapter.ReconcileResult{Status: adapter.ReconcileSucceeded, Deployment: adapter.Deployment{ExternalExecutionID: "verified", FinishedAt: fixture.now}}
+	if err := fixture.runner.Reconcile(context.Background(), dispatcher, 10); err != nil {
+		t.Fatal(err)
+	}
+	record, err = fixture.journal.GetRunnerAction(context.Background(), fixture.grant.TenantID, fixture.grant.RunnerGroup, fixture.grant.Nonce)
+	if err != nil || record.Status != store.RunnerActionSucceeded || provider.deployCalls != 1 {
+		t.Fatalf("record=%#v err=%v writes=%d", record, err, provider.deployCalls)
+	}
+}

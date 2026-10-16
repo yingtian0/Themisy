@@ -22,6 +22,8 @@ const (
 )
 
 type API interface {
+	ListTasks(context.Context, *awsecs.ListTasksInput, ...func(*awsecs.Options)) (*awsecs.ListTasksOutput, error)
+	DescribeTasks(context.Context, *awsecs.DescribeTasksInput, ...func(*awsecs.Options)) (*awsecs.DescribeTasksOutput, error)
 	DescribeServices(context.Context, *awsecs.DescribeServicesInput, ...func(*awsecs.Options)) (*awsecs.DescribeServicesOutput, error)
 	UpdateService(context.Context, *awsecs.UpdateServiceInput, ...func(*awsecs.Options)) (*awsecs.UpdateServiceOutput, error)
 }
@@ -121,7 +123,7 @@ func (a *Adapter) Deploy(ctx context.Context, request adapter.DeployRequest, cre
 		return adapter.Deployment{}, retryable("describe-services", request.IdempotencyKey, err)
 	}
 	if current == definition.ARN {
-		return a.deployment(request.IdempotencyKey), nil
+		return a.confirmRuntime(ctx, client, target, definition.ARN, definition.ExpectedContainerDigests, request.IdempotencyKey)
 	}
 	if !slices.Contains(definition.ExpectedTaskDefinitions, current) {
 		return adapter.Deployment{}, terminal("expected-task-definition", request.IdempotencyKey, fmt.Errorf("service task definition is not an allowed predecessor"))
@@ -135,7 +137,7 @@ func (a *Adapter) Deploy(ctx context.Context, request adapter.DeployRequest, cre
 	if output == nil || output.Service == nil || aws.ToString(output.Service.TaskDefinition) != definition.ARN {
 		return adapter.Deployment{}, unknown("update-service", request.IdempotencyKey, errors.New("ECS response did not confirm the trusted task definition"))
 	}
-	return a.deployment(request.IdempotencyKey), nil
+	return a.confirmRuntime(ctx, client, target, definition.ARN, definition.ExpectedContainerDigests, request.IdempotencyKey)
 }
 
 func (a *Adapter) Rollback(ctx context.Context, request adapter.RollbackRequest, credential appcredentials.Credential) (adapter.Deployment, error) {
@@ -155,7 +157,7 @@ func (a *Adapter) Rollback(ctx context.Context, request adapter.RollbackRequest,
 		return adapter.Deployment{}, retryable("describe-services", request.IdempotencyKey, err)
 	}
 	if current == target.RollbackTaskDefinition {
-		return a.deployment(request.IdempotencyKey), nil
+		return a.confirmRuntime(ctx, client, target, target.RollbackTaskDefinition, target.RollbackContainerDigests, request.IdempotencyKey)
 	}
 	if !configuredTaskDefinition(target, current) {
 		return adapter.Deployment{}, terminal("rollback", request.IdempotencyKey, errors.New("current task definition is outside the trusted target map"))
@@ -167,7 +169,7 @@ func (a *Adapter) Rollback(ctx context.Context, request adapter.RollbackRequest,
 		}
 		return adapter.Deployment{}, unknown("update-service-rollback", request.IdempotencyKey, err)
 	}
-	return a.deployment(request.IdempotencyKey), nil
+	return a.confirmRuntime(ctx, client, target, target.RollbackTaskDefinition, target.RollbackContainerDigests, request.IdempotencyKey)
 }
 
 func (a *Adapter) resolve(target adapter.Target, digest string) (Target, TaskDefinition, error) {
@@ -200,7 +202,7 @@ func describeService(ctx context.Context, client API, target Target) (types.Serv
 	if err != nil {
 		return types.Service{}, err
 	}
-	if output == nil || len(output.Failures) != 0 || len(output.Services) != 1 || output.Services[0].TaskDefinition == nil {
+	if output == nil || len(output.Failures) != 0 || len(output.Services) != 1 || output.Services[0].TaskDefinition == nil || aws.ToString(output.Services[0].ServiceArn) != target.ServiceARN || aws.ToString(output.Services[0].ClusterArn) != target.ClusterARN {
 		return types.Service{}, errors.New("ECS DescribeServices returned an ambiguous service set")
 	}
 	return output.Services[0], nil

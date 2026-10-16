@@ -13,18 +13,20 @@ type TargetKey struct {
 }
 
 type TaskDefinition struct {
-	ARN                     string
-	ExpectedTaskDefinitions []string
+	ARN                      string
+	ExpectedContainerDigests map[string]string
+	ExpectedTaskDefinitions  []string
 }
 
 // Target is trusted Runner-local configuration. None of these provider
 // resource identifiers are accepted from an Action Grant.
 type Target struct {
-	Region                 string
-	ClusterARN             string
-	ServiceARN             string
-	TaskDefinitions        map[string]TaskDefinition // artifact digest -> trusted task definition
-	RollbackTaskDefinition string
+	Region                   string
+	ClusterARN               string
+	ServiceARN               string
+	TaskDefinitions          map[string]TaskDefinition // artifact digest -> trusted task definition
+	RollbackTaskDefinition   string
+	RollbackContainerDigests map[string]string
 }
 
 type Config struct{ Targets map[TargetKey]Target }
@@ -37,8 +39,11 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(key.Service) == "" || strings.TrimSpace(key.Environment) == "" || target.Region == "" || target.ClusterARN == "" || target.ServiceARN == "" || len(target.TaskDefinitions) == 0 {
 			return fmt.Errorf("ECS target %s/%s is incomplete", key.Service, key.Environment)
 		}
+		if target.RollbackTaskDefinition != "" && !validContainers(target.RollbackContainerDigests) {
+			return fmt.Errorf("ECS rollback container expectations for %s/%s are required", key.Service, key.Environment)
+		}
 		for digest, definition := range target.TaskDefinitions {
-			if !validDigest(digest) || definition.ARN == "" || len(definition.ExpectedTaskDefinitions) == 0 {
+			if !validDigest(digest) || definition.ARN == "" || len(definition.ExpectedTaskDefinitions) == 0 || !validContainers(definition.ExpectedContainerDigests) {
 				return fmt.Errorf("ECS task definition mapping for %s/%s is incomplete", key.Service, key.Environment)
 			}
 		}
@@ -52,4 +57,16 @@ func validDigest(value string) bool {
 	}
 	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
 	return err == nil
+}
+
+func validContainers(containers map[string]string) bool {
+	if len(containers) == 0 {
+		return false
+	}
+	for name, digest := range containers {
+		if strings.TrimSpace(name) != name || name == "" || !validDigest(digest) {
+			return false
+		}
+	}
+	return true
 }

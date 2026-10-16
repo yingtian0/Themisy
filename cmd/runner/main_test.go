@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"go.yaml.in/yaml/v3"
 	ecsadapter "themisy/adapters/ecs"
 	"themisy/internal/config"
 	"themisy/internal/grant"
@@ -255,5 +256,45 @@ func TestRunnerExampleIncludesValidResultSigner(t *testing.T) {
 	invalid := strings.Replace(string(raw), "  key_id: development-result-key", "  key_id: \"\"", 1)
 	if _, err := load(writeConfig(t, invalid)); err == nil || !strings.Contains(err.Error(), "result_signing") {
 		t.Fatalf("check-config accepted missing result signer: %v", err)
+	}
+}
+
+func TestECSContainerDigestSettingsReachTrustedAdapter(t *testing.T) {
+	deployDigest := "sha256:" + strings.Repeat("a", 64)
+	rollbackDigest := "sha256:" + strings.Repeat("b", 64)
+	var configuration settings
+	data := `adapters:
+  ecs:
+    targets:
+    - service: payment-api
+      environment: production
+      region: ap-northeast-1
+      cluster_arn: arn:aws:ecs:ap-northeast-1:111122223333:cluster/prod
+      service_arn: arn:aws:ecs:ap-northeast-1:111122223333:service/prod/payment-api
+      deploy_role_arn: arn:aws:iam::111122223333:role/deploy
+      rollback_role_arn: arn:aws:iam::111122223333:role/rollback
+      rollback_task_definition: previous
+      rollback_container_digests:
+        app: ` + rollbackDigest + `
+      task_definitions:
+      - artifact_digest: ` + deployDigest + `
+        task_definition_arn: next
+        expected_task_definitions: [previous]
+        expected_container_digests:
+          app: ` + deployDigest + `
+`
+	if err := yaml.Unmarshal([]byte(data), &configuration); err != nil {
+		t.Fatal(err)
+	}
+	targets, _, err := buildECSTargets(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := targets[ecsadapter.TargetKey{Service: "payment-api", Environment: "production"}]
+	if target.RollbackContainerDigests["app"] != rollbackDigest || target.TaskDefinitions[deployDigest].ExpectedContainerDigests["app"] != deployDigest {
+		t.Fatalf("lost expectations: %#v", target)
+	}
+	if err := (ecsadapter.Config{Targets: targets}).Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

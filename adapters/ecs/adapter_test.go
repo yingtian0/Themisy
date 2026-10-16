@@ -116,9 +116,9 @@ func newFixture(t *testing.T) ecsFixture {
 	t.Helper()
 	digest := "sha256:" + strings.Repeat("a", 64)
 	previous := "arn:aws:ecs:ap-northeast-1:111122223333:task-definition/payment:41"
-	definition := TaskDefinition{ARN: "arn:aws:ecs:ap-northeast-1:111122223333:task-definition/payment:42", ExpectedTaskDefinitions: []string{previous}}
-	target := Target{Region: "ap-northeast-1", ClusterARN: "arn:aws:ecs:ap-northeast-1:111122223333:cluster/prod", ServiceARN: "arn:aws:ecs:ap-northeast-1:111122223333:service/prod/payment", TaskDefinitions: map[string]TaskDefinition{digest: definition}, RollbackTaskDefinition: previous}
-	client := &fakeECS{current: previous}
+	definition := TaskDefinition{ARN: "arn:aws:ecs:ap-northeast-1:111122223333:task-definition/payment:42", ExpectedContainerDigests: map[string]string{"app": digest}, ExpectedTaskDefinitions: []string{previous}}
+	target := Target{Region: "ap-northeast-1", ClusterARN: "arn:aws:ecs:ap-northeast-1:111122223333:cluster/prod", ServiceARN: "arn:aws:ecs:ap-northeast-1:111122223333:service/prod/payment", TaskDefinitions: map[string]TaskDefinition{digest: definition}, RollbackTaskDefinition: previous, RollbackContainerDigests: map[string]string{"app": digest}}
+	client := &fakeECS{current: previous, status: "ACTIVE", desiredCount: 1, runningCount: 1, deploymentState: "COMPLETED"}
 	instance, err := New(Config{Targets: map[TargetKey]Target{{Service: "payment-api", Environment: "production"}: target}}, func(_ context.Context, region string, _ credentials.Credential) (API, error) {
 		if region != target.Region {
 			return nil, errors.New("wrong region")
@@ -133,6 +133,12 @@ func newFixture(t *testing.T) ecsFixture {
 }
 
 type fakeECS struct {
+	serviceHook func(*awsecs.DescribeServicesOutput)
+	listHook    func(*awsecs.ListTasksInput) (*awsecs.ListTasksOutput, error)
+	taskHook    func(*awsecs.DescribeTasksOutput)
+	listCalls   int
+	taskCalls   int
+
 	current          string
 	status           string
 	desiredCount     int32
@@ -148,11 +154,15 @@ type fakeECS struct {
 
 func (f *fakeECS) DescribeServices(_ context.Context, _ *awsecs.DescribeServicesInput, _ ...func(*awsecs.Options)) (*awsecs.DescribeServicesOutput, error) {
 	f.describeCalls++
-	return &awsecs.DescribeServicesOutput{Services: []types.Service{{
-		Status: aws.String(f.status), TaskDefinition: aws.String(f.current),
+	output := &awsecs.DescribeServicesOutput{Services: []types.Service{{
+		ServiceArn: aws.String("arn:aws:ecs:ap-northeast-1:111122223333:service/prod/payment"), ClusterArn: aws.String("arn:aws:ecs:ap-northeast-1:111122223333:cluster/prod"), Status: aws.String(f.status), TaskDefinition: aws.String(f.current),
 		DesiredCount: f.desiredCount, RunningCount: f.runningCount, PendingCount: f.pendingCount,
 		Deployments: []types.Deployment{{TaskDefinition: aws.String(f.current), Status: aws.String("PRIMARY"), RolloutState: types.DeploymentRolloutState(f.deploymentState), DesiredCount: f.desiredCount, RunningCount: f.runningCount}},
-	}}}, nil
+	}}}
+	if f.serviceHook != nil {
+		f.serviceHook(output)
+	}
+	return output, nil
 }
 
 func (f *fakeECS) UpdateService(_ context.Context, input *awsecs.UpdateServiceInput, options ...func(*awsecs.Options)) (*awsecs.UpdateServiceOutput, error) {
@@ -166,5 +176,23 @@ func (f *fakeECS) UpdateService(_ context.Context, input *awsecs.UpdateServiceIn
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
+	f.current = aws.ToString(input.TaskDefinition)
 	return &awsecs.UpdateServiceOutput{Service: &types.Service{TaskDefinition: input.TaskDefinition}}, nil
+}
+
+func (f *fakeECS) ListTasks(_ context.Context, input *awsecs.ListTasksInput, _ ...func(*awsecs.Options)) (*awsecs.ListTasksOutput, error) {
+	f.listCalls++
+	if f.listHook != nil {
+		return f.listHook(input)
+	}
+	return &awsecs.ListTasksOutput{TaskArns: []string{"arn:aws:ecs:ap-northeast-1:111122223333:task/prod/task-1"}}, nil
+}
+func (f *fakeECS) DescribeTasks(_ context.Context, input *awsecs.DescribeTasksInput, _ ...func(*awsecs.Options)) (*awsecs.DescribeTasksOutput, error) {
+	f.taskCalls++
+	arn := input.Tasks[0]
+	output := &awsecs.DescribeTasksOutput{Tasks: []types.Task{{TaskArn: aws.String(arn), ClusterArn: input.Cluster, Group: aws.String("service:payment"), TaskDefinitionArn: aws.String(f.current), DesiredStatus: aws.String("RUNNING"), LastStatus: aws.String("RUNNING"), HealthStatus: types.HealthStatusHealthy, Containers: []types.Container{{Name: aws.String("app"), TaskArn: aws.String(arn), LastStatus: aws.String("RUNNING"), HealthStatus: types.HealthStatusHealthy, ImageDigest: aws.String("sha256:" + strings.Repeat("a", 64))}}}}}
+	if f.taskHook != nil {
+		f.taskHook(output)
+	}
+	return output, nil
 }
