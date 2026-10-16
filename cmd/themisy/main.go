@@ -18,7 +18,6 @@ import (
 	"themisy/internal/catalog"
 	"themisy/internal/config"
 	"themisy/internal/contract"
-	"themisy/internal/executor"
 	"themisy/internal/grant"
 	"themisy/internal/mcp"
 	"themisy/internal/planner"
@@ -108,7 +107,7 @@ func main() {
 		logger.Error("initialize grant execution path", "error", err)
 		os.Exit(1)
 	}
-	grantExecutor := &application.GrantExecutor{Grants: grantService, Verification: executor.NewMock(nil), PollInterval: 100 * time.Millisecond}
+	grantExecutor := newGrantExecutor(grantService)
 	activities := workflowcore.NewActivities(persistentStore, policyEngine, grantExecutor)
 	activities.AdapterName = "runner"
 	activities.Capacity = func(input workflowcore.ScheduleInput) scheduler.Capacity {
@@ -291,4 +290,10 @@ func loadPlanningInputs(contractPath, profilePath, catalogPath string) ([]contra
 		return nil, nil, err
 	}
 	return contracts, profiles, nil
+}
+
+// Runtime verification stays unavailable until the Runner observation path is
+// connected. Dispatch acceptance alone cannot supply passing health evidence.
+func newGrantExecutor(grants *application.Grants) *application.GrantExecutor {
+	return &application.GrantExecutor{Grants: grants, PollInterval: 100 * time.Millisecond}
 }
