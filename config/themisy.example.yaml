@@ -26,7 +26,8 @@ grants:
 runner_transport:
   # client_ca_file: /run/secrets/runner-client-ca.crt
   registrations:
-    - runner_id: runner-local-1
+    - result_trust_bundle_file: /run/config/result-trust.json
+      runner_id: runner-local-1
       tenant_id: tenant-development
       runner_group: local-development
       token_file: /run/secrets/themisy-runner-token

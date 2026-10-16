@@ -55,11 +55,12 @@ type RunnerTransport struct {
 	Registrations []RunnerRegistration `yaml:"registrations"`
 }
 type RunnerRegistration struct {
-	RunnerID         string `yaml:"runner_id"`
-	TenantID         string `yaml:"tenant_id"`
-	RunnerGroup      string `yaml:"runner_group"`
-	WorkloadIdentity string `yaml:"workload_identity"`
-	TokenFile        string `yaml:"token_file"`
+	ResultTrustBundleFile string `yaml:"result_trust_bundle_file"`
+	RunnerID              string `yaml:"runner_id"`
+	TenantID              string `yaml:"tenant_id"`
+	RunnerGroup           string `yaml:"runner_group"`
+	WorkloadIdentity      string `yaml:"workload_identity"`
+	TokenFile             string `yaml:"token_file"`
 }
 
 func Load(path string) (Config, error) {
@@ -124,6 +125,9 @@ func (c Config) Validate() error {
 		}
 		if _, duplicate := seen[registration.RunnerID]; duplicate {
 			return fmt.Errorf("duplicate runner registration %q", registration.RunnerID)
+		}
+		if registration.ResultTrustBundleFile == "" {
+			return fmt.Errorf("runner result_trust_bundle_file is required")
 		}
 		seen[registration.RunnerID] = struct{}{}
 		hasWorkloadIdentity = hasWorkloadIdentity || registration.WorkloadIdentity != ""

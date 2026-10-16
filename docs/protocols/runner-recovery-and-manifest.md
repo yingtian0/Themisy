@@ -29,7 +29,8 @@ shared lock, serialized against revision activation.
 ## Recovery reports
 
 `POST /v1/runner/grants/{id}/reconcile` uses the existing Runner transport version
-and authentication. JSON fields are `protocol_version`, `request_hash`, `result`.
+and authentication. JSON fields are `protocol_version`, `request_hash`, `result`, and mandatory signed
+`report`; see [signed Result reports](signed-result-reports.md).
 The request hash is the canonical original Action Grant hash. No delivery token
 is required or persisted; a registered peer in the original tenant/group can
 report a durable observed result after reconnect or replacement.
@@ -42,7 +43,8 @@ advances only after acknowledgement, so a lost response is safe to retry.
 
 No recovery response authorizes execution. Provider reads happen through typed
 adapters only; UNKNOWN/absent state remains unresolved, never a retry instruction.
-Result/Evidence cryptographic signatures and full runtime health remain #9.
+Result reporting signatures are described in the linked protocol. Evidence body
+signing and the remaining runtime work remain #9.
 
 ## Local execution refusal during delivery
 

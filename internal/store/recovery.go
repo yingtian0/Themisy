@@ -17,6 +17,7 @@ func (m *Memory) ReconcileGrantDispatch(_ context.Context, id string, expected i
 		return ErrConflict
 	}
 	if r.Result == result {
+		m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
 		return nil
 	}
 	if r.StateVersion != expected || r.Status == GrantDispatchSucceeded || r.Status == GrantDispatchRejected {

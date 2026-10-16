@@ -75,6 +75,12 @@ func TestMemoryGrantDispatchLeaseAckResultAndOutbox(t *testing.T) {
 	if err != nil || completed.Status != GrantDispatchSucceeded || completed.Result != result {
 		t.Fatalf("complete=%#v err=%v", completed, err)
 	}
+
+	for _, credentials := range [][2]string{{"other-runner", "secret-token"}, {"runner-1", "wrong-token"}} {
+		if _, err := memory.CompleteGrantDispatch(context.Background(), grant.GrantID, credentials[0], credentials[1], result, now, testAudit("invalid-retry", now)); !errors.Is(err, ErrConflict) {
+			t.Fatalf("terminal retry bypassed credentials: %v", err)
+		}
+	}
 	pending, err := memory.PendingOutboxByType("grant.dispatch.requested", 10)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("pending dispatch outbox=%d err=%v", len(pending), err)
