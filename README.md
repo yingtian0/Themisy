@@ -46,6 +46,13 @@ Values such as agent scopes, approver roles, CI status, dependency health, and s
 | `dependencies_healthy` | typed runtime or observability evidence |
 | Service metadata | versioned Service Contracts and trusted dynamic sources |
 
+The runtime currently has no connected Runner verification implementation. Releases
+that require verification become `BLOCKED` with `verification unavailable` after a
+successful deployment, and downstream steps stop. The binary does not substitute
+mock PASS evidence or offer a mock verification option. Real read-only runtime and
+Evidence verification remains Issue #9; signed dispatch results alone do not prove
+runtime health. Tests explicitly inject their own verification fixtures.
+
 The target architecture separates a Control Plane from a Customer Environment Runner. Production credentials remain in the customer environment. The Runner accepts only signed, narrowly scoped Action Grants, re-evaluates pinned policy locally, obtains short-lived credentials, and invokes typed adapters. Arbitrary shell, arbitrary HTTP, and generic cloud APIs are not exposed.
 
 See the [architecture overview](docs/architecture/overview.md), [threat model](docs/security/threat-model.md), and [architecture decisions](docs/adr/README.md) before extending an execution path.
