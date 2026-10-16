@@ -425,6 +425,9 @@ func (p *Planner) PlanIntent(intent domain.ReleaseIntent) (domain.ReleasePlan, e
 			},
 		}
 		if releaseProfile, ok := p.profiles[environment.profile]; ok {
+			if intent.Environment == domain.EnvironmentProduction && !releaseProfile.Spec.Verification.Required {
+				return domain.ReleasePlan{}, domain.NewReasonError(domain.ReasonInvalidProfile, "spec.verification.required", fmt.Sprintf("production profile %q must require runtime verification", environment.profile), nil)
+			}
 			step.RequiredCapabilities = sortedCapabilities(releaseProfile.Spec.RequiredCapabilities)
 			step.VerificationRequired = releaseProfile.Spec.Verification.Required
 			step.ObservationWindow = releaseProfile.Spec.Verification.ObservationWindow

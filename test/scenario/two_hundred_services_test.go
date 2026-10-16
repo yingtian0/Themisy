@@ -67,6 +67,16 @@ func TestTwoHundredServicesTenRunsHaveNoSafetyViolation(t *testing.T) {
 func TestTemporalTwentyFourHourApprovalExpiryUsesTimeSkipping(t *testing.T) {
 	run, memory, releaseExecutor := scenarioWorkflowFixture(t, nil)
 	run.Environment = domain.EnvironmentProduction
+	run.Plan.Environment = domain.EnvironmentProduction
+	// The shared staging fixture flattens both steps into a single phase;
+	// Production requires each step to match its enclosing Plan phase.
+	plannedSteps := run.Plan.Phases[0].Steps
+	run.Plan.Phases = []domain.PlanPhase{{Number: 0, Steps: plannedSteps[:1]}, {Number: 1, Steps: plannedSteps[1:]}}
+	for i := range run.Plan.Phases {
+		for j := range run.Plan.Phases[i].Steps {
+			run.Plan.Phases[i].Steps[j].Scheduling.Environment = domain.EnvironmentProduction
+		}
+	}
 	run.Agent.Scopes = append(run.Agent.Scopes, "release:production")
 	run.Steps[0].Change.DestructiveMigration = true
 	if err := memory.UpdateRun(&run, 1); err != nil {
