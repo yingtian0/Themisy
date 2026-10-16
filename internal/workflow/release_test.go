@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -173,7 +175,7 @@ func workflowFixture(t *testing.T, approval bool, behaviors map[string]executor.
 		scopes = append(scopes, "release:production")
 	}
 	change := domain.Change{Service: "identity", DesiredVersion: "sha-1", CISuccess: true, DependenciesHealthy: true, DestructiveMigration: approval}
-	run := domain.ReleaseRun{ID: "run-workflow", WorkflowID: "run-workflow", RequestID: "request-workflow", ReleaseVersion: "release-1", Environment: environment, RequestedBy: "requester", Agent: domain.AgentIdentity{ID: "agent", Scopes: scopes}, Plan: domain.ReleasePlan{Hash: "plan-hash", PlanHash: "plan-hash", Phases: []domain.PlanPhase{{Number: 0, Steps: []domain.PlanStep{{Service: "identity", DesiredVersion: "sha-1", Phase: 0, VerificationRequired: true, ObservationWindow: "1s", RollbackMode: domain.RollbackAutomatic}}}}}, Status: domain.RunPending, Steps: []domain.ReleaseStep{{Service: "identity", Phase: 0, Status: domain.StepPending, Change: change, VerificationRequired: true, ObservationWindow: "1s", RollbackMode: domain.RollbackAutomatic}}, StateVersion: 1, CreatedAt: now, UpdatedAt: now}
+	run := domain.ReleaseRun{ID: "run-workflow", WorkflowID: "run-workflow", RequestID: "request-workflow", ReleaseVersion: "release-1", Environment: environment, RequestedBy: "requester", Agent: domain.AgentIdentity{ID: "agent", Scopes: scopes}, Plan: domain.ReleasePlan{Environment: environment, Hash: "plan-hash", PlanHash: "plan-hash", Phases: []domain.PlanPhase{{Number: 0, Steps: []domain.PlanStep{{Service: "identity", DesiredVersion: "sha-1", Phase: 0, VerificationRequired: true, ObservationWindow: "1s", RollbackMode: domain.RollbackAutomatic}}}}}, Status: domain.RunPending, Steps: []domain.ReleaseStep{{Service: "identity", Phase: 0, Status: domain.StepPending, Change: change, VerificationRequired: true, ObservationWindow: "1s", RollbackMode: domain.RollbackAutomatic}}, StateVersion: 1, CreatedAt: now, UpdatedAt: now}
 	memory := store.NewMemory()
 	if _, created, err := memory.CreateRun(&run); err != nil || !created {
 		t.Fatalf("create fixture: %v", err)
@@ -206,4 +208,190 @@ func (s *failCompleteStore) CompleteExecution(record store.ExecutionRecord, expe
 		return errors.New("simulated commit response loss")
 	}
 	return s.Memory.CompleteExecution(record, expected, audit, outbox)
+}
+
+func TestProductionVerificationGuardBeforeAnyDispatch(t *testing.T) {
+	for _, name := range []string{"run flag", "plan flag", "later step", "missing mapping", "duplicate mapping"} {
+		t.Run(name, func(t *testing.T) {
+			run, memory, exec := workflowFixture(t, true, nil)
+			switch name {
+			case "run flag":
+				run.Steps[0].VerificationRequired = false
+			case "plan flag":
+				run.Plan.Phases[0].Steps[0].VerificationRequired = false
+			case "later step":
+				step := run.Steps[0]
+				step.Service = "later"
+				step.Change.Service = "later"
+				step.VerificationRequired = false
+				run.Steps = append(run.Steps, step)
+				plan := run.Plan.Phases[0].Steps[0]
+				plan.Service = "later"
+				run.Plan.Phases[0].Steps = append(run.Plan.Phases[0].Steps, plan)
+			case "missing mapping":
+				run.Plan.Phases = nil
+			case "duplicate mapping":
+				run.Plan.Phases[0].Steps = append(run.Plan.Phases[0].Steps, run.Plan.Phases[0].Steps[0])
+			}
+			// Durable historical/tampered run, rather than only changed Workflow input.
+			if err := memory.UpdateRunAtomic(&run, run.StateVersion, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			env := newWorkflowEnvironment(memory, exec)
+			env.ExecuteWorkflow(ReleaseWorkflow, ReleaseInput{Run: run})
+			if err := env.GetWorkflowError(); err != nil {
+				if name == "missing mapping" || name == "duplicate mapping" {
+					if exec.DeployCalls(run.ID+"/production/identity/sha-1") != 0 {
+						t.Fatal("malformed mapping dispatched")
+					}
+					return
+				}
+				t.Fatal(err)
+			}
+			var result domain.ReleaseRun
+			if err := env.GetWorkflowResult(&result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != domain.RunBlocked || exec.DeployCalls(run.ID+"/production/identity/sha-1") != 0 {
+				t.Fatalf("unsafe result: %#v", result)
+			}
+		})
+	}
+}
+
+func TestQueuedProductionDeployAndUnsafeSuccessAreRejected(t *testing.T) {
+	run, memory, exec := workflowFixture(t, true, nil)
+	run.Steps[0].VerificationRequired = false
+	if err := memory.UpdateRunAtomic(&run, run.StateVersion, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	activities := NewActivities(memory, policy.New(), exec)
+	input := DeployInput{RunID: run.ID, Environment: "production", Service: "identity", DesiredVersion: "sha-1", IdempotencyKey: "queued"}
+	if _, err := activities.Deploy(context.Background(), input); err == nil {
+		t.Fatal("queued unsafe deploy accepted")
+	}
+	if _, err := activities.Rollback(context.Background(), RollbackInput{Deploy: input}); err == nil {
+		t.Fatal("unsafe queued rollback accepted")
+	}
+	for _, reservation := range []struct{ adapter, key string }{{"mock", "queued"}, {"mock.rollback", "queued/rollback"}} {
+		if _, err := memory.GetExecution(reservation.adapter, reservation.key); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("unsafe activity reserved execution: %v", err)
+		}
+	}
+	if exec.DeployCalls("queued") != 0 {
+		t.Fatal("queued deploy reached executor")
+	}
+	run.Status = domain.RunSucceeded
+	if _, err := activities.PersistRun(context.Background(), PersistInput{Run: run}); err == nil {
+		t.Fatal("unsafe success persisted")
+	}
+	current, err := memory.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status == domain.RunSucceeded {
+		t.Fatal("durable unsafe success")
+	}
+	run = *current
+	run.Environment = domain.EnvironmentStaging
+	run.Plan.Environment = domain.EnvironmentStaging
+	if _, err := activities.PersistRun(context.Background(), PersistInput{Run: run}); err == nil {
+		t.Fatal("environment downgrade persisted")
+	}
+}
+
+func TestStagingExplicitVerificationSkipStillSucceeds(t *testing.T) {
+	run, memory, exec := workflowFixture(t, false, nil)
+	run.Steps[0].VerificationRequired = false
+	run.Plan.Phases[0].Steps[0].VerificationRequired = false
+	if err := memory.UpdateRunAtomic(&run, run.StateVersion, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	env := newWorkflowEnvironment(memory, exec)
+	env.ExecuteWorkflow(ReleaseWorkflow, ReleaseInput{Run: run})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result domain.ReleaseRun
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.RunSucceeded {
+		t.Fatalf("status=%s", result.Status)
+	}
+}
+
+func TestEvaluateProductionVerificationChecksInputAndDurableFlags(t *testing.T) {
+	for _, durable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("durable=%t", durable), func(t *testing.T) {
+			run, memory, exec := workflowFixture(t, true, nil)
+			unsafe := run
+			unsafe.Steps = append([]domain.ReleaseStep(nil), run.Steps...)
+			unsafe.Steps[0].VerificationRequired = false
+			input := unsafe
+			if durable {
+				if err := memory.UpdateRunAtomic(&unsafe, unsafe.StateVersion, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				input = run
+			}
+			decision, err := NewActivities(memory, policy.New(), exec).EvaluateStep(context.Background(), EvaluateInput{Run: input, Step: input.Steps[0]})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Decision != domain.DecisionDeny || decision.ReasonCode != "PRODUCTION_VERIFICATION_REQUIRED" {
+				t.Fatalf("decision=%#v", decision)
+			}
+		})
+	}
+}
+
+func TestPersistCannotReplaceProductionVerificationConfiguration(t *testing.T) {
+	for _, unsafeDurable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unsafeDurable=%t", unsafeDurable), func(t *testing.T) {
+			run, memory, exec := workflowFixture(t, true, nil)
+			if unsafeDurable {
+				run.Steps[0].VerificationRequired = false
+				if err := memory.UpdateRunAtomic(&run, run.StateVersion, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run.Steps[0].VerificationRequired = unsafeDurable
+			if _, err := NewActivities(memory, policy.New(), exec).PersistRun(context.Background(), PersistInput{Run: run}); err == nil {
+				t.Fatal("changed production verification flags persisted")
+			}
+			current, err := memory.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.Steps[0].VerificationRequired == unsafeDurable {
+				t.Fatal("durable verification flags changed")
+			}
+		})
+	}
+}
+
+func TestPersistProductionPlanAcceptsSerializationRoundTrip(t *testing.T) {
+	run, memory, exec := workflowFixture(t, true, nil)
+	run.Plan.CreatedAt = time.Date(2026, 10, 16, 12, 0, 0, 123, time.FixedZone("JST", 9*60*60))
+	run.Plan.ExpiresAt = run.Plan.CreatedAt.Add(time.Hour)
+	run.Plan.ContractHashes = map[string]string{}
+	run.Plan.Phases[0].Steps[0].Dependencies = []domain.Dependency{}
+	if err := memory.UpdateRunAtomic(&run, run.StateVersion, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip domain.ReleaseRun
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip.Plan.CreatedAt = roundTrip.Plan.CreatedAt.UTC()
+	roundTrip.Plan.ExpiresAt = roundTrip.Plan.ExpiresAt.UTC()
+	roundTrip.Status = domain.RunRunning
+	if _, err := NewActivities(memory, policy.New(), exec).PersistRun(context.Background(), PersistInput{Run: roundTrip}); err != nil {
+		t.Fatalf("safe serialized plan rejected: %v", err)
+	}
 }

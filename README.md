@@ -52,6 +52,9 @@ successful deployment, and downstream steps stop. The binary does not substitute
 mock PASS evidence or offer a mock verification option. Real read-only runtime and
 Evidence verification remains Issue #9; signed dispatch results alone do not prove
 runtime health. Tests explicitly inject their own verification fixtures.
+Production Profiles must explicitly require verification; see the
+[Production verification migration runbook](docs/runbooks/production-verification.md)
+for existing Profiles, Plans, approvals, and active runs.
 
 The target architecture separates a Control Plane from a Customer Environment Runner. Production credentials remain in the customer environment. The Runner accepts only signed, narrowly scoped Action Grants, re-evaluates pinned policy locally, obtains short-lived credentials, and invokes typed adapters. Arbitrary shell, arbitrary HTTP, and generic cloud APIs are not exposed.
 

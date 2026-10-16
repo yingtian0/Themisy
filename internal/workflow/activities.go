@@ -153,6 +153,42 @@ func (a *Activities) CompleteSchedule(_ context.Context, input ScheduleCompleteI
 }
 
 func (a *Activities) PersistRun(_ context.Context, input PersistInput) (domain.ReleaseRun, error) {
+	current, err := a.Store.GetRun(input.Run.ID)
+	if err != nil {
+		return domain.ReleaseRun{}, err
+	}
+	if current.Environment != input.Run.Environment || current.Plan.Environment != input.Run.Plan.Environment {
+		return domain.ReleaseRun{}, verificationGuardError(errors.New("run environment is immutable"))
+	}
+	if current.Environment == domain.EnvironmentProduction {
+		samePlan, err := equivalentPlans(current.Plan, input.Run.Plan)
+		if err != nil {
+			return domain.ReleaseRun{}, verificationGuardError(err)
+		}
+		if !samePlan {
+			return domain.ReleaseRun{}, verificationGuardError(errors.New("production plan is immutable; regenerate the plan and approval"))
+		}
+		if len(current.Steps) != len(input.Run.Steps) {
+			return domain.ReleaseRun{}, verificationGuardError(errors.New("production verification step mapping is immutable"))
+		}
+		for i, step := range current.Steps {
+			incoming := input.Run.Steps[i]
+			if step.Service != incoming.Service || step.Phase != incoming.Phase || step.VerificationRequired != incoming.VerificationRequired {
+				return domain.ReleaseRun{}, verificationGuardError(errors.New("production verification step mapping is immutable"))
+			}
+		}
+	}
+	successful := input.Run.Status == domain.RunSucceeded
+	for _, step := range input.Run.Steps {
+		successful = successful || step.Status == domain.StepSucceeded
+	}
+	if successful {
+		for _, run := range []domain.ReleaseRun{*current, input.Run} {
+			if err := validateProductionVerification(run); err != nil {
+				return domain.ReleaseRun{}, verificationGuardError(err)
+			}
+		}
+	}
 	audits := make([]domain.AuditEvent, 0, len(input.Audits))
 	for _, intent := range input.Audits {
 		audits = append(audits, a.audit(input.Run, intent))
@@ -177,11 +213,33 @@ func (a *Activities) PersistRun(_ context.Context, input PersistInput) (domain.R
 }
 
 func (a *Activities) EvaluateStep(_ context.Context, input EvaluateInput) (domain.PolicyDecision, error) {
+	current, err := a.Store.GetRun(input.Run.ID)
+	if err != nil {
+		return domain.PolicyDecision{}, err
+	}
+	for _, run := range []domain.ReleaseRun{*current, input.Run} {
+		if err := validateProductionVerification(run); err != nil {
+			return domain.PolicyDecision{Decision: domain.DecisionDeny, ReasonCode: "PRODUCTION_VERIFICATION_REQUIRED", ReasonDetail: err.Error(), CreatedAt: a.Now().UTC()}, nil
+		}
+	}
+	if input.Run.Environment != current.Environment || input.Run.Plan.Environment != current.Plan.Environment {
+		return domain.PolicyDecision{Decision: domain.DecisionDeny, ReasonCode: "PRODUCTION_VERIFICATION_REQUIRED", ReasonDetail: "run environment is immutable", CreatedAt: a.Now().UTC()}, nil
+	}
 	decision := a.Policy.Evaluate(policy.InputForRelease(input.Run, input.Step))
 	return decision, nil
 }
 
 func (a *Activities) Deploy(ctx context.Context, input DeployInput) (DeployResult, error) {
+	run, err := a.Store.GetRun(input.RunID)
+	if err != nil {
+		return DeployResult{}, err
+	}
+	if err := validateProductionVerification(*run); err != nil {
+		return DeployResult{}, verificationGuardError(err)
+	}
+	if string(run.Environment) != input.Environment {
+		return DeployResult{}, verificationGuardError(errors.New("deployment environment differs from durable run"))
+	}
 	now := a.Now().UTC()
 	record := store.ExecutionRecord{ID: newID("execution"), RunID: input.RunID, Service: input.Service, Adapter: a.AdapterName,
 		IdempotencyKey: input.IdempotencyKey, CreatedAt: now, UpdatedAt: now, Payload: map[string]any{"desired_version": input.DesiredVersion}}
@@ -238,6 +296,16 @@ func (a *Activities) Verify(ctx context.Context, input VerifyInput) (executor.Ve
 }
 
 func (a *Activities) Rollback(ctx context.Context, input RollbackInput) (RollbackResult, error) {
+	run, err := a.Store.GetRun(input.Deploy.RunID)
+	if err != nil {
+		return RollbackResult{}, err
+	}
+	if err := validateProductionVerification(*run); err != nil {
+		return RollbackResult{}, verificationGuardError(err)
+	}
+	if string(run.Environment) != input.Deploy.Environment {
+		return RollbackResult{}, verificationGuardError(errors.New("rollback environment differs from durable run"))
+	}
 	key := input.Deploy.IdempotencyKey + "/rollback"
 	now := a.Now().UTC()
 	record := store.ExecutionRecord{ID: newID("rollback"), RunID: input.Deploy.RunID, Service: input.Deploy.Service, Adapter: a.AdapterName + ".rollback", IdempotencyKey: key, CreatedAt: now, UpdatedAt: now}

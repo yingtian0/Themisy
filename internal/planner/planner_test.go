@@ -1,6 +1,8 @@
 package planner
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -452,5 +454,48 @@ func generatedPlanningInput(serviceCount, edgeCount int) ([]contract.ServiceCont
 		ReleaseVersion: "benchmark",
 		Environment:    domain.EnvironmentStaging,
 		Changes:        changes,
+	}
+}
+
+func TestProductionProfileRequiresVerification(t *testing.T) {
+	for _, environment := range []domain.Environment{domain.EnvironmentProduction, domain.EnvironmentStaging} {
+		for _, mode := range []string{"false", "omitted", "true"} {
+			required := mode == "true"
+			t.Run(fmt.Sprintf("%s/required=%s", environment, mode), func(t *testing.T) {
+				contracts, profiles := loadExamples(t)
+				for i := range profiles {
+					profiles[i].Spec.Verification.Required = required
+					profiles[i].ContentHash = ""
+					if mode == "omitted" {
+						data, err := json.Marshal(profiles[i])
+						if err != nil {
+							t.Fatal(err)
+						}
+						data = bytes.ReplaceAll(data, []byte(`"required":false,`), nil)
+						profiles[i], err = profile.Decode(data)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				p, err := NewFromContracts(contracts, profiles, Options{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				plan, err := p.Plan(domain.ReleaseRequest{ReleaseVersion: "release", Environment: environment, Changes: []domain.Change{{Service: "identity-api", DesiredVersion: "sha"}}})
+				if environment == domain.EnvironmentProduction && !required {
+					if err == nil {
+						t.Fatal("production accepted verification omission/false")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if plan.Phases[0].Steps[0].VerificationRequired != required {
+					t.Fatal("verification setting changed")
+				}
+			})
+		}
 	}
 }
