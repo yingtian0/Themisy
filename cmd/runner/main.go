@@ -98,22 +98,24 @@ type ecsSettings struct {
 	Targets []ecsTargetSettings `yaml:"targets"`
 }
 type ecsTargetSettings struct {
-	Service                string                      `yaml:"service"`
-	Environment            string                      `yaml:"environment"`
-	Region                 string                      `yaml:"region"`
-	ClusterARN             string                      `yaml:"cluster_arn"`
-	ServiceARN             string                      `yaml:"service_arn"`
-	DeployRoleARN          string                      `yaml:"deploy_role_arn"`
-	RollbackRoleARN        string                      `yaml:"rollback_role_arn"`
-	ExternalID             string                      `yaml:"external_id"`
-	RoleDuration           string                      `yaml:"role_duration"`
-	RollbackTaskDefinition string                      `yaml:"rollback_task_definition"`
-	TaskDefinitions        []ecsTaskDefinitionSettings `yaml:"task_definitions"`
+	Service                  string                      `yaml:"service"`
+	Environment              string                      `yaml:"environment"`
+	Region                   string                      `yaml:"region"`
+	ClusterARN               string                      `yaml:"cluster_arn"`
+	ServiceARN               string                      `yaml:"service_arn"`
+	DeployRoleARN            string                      `yaml:"deploy_role_arn"`
+	RollbackRoleARN          string                      `yaml:"rollback_role_arn"`
+	ExternalID               string                      `yaml:"external_id"`
+	RoleDuration             string                      `yaml:"role_duration"`
+	RollbackContainerDigests map[string]string           `yaml:"rollback_container_digests"`
+	RollbackTaskDefinition   string                      `yaml:"rollback_task_definition"`
+	TaskDefinitions          []ecsTaskDefinitionSettings `yaml:"task_definitions"`
 }
 type ecsTaskDefinitionSettings struct {
-	ArtifactDigest          string   `yaml:"artifact_digest"`
-	TaskDefinitionARN       string   `yaml:"task_definition_arn"`
-	ExpectedTaskDefinitions []string `yaml:"expected_task_definitions"`
+	ArtifactDigest           string            `yaml:"artifact_digest"`
+	TaskDefinitionARN        string            `yaml:"task_definition_arn"`
+	ExpectedContainerDigests map[string]string `yaml:"expected_container_digests"`
+	ExpectedTaskDefinitions  []string          `yaml:"expected_task_definitions"`
 }
 type githubActionsSettings struct {
 	Targets []githubTargetSettings `yaml:"targets"`
@@ -522,9 +524,9 @@ func buildECSTargets(configuration settings) (map[ecsadapter.TargetKey]ecsadapte
 			if _, duplicate := definitions[definition.ArtifactDigest]; duplicate {
 				return nil, nil, fmt.Errorf("duplicate ECS artifact digest for %s/%s", key.Service, key.Environment)
 			}
-			definitions[definition.ArtifactDigest] = ecsadapter.TaskDefinition{ARN: definition.TaskDefinitionARN, ExpectedTaskDefinitions: append([]string(nil), definition.ExpectedTaskDefinitions...)}
+			definitions[definition.ArtifactDigest] = ecsadapter.TaskDefinition{ARN: definition.TaskDefinitionARN, ExpectedContainerDigests: definition.ExpectedContainerDigests, ExpectedTaskDefinitions: append([]string(nil), definition.ExpectedTaskDefinitions...)}
 		}
-		targets[key] = ecsadapter.Target{Region: configured.Region, ClusterARN: configured.ClusterARN, ServiceARN: configured.ServiceARN, TaskDefinitions: definitions, RollbackTaskDefinition: configured.RollbackTaskDefinition}
+		targets[key] = ecsadapter.Target{Region: configured.Region, ClusterARN: configured.ClusterARN, ServiceARN: configured.ServiceARN, TaskDefinitions: definitions, RollbackTaskDefinition: configured.RollbackTaskDefinition, RollbackContainerDigests: configured.RollbackContainerDigests}
 		roles[credentials.AWSRoleKey{TenantID: configuration.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeDeploy}] = credentials.AWSRole{RoleARN: configured.DeployRoleARN, ExternalID: configured.ExternalID, Duration: duration}
 		if configured.RollbackRoleARN != "" {
 			roles[credentials.AWSRoleKey{TenantID: configuration.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeRollback}] = credentials.AWSRole{RoleARN: configured.RollbackRoleARN, ExternalID: configured.ExternalID, Duration: duration}
