@@ -9,9 +9,30 @@
     <h2>{{.Service}}</h2>
     <p>Run <a href="/ui/release-runs/{{.RunID}}">{{.RunID}}</a></p>
     <p>Required roles: {{range .Approval.RequiredRoles}}<code>{{.}}</code> {{end}}</p>
-    <p>Expires: {{.Approval.ExpiresAt}}</p>
+    <p>Expires: {{if .Approval.ExpiresAt.IsZero}}Unknown / not recorded{{else}}{{.Approval.ExpiresAt}}{{end}}</p>
+    {{if .BindingProblem}}<p role="alert">{{.BindingProblem}}</p>{{else}}
+    {{if .Expired}}<p role="alert">Approval expired. Request a new review; no approval can be submitted here.</p>{{end}}
+    {{if .PlanExpired}}<p role="alert">Plan expired or freshness deadline unavailable. Replan and reauthorize before a new Write.</p>{{end}}
+    <dl class="summary">
+      <div><dt>Environment / planned operation</dt><dd>{{.Run.Environment}} / deploy</dd></div>
+      <div><dt>Requester</dt><dd>{{if .Run.RequestedBy}}{{.Run.RequestedBy}}{{else}}Unknown{{end}}</dd></div>
+      <div><dt>Delegated Agent</dt><dd>{{if .Run.Agent.ID}}{{.Run.Agent.ID}}{{else}}Unknown / not recorded{{end}}</dd></div>
+      <div><dt>Current artifact → requested artifact</dt><dd>Unknown / not fetched → <code>{{.Planned.DesiredVersion}}</code></dd></div>
+      <div><dt>Approval reason</dt><dd>{{with .Step.Policy}}{{if or .ReasonCode .ReasonDetail}}{{.ReasonCode}}: {{.ReasonDetail}}{{else}}Unknown / policy explanation not recorded{{end}}{{else}}Unknown / policy explanation not recorded{{end}}</dd></div>
+      <div><dt>Declared impact</dt><dd>Risk: {{if .Planned.Scheduling.RiskTier}}{{.Planned.Scheduling.RiskTier}}{{else}}Unknown{{end}}; phase {{.Planned.Phase}}. {{len .Planned.Dependencies}} declared dependencies; actual runtime blast radius unknown.</dd></div>
+      <div><dt>Success criteria</dt><dd>{{if .Planned.VerificationRequired}}Runtime verification required; observation {{if .Planned.ObservationWindow}}{{.Planned.ObservationWindow}}{{else}}unknown{{end}}.{{else}}Runtime verification is not required by this pinned step.{{end}} Exact health thresholds are not available in this view.</dd></div>
+      <div><dt>Rollback</dt><dd>Mode: {{if .Planned.RollbackMode}}{{.Planned.RollbackMode}}{{else}}Unknown{{end}}. Destination and compensation deadline: unknown / not recorded in this pinned view. Automatic mode does not prove permission or recovery success.</dd></div>
+      <div><dt>Evidence</dt><dd>{{with .Step.Verification}}Status: {{if .Status}}{{.Status}}{{else}}UNKNOWN{{end}}; source: {{if .Evidence.Source}}{{.Evidence.Source}}{{else}}unknown{{end}}; observed: {{if .Evidence.ObservedAt.IsZero}}not recorded{{else}}{{.Evidence.ObservedAt}}{{end}}.{{else}}MISSING — no runtime verification recorded.{{end}} Freshness is unknown; no freshness threshold is recorded here. Request CI/health flags are not authenticated evidence.</dd></div>
+      <div><dt>Resolution</dt><dd>Named responder is not recorded. Declared team: {{if .Planned.Scheduling.Team}}{{.Planned.Scheduling.Team}}{{else}}unknown{{end}}. Pause/freeze through supported operator controls and inspect the Run audit if evidence or rollback authority is unresolved.</dd></div>
+    </dl>
+    <details><summary>Pinned approval context</summary>
+      <p>Approval Plan hash: <code>{{.Approval.PlanHash}}</code>; Plan expiry: {{if .Run.Plan.ExpiresAt.IsZero}}unknown{{else}}{{.Run.Plan.ExpiresAt}}{{end}}</p>
+      <p>Contract: <code>{{if .Planned.ContractHash}}{{.Planned.ContractHash}}{{else}}unknown{{end}}</code>; Profile: <code>{{if .Planned.ProfileHash}}{{.Planned.ProfileHash}}{{else}}unknown{{end}}</code>; Context: <code>{{if .Run.Plan.ContextSnapshotRef}}{{.Run.Plan.ContextSnapshotRef}}{{else}}unknown{{end}}</code></p>
+      <p>This view uses the approval's Run and pinned Plan, never a newer catalog entry. Displayed data does not replace final authorization.</p>
+    </details>
+    {{end}}
     <div class="actions">
-      <form method="post" action="/ui/approvals/{{.Approval.ID}}:approve"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button>Approve</button></form>
+      <form method="post" action="/ui/approvals/{{.Approval.ID}}:approve"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="plan_hash" value="{{.Approval.PlanHash}}"><button {{if not .Reviewable}}disabled{{end}}>Approve</button></form>
       <form method="post" action="/ui/approvals/{{.Approval.ID}}:deny"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="secondary">Deny</button></form>
       <form method="post" action="/ui/approvals/{{.Approval.ID}}:revoke"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger">Revoke</button></form>
     </div>
