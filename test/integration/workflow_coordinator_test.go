@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,25 +25,14 @@ func TestPostgresWorkflowCoordinatorAcrossIndependentStores(t *testing.T) {
 	requireDedicatedCoordinatorIntegration(t)
 	ctx := context.Background()
 	databaseURL := integrationDatabaseURL()
-	connection, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
+	if err := resetCoordinatorDatabase(ctx, databaseURL); err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close(ctx)
-	var database string
-	if err := connection.QueryRow(ctx, `SELECT current_database()`).Scan(&database); err != nil {
-		t.Fatal(err)
-	}
-	if database != "themisy" {
-		t.Fatalf("unexpected integration database %q", database)
-	}
-	if _, err := connection.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
-		t.Fatalf("reset only dedicated integration database: %v", err)
-	}
-	connection.Close(ctx)
-	if err := postgresstore.Migrate(databaseURL, false); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() {
+		if err := resetCoordinatorDatabase(ctx, databaseURL); err != nil {
+			t.Errorf("clean dedicated coordinator database: %v", err)
+		}
+	})
 	first, err := postgresstore.New(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +188,117 @@ func TestPostgresWorkflowCoordinatorAcrossIndependentStores(t *testing.T) {
 	if err := second.AdmitSchedule(ctx, scheduler.AdmissionRequest{Lease: stale, OperationKey: "stale-operation", Now: now.Add(5 * time.Second), Audit: coordinatorAudit("stale-admit", stale.RunID, now.Add(5*time.Second))}); !errors.Is(err, scheduler.ErrLeaseConflict) {
 		t.Fatalf("stale fencing value error=%v, want lease conflict", err)
 	}
+}
+
+func TestPostgresWorkflowCoordinatorSeparateProcesses(t *testing.T) {
+	requireDedicatedCoordinatorIntegration(t)
+	ctx := context.Background()
+	databaseURL := integrationDatabaseURL()
+	if err := resetCoordinatorDatabase(ctx, databaseURL); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := resetCoordinatorDatabase(ctx, databaseURL); err != nil {
+			t.Errorf("clean dedicated coordinator database: %v", err)
+		}
+	})
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan string, 2)
+	errorsFound := make(chan error, 2)
+	var workers sync.WaitGroup
+	for index := 0; index < 2; index++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			command := exec.Command(executable, "-test.run=^TestCoordinatorWorkerProcess$")
+			command.Env = append(os.Environ(), "THEMISY_COORDINATOR_WORKER_PROCESS=1", "THEMISY_WORKER_ID="+fmt.Sprint(index), "THEMISY_DATABASE_URL="+databaseURL)
+			output, err := command.CombinedOutput()
+			if err != nil {
+				errorsFound <- fmt.Errorf("worker process %d: %w: %s", index, err, output)
+				return
+			}
+			for _, line := range strings.Split(string(output), "\n") {
+				if strings.HasPrefix(line, "COORDINATOR_RESULT=") {
+					results <- strings.TrimPrefix(line, "COORDINATOR_RESULT=")
+					return
+				}
+			}
+			errorsFound <- fmt.Errorf("worker process %d returned no result: %s", index, output)
+		}(index)
+	}
+	workers.Wait()
+	close(results)
+	close(errorsFound)
+	for err := range errorsFound {
+		t.Fatal(err)
+	}
+	var acquired, blocked int
+	for result := range results {
+		switch result {
+		case "acquired":
+			acquired++
+		case "blocked":
+			blocked++
+		default:
+			t.Fatalf("unexpected worker result %q", result)
+		}
+	}
+	if acquired != 1 || blocked != 1 {
+		t.Fatalf("separate worker processes acquired=%d blocked=%d, want one each", acquired, blocked)
+	}
+}
+
+func TestCoordinatorWorkerProcess(t *testing.T) {
+	if os.Getenv("THEMISY_COORDINATOR_WORKER_PROCESS") != "1" {
+		t.Skip("helper process for TestPostgresWorkflowCoordinatorSeparateProcesses")
+	}
+	ctx := context.Background()
+	coordinator, err := postgresstore.New(ctx, integrationDatabaseURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	limits := scheduler.DefaultLimits()
+	limits.TenantGlobal = 1
+	limits.DefaultPerDimension = 1
+	step := scheduler.Step{ID: "coordinator-process-service", Tenant: "integration-tenant", Environment: "staging", Region: "region-a", Cluster: "cluster-a", Team: "team-a", RiskTier: "low", FailureDomains: []string{"failure-domain-a"}}
+	constraints, err := scheduler.ConstraintsFor(step, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	workerID := os.Getenv("THEMISY_WORKER_ID")
+	_, blocked, _, err := coordinator.AcquireSchedule(ctx, acquireRequest("process-"+workerID, "process-run-"+workerID, step, constraints, now, now.Add(time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked) > 0 {
+		_, _ = os.Stdout.WriteString("COORDINATOR_RESULT=blocked\n")
+		return
+	}
+	_, _ = os.Stdout.WriteString("COORDINATOR_RESULT=acquired\n")
+}
+
+func resetCoordinatorDatabase(ctx context.Context, databaseURL string) error {
+	connection, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		return err
+	}
+	defer connection.Close(ctx)
+	var database string
+	if err := connection.QueryRow(ctx, `SELECT current_database()`).Scan(&database); err != nil {
+		return err
+	}
+	if database != "themisy" {
+		return fmt.Errorf("unexpected integration database %q", database)
+	}
+	if _, err := connection.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+		return fmt.Errorf("reset only dedicated integration database: %w", err)
+	}
+	return postgresstore.Migrate(databaseURL, false)
 }
 
 func acquireRequest(id, runID string, step scheduler.Step, constraints []scheduler.Constraint, now, until time.Time) scheduler.AcquireRequest {
