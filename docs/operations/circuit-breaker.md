@@ -1,7 +1,8 @@
 # Production circuit breaker
 
-The scheduler records terminal step outcomes in a rolling per-tenant production
-window. When the configured minimum sample count is met and the error rate is
+The PostgreSQL coordinator records terminal and unknown step outcomes in a
+rolling per-tenant production window. When the configured minimum sample count
+is met and the error rate is
 at or above the policy threshold, the circuit opens. Every subsequent
 production step is rejected before execution reservation and Adapter dispatch.
 Staging dispatch is unaffected so recovery can still be validated safely.
@@ -18,11 +19,11 @@ close the breaker. Operators must first identify the failing change, freeze
 affected Runners when necessary, validate recovery in staging, and use an
 operator-only recovery procedure provided by the deployment environment.
 
-Until a durable distributed coordinator is configured, restarting the sole
-worker clears its in-memory sample window. Treat worker restart while a circuit
-is open as a safety-sensitive operator action and retain the audit/incident
-record. Multi-worker production deployment requires a shared durable breaker
-backend.
+The circuit state and policy are stored with the shared PostgreSQL coordinator,
+so worker restart does not clear the sample window or open state. Workers fail
+closed if they cannot read or update that shared state. Configuration changes
+require a coordinated migration/operations procedure; workers reject a policy
+that differs from the one already stored for the tenant.
 
 ## Verification
 

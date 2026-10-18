@@ -23,6 +23,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 	if err := workflow.SetQueryHandler(ctx, QueryState, func() (domain.ReleaseRun, error) { return run, nil }); err != nil {
 		return run, err
 	}
+	scheduleVersion := workflow.GetVersion(ctx, "persistent-schedule-coordinator", workflow.DefaultVersion, 1)
 	activityContext := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Second, MaximumAttempts: 3}})
 	executionContext := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute, ScheduleToCloseTimeout: 12 * time.Minute, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Second, MaximumAttempts: 3}})
 	approvalChannel := workflow.GetSignalChannel(ctx, SignalApproval)
@@ -115,9 +116,12 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		}
 		step = &run.Steps[index]
 		deployInput := DeployInput{RunID: run.ID, RequestedBy: run.RequestedBy, AgentID: run.Agent.ID, Service: step.Service, Environment: string(run.Environment), DesiredVersion: step.Change.DesiredVersion, IdempotencyKey: fmt.Sprintf("%s/%s/%s/%s", run.ID, run.Environment, step.Service, step.Change.DesiredVersion)}
+		if scheduleVersion != workflow.DefaultVersion {
+			deployInput.ScheduleLease = scheduleResult.Lease
+		}
 		var deployed DeployResult
 		if err := workflow.ExecuteActivity(executionContext, ActivityDeploy, deployInput).Get(executionContext, &deployed); err != nil {
-			if completeErr := completeScheduling(activityContext, run.ID, step.Service, true); completeErr != nil {
+			if completeErr := completeScheduling(activityContext, run.ID, step.Service, true, true, scheduleResult.Lease, scheduleVersion); completeErr != nil {
 				return run, completeErr
 			}
 			step.Status = domain.StepUnknown
@@ -133,7 +137,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		}
 		step.Execution = &deployed.Execution
 		if !step.VerificationRequired {
-			if err := completeScheduling(activityContext, run.ID, step.Service, false); err != nil {
+			if err := completeScheduling(activityContext, run.ID, step.Service, false, false, scheduleResult.Lease, scheduleVersion); err != nil {
 				return run, err
 			}
 			step.Status = domain.StepSucceeded
@@ -157,7 +161,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		}
 		var verification executor.VerificationResult
 		if err := workflow.ExecuteActivity(activityContext, ActivityVerify, VerifyInput{Deployment: deployed.Deployment}).Get(activityContext, &verification); err != nil {
-			if completeErr := completeScheduling(activityContext, run.ID, step.Service, true); completeErr != nil {
+			if completeErr := completeScheduling(activityContext, run.ID, step.Service, true, true, scheduleResult.Lease, scheduleVersion); completeErr != nil {
 				return run, completeErr
 			}
 			step.Status = domain.StepBlocked
@@ -170,7 +174,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		step.Verification = verificationProjection(verification, workflow.Now(ctx).UTC())
 		if verification.Outcome() != adapter.VerificationPass {
 			if step.RollbackMode != domain.RollbackAutomatic {
-				if err := completeScheduling(activityContext, run.ID, step.Service, true); err != nil {
+				if err := completeScheduling(activityContext, run.ID, step.Service, true, false, scheduleResult.Lease, scheduleVersion); err != nil {
 					return run, err
 				}
 				step.Status = domain.StepEscalated
@@ -216,14 +220,14 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 				}
 			}
 			cancelDownstream(&run, index+1)
-			if err := completeScheduling(activityContext, run.ID, step.Service, true); err != nil {
+			if err := completeScheduling(activityContext, run.ID, step.Service, true, step.Status == domain.StepEscalated, scheduleResult.Lease, scheduleVersion); err != nil {
 				return run, err
 			}
 			run.UpdatedAt = workflow.Now(ctx).UTC()
 			return persist(activityContext, run, nil, "rollback.finished")
 		}
 		step.Status = domain.StepSucceeded
-		if err := completeScheduling(activityContext, run.ID, step.Service, false); err != nil {
+		if err := completeScheduling(activityContext, run.ID, step.Service, false, false, scheduleResult.Lease, scheduleVersion); err != nil {
 			return run, err
 		}
 		succeeded[step.Service] = true
@@ -238,8 +242,13 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 	return persist(activityContext, run, []AuditIntent{{ActorType: "system", ActorID: "temporal", Action: "release.workflow.complete", ResourceType: "release_run", ResourceID: run.ID, Result: "SUCCEEDED"}}, "release.succeeded")
 }
 
-func completeScheduling(ctx workflow.Context, runID, stepID string, failed bool) error {
-	return workflow.ExecuteActivity(ctx, ActivityCompleteSchedule, ScheduleCompleteInput{RunID: runID, StepID: stepID, Failed: failed}).Get(ctx, nil)
+func completeScheduling(ctx workflow.Context, runID, stepID string, failed, unknown bool, lease *scheduler.ScheduleLease, version workflow.Version) error {
+	input := ScheduleCompleteInput{RunID: runID, StepID: stepID, Failed: failed}
+	if version != workflow.DefaultVersion {
+		input.Unknown = unknown
+		input.Lease = lease
+	}
+	return workflow.ExecuteActivity(ctx, ActivityCompleteSchedule, input).Get(ctx, nil)
 }
 
 func schedulingStep(run domain.ReleaseRun, releaseStep domain.ReleaseStep) scheduler.Step {

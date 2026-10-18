@@ -151,6 +151,53 @@ func TestUnknownDeployStateNeverCreatesSecondWrite(t *testing.T) {
 	}
 }
 
+func TestDurableCoordinatorUnavailableAndMissingLeaseFailClosed(t *testing.T) {
+	run, memory, exec := workflowFixture(t, false, nil)
+	coordinator := &coordinatorTestStore{Memory: memory, acquireErr: errors.New("database unavailable")}
+	activities := NewActivities(coordinator, policy.New(), exec)
+	input := ScheduleInput{RunID: run.ID, Step: scheduler.Step{ID: "identity", Tenant: run.TenantID, Environment: string(run.Environment), Region: run.Region, Cluster: run.Cluster}}
+	result, err := activities.AcquireSchedule(context.Background(), input)
+	if err != nil || result.Allowed || result.Reason != "SHARED_COORDINATOR_UNAVAILABLE" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if _, err := activities.Deploy(context.Background(), DeployInput{RunID: run.ID, RequestedBy: run.RequestedBy, AgentID: run.Agent.ID, Service: "identity", Environment: string(run.Environment), DesiredVersion: "sha-1", IdempotencyKey: "durable-missing-lease"}); err == nil {
+		t.Fatal("deploy without durable lease should fail closed")
+	}
+	if calls := exec.DeployCalls("durable-missing-lease"); calls != 0 {
+		t.Fatalf("provider calls=%d, want 0", calls)
+	}
+	if coordinator.quarantineCalls != 1 {
+		t.Fatalf("quarantine calls=%d, want 1", coordinator.quarantineCalls)
+	}
+}
+
+type coordinatorTestStore struct {
+	*store.Memory
+	acquireErr      error
+	quarantineCalls int
+}
+
+func (s *coordinatorTestStore) AcquireSchedule(context.Context, scheduler.AcquireRequest) (scheduler.ScheduleLease, []scheduler.Blocked, scheduler.CircuitState, error) {
+	return scheduler.ScheduleLease{}, nil, scheduler.CircuitState{}, s.acquireErr
+}
+
+func (s *coordinatorTestStore) AdmitSchedule(context.Context, scheduler.AdmissionRequest) error {
+	return errors.New("unexpected admission")
+}
+
+func (s *coordinatorTestStore) CompleteSchedule(context.Context, scheduler.CompletionRequest) (scheduler.CircuitState, error) {
+	return scheduler.CircuitState{}, nil
+}
+
+func (s *coordinatorTestStore) QuarantineSchedule(context.Context, scheduler.QuarantineRequest) error {
+	s.quarantineCalls++
+	return nil
+}
+
+func (s *coordinatorTestStore) GetCircuitState(context.Context, string) (scheduler.CircuitState, error) {
+	return scheduler.CircuitState{}, nil
+}
+
 func newWorkflowEnvironment(st store.DurableStore, exec executor.ReleaseExecutor) *testsuite.TestWorkflowEnvironment {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

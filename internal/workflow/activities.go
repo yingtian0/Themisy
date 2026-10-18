@@ -59,6 +59,7 @@ type DeployInput struct {
 	Environment    string
 	DesiredVersion string
 	IdempotencyKey string
+	ScheduleLease  *scheduler.ScheduleLease `json:"schedule_lease,omitempty"`
 }
 
 type DeployResult struct {
@@ -87,24 +88,30 @@ type ScheduleResult struct {
 	Allowed   bool
 	Reason    string
 	BlockedBy []scheduler.Blocked
+	Lease     *scheduler.ScheduleLease `json:"lease,omitempty"`
 }
 
 type ScheduleCompleteInput struct {
-	RunID  string
-	StepID string
-	Failed bool
+	RunID   string
+	StepID  string
+	Failed  bool
+	Unknown bool                     `json:"unknown,omitempty"`
+	Lease   *scheduler.ScheduleLease `json:"lease,omitempty"`
 }
 
 type Activities struct {
-	Store       store.DurableStore
-	Policy      *policy.Engine
-	Executor    executor.ReleaseExecutor
-	AdapterName string
-	Now         func() time.Time
-	Scheduler   *scheduler.Scheduler
-	Capacity    func(ScheduleInput) scheduler.Capacity
-	scheduleMu  sync.Mutex
-	scheduled   map[string]scheduler.Dispatch
+	Store            store.DurableStore
+	Policy           *policy.Engine
+	Executor         executor.ReleaseExecutor
+	AdapterName      string
+	Now              func() time.Time
+	Scheduler        *scheduler.Scheduler
+	Capacity         func(ScheduleInput) scheduler.Capacity
+	ScheduleLimits   scheduler.Limits
+	CircuitPolicy    scheduler.CircuitPolicy
+	ScheduleLeaseTTL time.Duration
+	scheduleMu       sync.Mutex
+	scheduled        map[string]scheduler.Dispatch
 }
 
 func NewActivities(st store.DurableStore, policyEngine *policy.Engine, releaseExecutor executor.ReleaseExecutor) *Activities {
@@ -112,12 +119,53 @@ func NewActivities(st store.DurableStore, policyEngine *policy.Engine, releaseEx
 	if err != nil {
 		panic(err)
 	}
-	return &Activities{Store: st, Policy: policyEngine, Executor: releaseExecutor, AdapterName: "mock", Now: time.Now, Scheduler: coordinator, Capacity: func(ScheduleInput) scheduler.Capacity {
+	return &Activities{Store: st, Policy: policyEngine, Executor: releaseExecutor, AdapterName: "mock", Now: time.Now, Scheduler: coordinator, ScheduleLimits: scheduler.DefaultLimits(), CircuitPolicy: scheduler.CircuitPolicy{MinimumSamples: 5, WindowSize: 20, ErrorRate: .5}, ScheduleLeaseTTL: 5 * time.Minute, Capacity: func(ScheduleInput) scheduler.Capacity {
 		return scheduler.Capacity{RunnerAvailable: 20, AdapterRemaining: 20, QueueLimit: 100}
 	}, scheduled: make(map[string]scheduler.Dispatch)}
 }
 
-func (a *Activities) AcquireSchedule(_ context.Context, input ScheduleInput) (ScheduleResult, error) {
+func (a *Activities) AcquireSchedule(ctx context.Context, input ScheduleInput) (ScheduleResult, error) {
+	if coordinator, ok := a.Store.(scheduler.DurableCoordinator); ok {
+		capacity := scheduler.Capacity{}
+		if a.Capacity != nil {
+			capacity = a.Capacity(input)
+		}
+		available, pressure := capacity.Available()
+		if available == 0 {
+			now := a.Now().UTC()
+			if err := a.Store.AppendAudit(a.auditFor(input.RunID, "scheduler", AuditIntent{ActorType: "system", ActorID: "scheduler", Action: "schedule.block", ResourceType: "release_step", ResourceID: input.Step.ID, Result: "BLOCKED", Details: map[string]any{"reason": string(pressure)}}, now)); err != nil {
+				return ScheduleResult{Reason: "SHARED_COORDINATOR_UNAVAILABLE"}, nil
+			}
+			return ScheduleResult{Reason: string(pressure)}, nil
+		}
+		constraints, err := scheduler.ConstraintsFor(input.Step, a.ScheduleLimits)
+		if err != nil {
+			_ = a.Store.AppendAudit(a.auditFor(input.RunID, "scheduler", AuditIntent{ActorType: "system", ActorID: "scheduler", Action: "schedule.block", ResourceType: "release_step", ResourceID: input.Step.ID, Result: "BLOCKED", Details: map[string]any{"reason": "SCHEDULE_COORDINATOR_CONFIGURATION"}}, a.Now().UTC()))
+			return ScheduleResult{Reason: "SCHEDULE_COORDINATOR_CONFIGURATION"}, nil
+		}
+		now := a.Now().UTC()
+		leaseTTL := a.ScheduleLeaseTTL
+		if leaseTTL <= 0 {
+			leaseTTL = 5 * time.Minute
+		}
+		lease, blocked, circuit, err := coordinator.AcquireSchedule(ctx, scheduler.AcquireRequest{
+			ReservationID: newID("schedule"), RunID: input.RunID, Step: input.Step, Constraints: constraints,
+			Circuit: a.CircuitPolicy, OwnerToken: newID("schedule-owner"), Now: now, LeaseUntil: now.Add(leaseTTL),
+			Audit: a.auditFor(input.RunID, "scheduler", AuditIntent{ActorType: "system", ActorID: "scheduler", Action: "schedule.acquire", ResourceType: "release_step", ResourceID: input.Step.ID, Result: "REQUESTED"}, now),
+		})
+		if err != nil {
+			_ = a.Store.AppendAudit(a.auditFor(input.RunID, "scheduler", AuditIntent{ActorType: "system", ActorID: "scheduler", Action: "schedule.block", ResourceType: "release_step", ResourceID: input.Step.ID, Result: "BLOCKED", Details: map[string]any{"reason": "SHARED_COORDINATOR_UNAVAILABLE"}}, a.Now().UTC()))
+			return ScheduleResult{Reason: "SHARED_COORDINATOR_UNAVAILABLE"}, nil
+		}
+		if len(blocked) > 0 {
+			reason := "CONCURRENCY_BUDGET_EXHAUSTED"
+			if circuit.Open {
+				reason = "CIRCUIT_BREAKER_OPEN"
+			}
+			return ScheduleResult{Reason: reason, BlockedBy: blocked}, nil
+		}
+		return ScheduleResult{Allowed: true, Lease: &lease}, nil
+	}
 	key := input.RunID + "\x00" + input.Step.ID
 	a.scheduleMu.Lock()
 	defer a.scheduleMu.Unlock()
@@ -140,7 +188,23 @@ func (a *Activities) AcquireSchedule(_ context.Context, input ScheduleInput) (Sc
 	return ScheduleResult{Allowed: true}, nil
 }
 
-func (a *Activities) CompleteSchedule(_ context.Context, input ScheduleCompleteInput) (scheduler.CircuitState, error) {
+func (a *Activities) CompleteSchedule(ctx context.Context, input ScheduleCompleteInput) (scheduler.CircuitState, error) {
+	if coordinator, ok := a.Store.(scheduler.DurableCoordinator); ok {
+		if input.Lease == nil {
+			return scheduler.CircuitState{}, nil
+		}
+		outcome := scheduler.ScheduleOutcomeSucceeded
+		if input.Unknown {
+			outcome = scheduler.ScheduleOutcomeUnknown
+		} else if input.Failed {
+			outcome = scheduler.ScheduleOutcomeFailed
+		}
+		now := a.Now().UTC()
+		return coordinator.CompleteSchedule(ctx, scheduler.CompletionRequest{
+			Lease: *input.Lease, Outcome: outcome, Circuit: a.CircuitPolicy, Now: now,
+			Audit: a.auditFor(input.RunID, "scheduler", AuditIntent{ActorType: "system", ActorID: "scheduler", Action: "schedule.complete", ResourceType: "release_step", ResourceID: input.StepID, Result: string(outcome)}, now),
+		})
+	}
 	key := input.RunID + "\x00" + input.StepID
 	a.scheduleMu.Lock()
 	defer a.scheduleMu.Unlock()
@@ -245,6 +309,30 @@ func (a *Activities) Deploy(ctx context.Context, input DeployInput) (DeployResul
 		IdempotencyKey: input.IdempotencyKey, CreatedAt: now, UpdatedAt: now, Payload: map[string]any{"desired_version": input.DesiredVersion}}
 	audit := a.auditFor(input.RunID, input.RequestedBy, AuditIntent{ActorType: "agent", ActorID: input.AgentID, Action: "deployment.reserve", ResourceType: "service", ResourceID: input.Service, Result: "AUTHORIZED", Details: map[string]any{"adapter": a.AdapterName, "idempotency_key": input.IdempotencyKey}}, now)
 	outbox := a.outbox("execution", record.ID, "execution.reserved", map[string]any{"adapter": a.AdapterName, "idempotency_key": input.IdempotencyKey})
+	if coordinator, ok := a.Store.(scheduler.DurableCoordinator); ok {
+		existing, found, lookupErr := a.executionBeforeDispatch(record.Adapter, record.IdempotencyKey)
+		if lookupErr != nil {
+			return DeployResult{}, lookupErr
+		}
+		if input.ScheduleLease == nil || input.ScheduleLease.OwnerToken == "" {
+			if !found || existing.Status != store.ExecutionSucceeded {
+				if err := a.quarantineLegacySchedule(ctx, coordinator, *run, input.Service, input.IdempotencyKey, now); err != nil {
+					return DeployResult{}, err
+				}
+				return DeployResult{}, temporal.NewNonRetryableApplicationError("schedule reservation is missing; execution requires reconciliation", string(ErrorUnknownExternalState), store.ErrUnknownExternalState)
+			}
+		} else if found && existing.Status == store.ExecutionSucceeded {
+			// Restore the durable idempotent result below without reopening write admission.
+		} else {
+			if err := coordinator.AdmitSchedule(ctx, scheduler.AdmissionRequest{Lease: *input.ScheduleLease, OperationKey: input.IdempotencyKey, Now: now,
+				Audit: a.auditFor(input.RunID, input.RequestedBy, AuditIntent{ActorType: "system", ActorID: "scheduler", Action: "schedule.admit", ResourceType: "release_step", ResourceID: input.Service, Result: "AUTHORIZED"}, now)}); err != nil {
+				if errors.Is(err, scheduler.ErrLeaseConflict) || errors.Is(err, scheduler.ErrUnresolved) {
+					return DeployResult{}, temporal.NewNonRetryableApplicationError("schedule reservation is no longer writable", string(ErrorUnknownExternalState), err)
+				}
+				return DeployResult{}, err
+			}
+		}
+	}
 	reserved, created, err := a.Store.ReserveExecution(record, audit, outbox)
 	if err != nil {
 		return DeployResult{}, err
@@ -281,6 +369,36 @@ func (a *Activities) Deploy(ctx context.Context, input DeployInput) (DeployResul
 	return DeployResult{Execution: domain.Execution{ID: reserved.ID, Adapter: reserved.Adapter, IdempotencyKey: reserved.IdempotencyKey, Status: string(reserved.Status), ExternalExecutionID: deployment.ExternalID, StartedAt: deployment.StartedAt, FinishedAt: deployment.FinishedAt}, Deployment: deployment}, nil
 }
 
+func (a *Activities) executionBeforeDispatch(adapterName, idempotencyKey string) (store.ExecutionRecord, bool, error) {
+	record, err := a.Store.GetExecution(adapterName, idempotencyKey)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.ExecutionRecord{}, false, nil
+	}
+	if err != nil {
+		return store.ExecutionRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func (a *Activities) quarantineLegacySchedule(ctx context.Context, coordinator scheduler.DurableCoordinator, run domain.ReleaseRun, service, operationKey string, now time.Time) error {
+	step := scheduler.Step{ID: service, Tenant: run.TenantID, Environment: string(run.Environment), Region: run.Region, Cluster: run.Cluster}
+	for _, releaseStep := range run.Steps {
+		if releaseStep.Service == service {
+			step = schedulingStep(run, releaseStep)
+			break
+		}
+	}
+	constraints, err := scheduler.ConstraintsFor(step, a.ScheduleLimits)
+	if err != nil {
+		return fmt.Errorf("build legacy schedule quarantine constraints: %w", err)
+	}
+	return coordinator.QuarantineSchedule(ctx, scheduler.QuarantineRequest{
+		ReservationID: newID("schedule-quarantine"), RunID: run.ID, Step: step, Constraints: constraints,
+		Circuit: a.CircuitPolicy, OperationKey: operationKey, OwnerToken: newID("schedule-owner"), Now: now,
+		Audit: a.auditFor(run.ID, run.RequestedBy, AuditIntent{ActorType: "system", ActorID: "scheduler", Action: "schedule.quarantine", ResourceType: "release_step", ResourceID: service, Result: "UNKNOWN"}, now),
+	})
+}
+
 func (a *Activities) Verify(ctx context.Context, input VerifyInput) (executor.VerificationResult, error) {
 	result, err := a.Executor.Verify(ctx, input.Deployment)
 	if err != nil {
@@ -310,6 +428,28 @@ func (a *Activities) Rollback(ctx context.Context, input RollbackInput) (Rollbac
 	now := a.Now().UTC()
 	record := store.ExecutionRecord{ID: newID("rollback"), RunID: input.Deploy.RunID, Service: input.Deploy.Service, Adapter: a.AdapterName + ".rollback", IdempotencyKey: key, CreatedAt: now, UpdatedAt: now}
 	audit := a.auditFor(input.Deploy.RunID, input.Deploy.RequestedBy, AuditIntent{ActorType: "system", ActorID: "workflow-worker", Action: "rollback.reserve", ResourceType: "service", ResourceID: input.Deploy.Service, Result: "AUTHORIZED"}, now)
+	if coordinator, ok := a.Store.(scheduler.DurableCoordinator); ok {
+		existing, found, lookupErr := a.executionBeforeDispatch(record.Adapter, key)
+		if lookupErr != nil {
+			return RollbackResult{}, lookupErr
+		}
+		if input.Deploy.ScheduleLease == nil || input.Deploy.ScheduleLease.OwnerToken == "" {
+			if !found || existing.Status != store.ExecutionSucceeded {
+				if err := a.quarantineLegacySchedule(ctx, coordinator, *run, input.Deploy.Service, key, now); err != nil {
+					return RollbackResult{}, err
+				}
+				return RollbackResult{}, temporal.NewNonRetryableApplicationError("schedule reservation is missing; rollback requires reconciliation", string(ErrorUnknownExternalState), store.ErrUnknownExternalState)
+			}
+		} else if found && existing.Status == store.ExecutionSucceeded {
+			// Restore the durable idempotent result below without reopening write admission.
+		} else if err := coordinator.AdmitSchedule(ctx, scheduler.AdmissionRequest{Lease: *input.Deploy.ScheduleLease, OperationKey: key, Now: now,
+			Audit: a.auditFor(input.Deploy.RunID, input.Deploy.RequestedBy, AuditIntent{ActorType: "system", ActorID: "scheduler", Action: "schedule.admit", ResourceType: "release_step", ResourceID: input.Deploy.Service, Result: "AUTHORIZED"}, now)}); err != nil {
+			if errors.Is(err, scheduler.ErrLeaseConflict) || errors.Is(err, scheduler.ErrUnresolved) {
+				return RollbackResult{}, temporal.NewNonRetryableApplicationError("schedule reservation is no longer writable", string(ErrorUnknownExternalState), err)
+			}
+			return RollbackResult{}, err
+		}
+	}
 	reserved, created, err := a.Store.ReserveExecution(record, audit, a.outbox("execution", record.ID, "rollback.reserved", nil))
 	if err != nil {
 		return RollbackResult{}, err
