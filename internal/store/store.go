@@ -115,18 +115,21 @@ const (
 // GrantDispatchRecord is the durable Control Plane side of one signed grant.
 // DeliveryToken is an opaque lease capability and must never be logged.
 type GrantDispatchRecord struct {
-	Grant          protocol.ActionGrant
-	Status         GrantDispatchStatus
-	Result         protocol.Result
-	RunnerID       string
-	DeliveryToken  string
-	LeaseExpiresAt time.Time
-	AcknowledgedAt time.Time
-	CompletedAt    time.Time
-	OutboxID       string
-	StateVersion   int64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// AuthorizingRunVersion is an issuance precondition, not a new protocol field.
+	// Zero is retained for low-level store/import compatibility paths.
+	AuthorizingRunVersion int64
+	Grant                 protocol.ActionGrant
+	Status                GrantDispatchStatus
+	Result                protocol.Result
+	RunnerID              string
+	DeliveryToken         string
+	LeaseExpiresAt        time.Time
+	AcknowledgedAt        time.Time
+	CompletedAt           time.Time
+	OutboxID              string
+	StateVersion          int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type GrantDispatchStore interface {

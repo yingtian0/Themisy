@@ -108,6 +108,7 @@ func main() {
 		os.Exit(1)
 	}
 	grantExecutor := newGrantExecutor(grantService)
+	grantService.Policy = policyEngine
 	activities := workflowcore.NewActivities(persistentStore, policyEngine, grantExecutor)
 	activities.AdapterName = "runner"
 	activities.Capacity = func(input workflowcore.ScheduleInput) scheduler.Capacity {
