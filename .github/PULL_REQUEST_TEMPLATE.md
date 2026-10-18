@@ -7,6 +7,12 @@ Describe the problem, resulting behavior, and related Issue.
 Record the source commit and checks performed. Distinguish simulated providers,
 real PostgreSQL/Temporal, live AWS, skipped checks and external user observations.
 
+## Compatibility
+
+Describe API/protocol/persistence/migration effects, or state that none are changed.
+List incomplete acceptance criteria and linked follow-up work. Sign off commits
+under the DCO in CONTRIBUTING.md; never include private report details.
+
 ## Release scope (required for release PRs)
 
 - [ ] Update `docs/readiness.md` with the target commit/version, evidence links,
