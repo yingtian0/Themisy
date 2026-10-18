@@ -25,6 +25,38 @@ type client struct {
 	http    *http.Client
 }
 
+const cliHelp = `themisyctl plans and controls releases through the Themisy Control Plane.
+
+Usage: themisyctl [global options] <command> [arguments]
+
+Global options (place before the command):
+  -server URL   Control Plane URL (default http://localhost:8080)
+  -tenant ID    Tenant for the request
+  -actor ID     Actor for approval and other control operations
+  -roles LIST   Comma-separated trusted actor roles
+
+Commands:
+  offline-plan  Plan from local files only; see: themisyctl offline-plan -h
+  plan FILE     Create a plan through the Control Plane
+  start FILE    Start a release through the Control Plane
+  services      List services
+  status ID     Read a release run
+  events ID     Read release events
+  approvals     List approvals
+  approve ID | deny ID | revoke ID
+  pause ID | resume ID | cancel ID
+  runners | freeze-runner ID | validate-contract FILE
+
+Offline example (no server, credentials, or writes):
+  themisyctl offline-plan -at 2026-10-18T00:00:00Z examples/offline/release.json
+
+Offline rejection example (exits 1):
+  themisyctl offline-plan examples/offline/rejected.json
+
+Use offline-plan to create a synthetic plan. It does not authorize execution.
+See docs/guides/offline-quickstart.md for the complete course.
+`
+
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "themisyctl:", err)
@@ -35,18 +67,26 @@ func main() {
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("themisyctl", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	flags.Usage = func() { fmt.Fprint(stderr, cliHelp) }
 	server := flags.String("server", envOr("THEMISY_SERVER", "http://localhost:8080"), "Themisy control-plane base URL")
 	tenant := flags.String("tenant", envOr("THEMISY_TENANT_ID", "default"), "authenticated tenant")
 	actor := flags.String("actor", os.Getenv("THEMISY_ACTOR_ID"), "authenticated actor for control operations")
 	roles := flags.String("roles", os.Getenv("THEMISY_ACTOR_ROLES"), "comma-separated trusted actor roles")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	remaining := flags.Args()
 	if len(remaining) == 0 {
-		return errors.New("command is required: offline-plan, services, plan, get-plan, start, status, events, pause, resume, cancel, approvals, approve, deny, revoke, runners, freeze-runner, validate-contract")
+		return errors.New("command is required; use -h for help")
 	}
 	command, values := remaining[0], remaining[1:]
+	if command == "help" {
+		fmt.Fprint(stdout, cliHelp)
+		return nil
+	}
 	if command == "offline-plan" {
 		return runOfflinePlan(values, stdout, stderr)
 	}
