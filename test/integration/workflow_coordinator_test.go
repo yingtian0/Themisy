@@ -107,7 +107,7 @@ func TestPostgresWorkflowCoordinatorAcrossIndependentStores(t *testing.T) {
 		t.Fatalf("UNKNOWN must retain shared capacity: blocked=%v err=%v", held, err)
 	}
 
-	resolved := scheduler.CompletionRequest{Lease: firstLease, Outcome: scheduler.ScheduleOutcomeFailed, Circuit: unknown.Circuit, Now: now.Add(4 * time.Second), Audit: coordinatorAudit("resolve-unknown", firstLease.RunID, now.Add(4*time.Second))}
+	resolved := scheduler.CompletionRequest{Lease: firstLease, Outcome: scheduler.ScheduleOutcomeFailed, Circuit: unknown.Circuit, Now: firstLease.ExpiresAt.Add(time.Second), Audit: coordinatorAudit("resolve-unknown", firstLease.RunID, firstLease.ExpiresAt.Add(time.Second))}
 	state, err := first.CompleteSchedule(ctx, resolved)
 	if err != nil {
 		t.Fatal(err)

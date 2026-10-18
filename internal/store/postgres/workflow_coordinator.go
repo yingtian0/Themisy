@@ -242,8 +242,8 @@ func (s *Store) CompleteSchedule(ctx context.Context, request scheduler.Completi
 	if request.Outcome != scheduler.ScheduleOutcomeSucceeded && request.Outcome != scheduler.ScheduleOutcomeFailed && request.Outcome != scheduler.ScheduleOutcomeUnknown {
 		return scheduler.CircuitState{}, errors.New("invalid schedule outcome")
 	}
-	if request.Lease.ExpiresAt.IsZero() || !request.Now.Before(request.Lease.ExpiresAt) {
-		return scheduler.CircuitState{}, fmt.Errorf("completion lease expired at %s, now %s: %w", request.Lease.ExpiresAt, request.Now, ErrScheduleLeaseConflict)
+	if request.Lease.ExpiresAt.IsZero() {
+		return scheduler.CircuitState{}, ErrScheduleLeaseConflict
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -259,6 +259,13 @@ FROM workflow_schedule_reservations WHERE id=$1 FOR UPDATE`, request.Lease.ID).S
 	}
 	if runID != request.Lease.RunID || stepID != request.Lease.StepID || token != request.Lease.OwnerToken || fence != request.Lease.Fence {
 		return scheduler.CircuitState{}, fmt.Errorf("completion lease mismatch: run=%q/%q step=%q/%q token=%t fence=%d/%d", runID, request.Lease.RunID, stepID, request.Lease.StepID, token == request.Lease.OwnerToken, fence, request.Lease.Fence)
+	}
+	// Once an admitted operation is UNKNOWN, no replacement reservation can
+	// take its place. Its original owner may therefore record a later
+	// read-only reconciliation after the write lease expires, provided the
+	// owner token and fence still match the locked UNKNOWN row.
+	if !request.Now.Before(request.Lease.ExpiresAt) && status != "UNKNOWN" && status != string(request.Outcome) {
+		return scheduler.CircuitState{}, fmt.Errorf("completion lease expired at %s, now %s: %w", request.Lease.ExpiresAt, request.Now, ErrScheduleLeaseConflict)
 	}
 	circuit := scheduler.CircuitState{}
 	if environment == "production" {
@@ -310,7 +317,7 @@ FROM workflow_schedule_reservations WHERE id=$1 FOR UPDATE`, request.Lease.ID).S
 	if status != "ADMITTED" && status != "UNKNOWN" {
 		return scheduler.CircuitState{}, ErrScheduleUnresolved
 	}
-	if !request.Now.Before(request.Lease.ExpiresAt) {
+	if !request.Now.Before(request.Lease.ExpiresAt) && status != "UNKNOWN" && status != string(request.Outcome) {
 		return scheduler.CircuitState{}, ErrScheduleLeaseConflict
 	}
 	finalStatus := string(request.Outcome)
