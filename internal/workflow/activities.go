@@ -339,14 +339,11 @@ func (a *Activities) Deploy(ctx context.Context, input DeployInput) (DeployResul
 	}
 	if !created {
 		if reserved.Status == store.ExecutionSucceeded {
-			deployment := executor.Deployment{ExternalID: reserved.ExternalExecutionID}
-			if value, ok := reserved.Payload["started_at"].(string); ok {
-				deployment.StartedAt, _ = time.Parse(time.RFC3339Nano, value)
+			result, err := restoreDeploymentResult(*run, reserved, record)
+			if err == nil && result.Deployment.DesiredVersion != input.DesiredVersion {
+				return DeployResult{}, resultUnknown(errors.New("retry desired version differs from durable result"))
 			}
-			if value, ok := reserved.Payload["finished_at"].(string); ok {
-				deployment.FinishedAt, _ = time.Parse(time.RFC3339Nano, value)
-			}
-			return DeployResult{Execution: domain.Execution{ID: reserved.ID, Adapter: reserved.Adapter, IdempotencyKey: reserved.IdempotencyKey, Status: string(reserved.Status), ExternalExecutionID: reserved.ExternalExecutionID, StartedAt: deployment.StartedAt, FinishedAt: deployment.FinishedAt}, Deployment: deployment}, nil
+			return result, err
 		}
 		return DeployResult{}, temporal.NewNonRetryableApplicationError("reserved execution requires reconciliation", string(ErrorUnknownExternalState), &ClassifiedError{Class: ErrorUnknownExternalState, Operation: "deploy", Err: store.ErrUnknownExternalState})
 	}
@@ -360,7 +357,10 @@ func (a *Activities) Deploy(ctx context.Context, input DeployInput) (DeployResul
 	}
 	reserved.Status = store.ExecutionSucceeded
 	reserved.ExternalExecutionID = deployment.ExternalID
-	reserved.Payload = map[string]any{"started_at": deployment.StartedAt.UTC().Format(time.RFC3339Nano), "finished_at": deployment.FinishedAt.UTC().Format(time.RFC3339Nano)}
+	reserved.Payload, err = encodeDeploymentResult(*run, reserved, deployment)
+	if err != nil {
+		return DeployResult{}, resultUnknown(err)
+	}
 	reserved.UpdatedAt = a.Now().UTC()
 	successAudit := a.auditFor(input.RunID, input.RequestedBy, AuditIntent{ActorType: "system", ActorID: "workflow-worker", Action: "deployment.result", ResourceType: "service", ResourceID: input.Service, Result: "SUCCEEDED", Details: map[string]any{"external_execution_id": deployment.ExternalID}}, reserved.UpdatedAt)
 	if err := a.Store.CompleteExecution(reserved, reserved.StateVersion, successAudit, a.outbox("execution", reserved.ID, "execution.succeeded", nil)); err != nil {
@@ -424,6 +424,17 @@ func (a *Activities) Rollback(ctx context.Context, input RollbackInput) (Rollbac
 	if string(run.Environment) != input.Deploy.Environment {
 		return RollbackResult{}, verificationGuardError(errors.New("rollback environment differs from durable run"))
 	}
+	source, err := a.Store.GetExecution(a.AdapterName, input.Deploy.IdempotencyKey)
+	if err != nil {
+		return RollbackResult{}, resultUnknown(err)
+	}
+	restored, err := restoreDeploymentResult(*run, source, store.ExecutionRecord{RunID: input.Deploy.RunID, Service: input.Deploy.Service, Adapter: a.AdapterName, IdempotencyKey: input.Deploy.IdempotencyKey})
+	if err != nil {
+		return RollbackResult{}, err
+	}
+	if !reflect.DeepEqual(restored.Deployment, input.Deployment) || restored.Deployment.DesiredVersion != input.Deploy.DesiredVersion {
+		return RollbackResult{}, resultUnknown(errors.New("rollback source differs from durable deployment"))
+	}
 	key := input.Deploy.IdempotencyKey + "/rollback"
 	now := a.Now().UTC()
 	record := store.ExecutionRecord{ID: newID("rollback"), RunID: input.Deploy.RunID, Service: input.Deploy.Service, Adapter: a.AdapterName + ".rollback", IdempotencyKey: key, CreatedAt: now, UpdatedAt: now}
@@ -456,14 +467,8 @@ func (a *Activities) Rollback(ctx context.Context, input RollbackInput) (Rollbac
 	}
 	if !created {
 		if reserved.Status == store.ExecutionSucceeded {
-			deployment := executor.Deployment{ExternalID: reserved.ExternalExecutionID}
-			if value, ok := reserved.Payload["started_at"].(string); ok {
-				deployment.StartedAt, _ = time.Parse(time.RFC3339Nano, value)
-			}
-			if value, ok := reserved.Payload["finished_at"].(string); ok {
-				deployment.FinishedAt, _ = time.Parse(time.RFC3339Nano, value)
-			}
-			return RollbackResult{Execution: domain.Execution{ID: reserved.ID, Adapter: reserved.Adapter, IdempotencyKey: reserved.IdempotencyKey, Status: string(reserved.Status), ExternalExecutionID: reserved.ExternalExecutionID, StartedAt: deployment.StartedAt, FinishedAt: deployment.FinishedAt}, Deployment: deployment}, nil
+			result, err := restoreDeploymentResult(*run, reserved, record)
+			return RollbackResult(result), err
 		}
 		return RollbackResult{}, temporal.NewNonRetryableApplicationError("rollback state requires reconciliation", string(ErrorUnknownExternalState), store.ErrUnknownExternalState)
 	}
@@ -476,7 +481,10 @@ func (a *Activities) Rollback(ctx context.Context, input RollbackInput) (Rollbac
 	}
 	reserved.Status = store.ExecutionSucceeded
 	reserved.ExternalExecutionID = deployment.ExternalID
-	reserved.Payload = map[string]any{"started_at": deployment.StartedAt.UTC().Format(time.RFC3339Nano), "finished_at": deployment.FinishedAt.UTC().Format(time.RFC3339Nano)}
+	reserved.Payload, err = encodeDeploymentResult(*run, reserved, deployment)
+	if err != nil {
+		return RollbackResult{}, resultUnknown(err)
+	}
 	reserved.UpdatedAt = a.Now().UTC()
 	if err := a.Store.CompleteExecution(reserved, reserved.StateVersion, a.auditFor(input.Deploy.RunID, input.Deploy.RequestedBy, AuditIntent{ActorType: "system", ActorID: "workflow-worker", Action: "rollback.result", ResourceType: "service", ResourceID: input.Deploy.Service, Result: "SUCCEEDED", Details: map[string]any{"external_execution_id": deployment.ExternalID}}, reserved.UpdatedAt), a.outbox("execution", reserved.ID, "rollback.succeeded", nil)); err != nil {
 		return RollbackResult{}, temporal.NewNonRetryableApplicationError("rollback succeeded but persistence is unknown", string(ErrorUnknownExternalState), err)
