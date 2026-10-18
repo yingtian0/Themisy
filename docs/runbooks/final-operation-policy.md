@@ -20,6 +20,11 @@ not satisfied by blindly reusing deploy authorization; issuance stops. Obtain
 the required fresh operation authorization through the supported approval flow.
 If that flow is not available, keep the operation stopped for operator handling.
 
+When a Change omits its risk, the shared input uses the pinned Plan's scheduling
+risk, matching the Grant. A high-risk Contract can now require approval at the
+preliminary evaluation rather than reach a later mismatched Grant. Tests and
+developer exercises must supply that approval, not lower the risk to avoid it.
+
 Each issue transaction checks the durable Run version. Concurrent changes cause
 a conflict; re-read state and re-evaluate rather than reuse the previous signed
 payload. Same-input duplicates retain the same Grant. A changed input/approval
