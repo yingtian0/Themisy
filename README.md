@@ -1,5 +1,9 @@
 # Themisy
 
+Try the [15-minute offline planning course](docs/guides/offline-quickstart.md)
+without cloud credentials, a database, Temporal, or a Runner. It validates local
+Contracts/Profiles and shows a normal plan and a rejection; it authorizes no writes.
+
 > **Prototype / not production ready.** The current implementation has a PostgreSQL/Temporal durable core, a fail-closed Runner authorization boundary, a typed GitHub Actions adapter, and Datadog evidence classification. It still lacks production KMS/JWKS discovery, Runner transport integration, and a completed dedicated-staging deploy/rollback exercise. It must not be connected to production credentials or production write APIs.
 
 Themisy is an open-source Agent Operations Control Layer for planning, authorizing, executing, verifying, stopping, and auditing changes requested by people, CI, CLIs, or AI agents through the same deterministic safety boundary.

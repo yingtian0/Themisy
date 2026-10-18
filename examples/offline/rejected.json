@@ -1,0 +1,6 @@
+{
+  "api_version": "execution.themisy.io/v1alpha1",
+  "kind": "ReleaseIntent",
+  "environment": "staging",
+  "changes": [{"service": "missing-api", "desired_version": "sha-demo"}]
+}

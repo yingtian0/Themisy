@@ -44,10 +44,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	remaining := flags.Args()
 	if len(remaining) == 0 {
-		return errors.New("command is required: services, plan, get-plan, start, status, events, pause, resume, cancel, approvals, approve, deny, revoke, runners, freeze-runner, validate-contract")
+		return errors.New("command is required: offline-plan, services, plan, get-plan, start, status, events, pause, resume, cancel, approvals, approve, deny, revoke, runners, freeze-runner, validate-contract")
+	}
+	command, values := remaining[0], remaining[1:]
+	if command == "offline-plan" {
+		return runOfflinePlan(values, stdout, stderr)
 	}
 	c := &client{baseURL: strings.TrimRight(*server, "/"), tenant: *tenant, actor: *actor, roles: *roles, http: &http.Client{Timeout: 30 * time.Second}}
-	command, values := remaining[0], remaining[1:]
 	if requiresOneArgument(command) && len(values) != 1 {
 		return fmt.Errorf("%s requires exactly one argument", command)
 	}
