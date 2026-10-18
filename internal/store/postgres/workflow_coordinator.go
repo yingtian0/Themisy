@@ -33,6 +33,10 @@ func (s *Store) AcquireSchedule(ctx context.Context, request scheduler.AcquireRe
 		return scheduler.ScheduleLease{}, nil, scheduler.CircuitState{}, err
 	}
 	request.Step = normalizeScheduleStep(request.Step)
+	// PostgreSQL timestamptz stores microsecond precision. Normalize the
+	// lease deadline before persisting and returning it so fencing checks
+	// compare the same durable value across independent Store instances.
+	request.LeaseUntil = request.LeaseUntil.UTC().Truncate(time.Microsecond)
 	stepPayload, err := json.Marshal(request.Step)
 	if err != nil {
 		return scheduler.ScheduleLease{}, nil, scheduler.CircuitState{}, err
@@ -42,7 +46,7 @@ func (s *Store) AcquireSchedule(ctx context.Context, request scheduler.AcquireRe
 		return scheduler.ScheduleLease{}, nil, scheduler.CircuitState{}, err
 	}
 	defer tx.Rollback(ctx)
-	lockKey := request.RunID + "\x00" + request.Step.ID
+	lockKey := reservationLockKey(request.RunID, request.Step.ID)
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, lockKey); err != nil {
 		return scheduler.ScheduleLease{}, nil, scheduler.CircuitState{}, err
 	}
@@ -56,44 +60,10 @@ func (s *Store) AcquireSchedule(ctx context.Context, request scheduler.AcquireRe
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return scheduler.ScheduleLease{}, nil, circuit, err
 	}
-	if request.Step.Environment == "production" {
-		var open bool
-		err = tx.QueryRow(ctx, `SELECT is_open FROM workflow_circuit_breakers WHERE tenant_id=$1 AND environment=$2`, tenant, request.Step.Environment).Scan(&open)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return scheduler.ScheduleLease{}, nil, scheduler.CircuitState{}, err
-		}
-		if open {
-			circuit, err = readWorkflowCircuit(ctx, tx, tenant, request.Step.Environment, false)
-			if err != nil {
-				return scheduler.ScheduleLease{}, nil, scheduler.CircuitState{}, err
-			}
-			if err := insertCoordinatorAudit(ctx, tx, request.Audit, map[string]any{"reason": "CIRCUIT_OPEN", "tenant": tenant}); err != nil {
-				return scheduler.ScheduleLease{}, nil, circuit, err
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return scheduler.ScheduleLease{}, nil, circuit, err
-			}
-			return scheduler.ScheduleLease{}, []scheduler.Blocked{{Dimension: scheduler.DimensionTenant, Key: tenant, Limit: 1}}, circuit, nil
-		}
-	}
+	reservationNotFound := errors.Is(err, pgx.ErrNoRows)
 	if err == nil {
 		if existingTenant != tenant || existingEnvironment != request.Step.Environment || !sameScheduleStep(existingPayload, request.Step) {
 			return scheduler.ScheduleLease{}, nil, circuit, ErrScheduleConfiguration
-		}
-		if request.Step.Environment == "production" {
-			circuit, err = lockWorkflowCircuit(ctx, tx, tenant, request.Step.Environment, request.Circuit, request.Now)
-			if err != nil {
-				return scheduler.ScheduleLease{}, nil, circuit, err
-			}
-			if circuit.Open {
-				if err := insertCoordinatorAudit(ctx, tx, request.Audit, map[string]any{"reason": "CIRCUIT_OPEN", "tenant": tenant}); err != nil {
-					return scheduler.ScheduleLease{}, nil, circuit, err
-				}
-				if err := tx.Commit(ctx); err != nil {
-					return scheduler.ScheduleLease{}, nil, circuit, err
-				}
-				return scheduler.ScheduleLease{}, []scheduler.Blocked{{Dimension: scheduler.DimensionTenant, Key: tenant, Limit: 1}}, circuit, nil
-			}
 		}
 		switch existingStatus {
 		case "RESERVED":
@@ -146,10 +116,7 @@ func (s *Store) AcquireSchedule(ctx context.Context, request scheduler.AcquireRe
 			return scheduler.ScheduleLease{}, nil, circuit, fmt.Errorf("invalid schedule reservation status: %s", existingStatus)
 		}
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return scheduler.ScheduleLease{}, nil, circuit, err
-	}
-	if request.Step.Environment == "production" {
+	if request.Step.Environment == "production" && reservationNotFound {
 		circuit, err = lockWorkflowCircuit(ctx, tx, tenant, request.Step.Environment, request.Circuit, request.Now)
 		if err != nil {
 			return scheduler.ScheduleLease{}, nil, circuit, err
@@ -164,7 +131,9 @@ func (s *Store) AcquireSchedule(ctx context.Context, request scheduler.AcquireRe
 			return scheduler.ScheduleLease{}, []scheduler.Blocked{{Dimension: scheduler.DimensionTenant, Key: tenant, Limit: 1}}, circuit, nil
 		}
 	}
-
+	if !reservationNotFound {
+		return scheduler.ScheduleLease{}, nil, circuit, errors.New("schedule reservation lookup state changed unexpectedly")
+	}
 	blocked, err := lockAndCheckScheduleCounters(ctx, tx, constraints)
 	if err != nil {
 		return scheduler.ScheduleLease{}, nil, circuit, err
@@ -216,14 +185,17 @@ FROM workflow_schedule_reservations WHERE id=$1 FOR UPDATE`, request.Lease.ID).S
 	if err != nil {
 		return err
 	}
+	if !expiresAt.Equal(request.Lease.ExpiresAt) {
+		return fmt.Errorf("admission expiry mismatch: database=%s lease=%s: %w", expiresAt.Format(time.RFC3339Nano), request.Lease.ExpiresAt.Format(time.RFC3339Nano), ErrScheduleLeaseConflict)
+	}
 	if runID != request.Lease.RunID || stepID != request.Lease.StepID || token != request.Lease.OwnerToken || fence != request.Lease.Fence {
-		return ErrScheduleLeaseConflict
+		return fmt.Errorf("admission identity mismatch: run=%q/%q step=%q/%q token=%t fence=%d/%d: %w", runID, request.Lease.RunID, stepID, request.Lease.StepID, token == request.Lease.OwnerToken, fence, request.Lease.Fence, ErrScheduleLeaseConflict)
 	}
 	if status != "RESERVED" && status != "ADMITTED" {
-		return ErrScheduleUnresolved
+		return fmt.Errorf("admission state %s is not writable: %w", status, ErrScheduleUnresolved)
 	}
 	if status == "RESERVED" && !request.Now.Before(expiresAt) {
-		return ErrScheduleLeaseConflict
+		return fmt.Errorf("unadmitted reservation expired at %s, now %s: %w", expiresAt, request.Now, ErrScheduleLeaseConflict)
 	}
 	if status == "ADMITTED" && !request.Now.Before(expiresAt) {
 		return ErrScheduleLeaseConflict
@@ -271,7 +243,7 @@ func (s *Store) CompleteSchedule(ctx context.Context, request scheduler.Completi
 		return scheduler.CircuitState{}, errors.New("invalid schedule outcome")
 	}
 	if request.Lease.ExpiresAt.IsZero() || !request.Now.Before(request.Lease.ExpiresAt) {
-		return scheduler.CircuitState{}, ErrScheduleLeaseConflict
+		return scheduler.CircuitState{}, fmt.Errorf("completion lease expired at %s, now %s: %w", request.Lease.ExpiresAt, request.Now, ErrScheduleLeaseConflict)
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -286,7 +258,7 @@ FROM workflow_schedule_reservations WHERE id=$1 FOR UPDATE`, request.Lease.ID).S
 		return scheduler.CircuitState{}, err
 	}
 	if runID != request.Lease.RunID || stepID != request.Lease.StepID || token != request.Lease.OwnerToken || fence != request.Lease.Fence {
-		return scheduler.CircuitState{}, ErrScheduleLeaseConflict
+		return scheduler.CircuitState{}, fmt.Errorf("completion lease mismatch: run=%q/%q step=%q/%q token=%t fence=%d/%d", runID, request.Lease.RunID, stepID, request.Lease.StepID, token == request.Lease.OwnerToken, fence, request.Lease.Fence)
 	}
 	circuit := scheduler.CircuitState{}
 	if environment == "production" {
@@ -881,6 +853,10 @@ func coordinationTenant(tenant string) string {
 		return "default"
 	}
 	return tenant
+}
+
+func reservationLockKey(runID, stepID string) string {
+	return runID + "/" + stepID
 }
 
 var _ scheduler.DurableCoordinator = (*Store)(nil)
