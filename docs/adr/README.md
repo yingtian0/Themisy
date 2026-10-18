@@ -16,6 +16,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0008](0008-runner-grant-transport-and-ecs.md) | Accepted | Dispatch signed grants over an outbound Runner channel and resolve ECS targets locally |
 | [0009](0009-shared-postgresql-runner-journal.md) | Accepted | Share a customer-environment PostgreSQL journal across Runner replicas |
 | [0010](0010-final-operation-policy-at-grant-issuance.md) | Proposed | Evaluate and atomically commit final operation policy at Grant issuance |
+| [0011](0011-authorization-and-compensation-lifetimes.md) | Proposed | Separate review freshness, short execution Grants and bounded compensation permission |
 
 ## Process
 
