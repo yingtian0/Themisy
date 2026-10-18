@@ -69,7 +69,7 @@ def main():
         output.mkdir(parents=True)
         artifact = output / (bundle.name + ".tar.gz")
         with artifact.open("wb") as raw:
-            with gzip.GzipFile(fileobj=raw, filename="", mtime=epoch) as compressed:
+            with gzip.GzipFile(fileobj=raw, filename="", mode="wb", mtime=epoch) as compressed:
                 with tarfile.open(fileobj=compressed, mode="w") as tf:
                     for path in sorted(bundle.rglob("*")):
                         if not path.is_file():
