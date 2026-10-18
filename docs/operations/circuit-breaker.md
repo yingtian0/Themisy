@@ -24,6 +24,13 @@ is open as a safety-sensitive operator action and retain the audit/incident
 record. Multi-worker production deployment requires a shared durable breaker
 backend.
 
+There is no durable breaker backend selectable in the current composition root.
+The wording above is a release gate, not an available configuration switch.
+Sharing a Temporal task queue or restarting another Worker cannot preserve its
+history. Use the [restart procedure](worker-restart.md); leave affected groups
+frozen if an operator cannot establish the prior safety state. This constraint
+is tracked in [#50](https://github.com/yingtian0/Themisy/issues/50).
+
 ## Verification
 
 The scenario suite asserts that opening the breaker produces zero new

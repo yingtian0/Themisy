@@ -50,6 +50,15 @@ make benchmark
 ```
 
 The in-process coordinator is shared by workflows handled by one worker
-process. Deployments that run multiple worker processes must provide a single
-coordinated task queue or replace this development coordinator with a durable
-distributed lease implementation before production use.
+process. A single Temporal task queue can deliver Activities to different
+Workers; it does not make their in-memory reservations or breaker state shared.
+Multiple Worker processes and automatic failover/restarts do not provide global
+exclusion or budget guarantees with this coordinator. Shared durable reservations,
+fencing and breaker state remain [#50](https://github.com/yingtian0/Themisy/issues/50).
+
+Even one Worker loses these maps when it restarts. Keep this development setup
+to a single Worker, avoid overlapping old/new Workers during upgrades, and use
+the [restart and unresolved-operation procedure](worker-restart.md). A lost
+reservation does not prove that a provider Write did not start. Runner Journal
+idempotency protects one operation; it does not exclude different Runs that
+target the same service.
