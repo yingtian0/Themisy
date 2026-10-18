@@ -28,14 +28,32 @@ missing fields or a binding mismatch returns non-retryable
 `UNKNOWN_EXTERNAL_STATE` and performs no new executor Write. Keep the historical
 record; do not fill it from Activity arguments, delete its reservation or edit
 the database to force success. Reconcile against durable Grant/Runner journal
-and read-only provider state under the existing operator process. Automatic
-UNKNOWN-to-Run/workflow convergence remains Issue #38.
+and read-only provider state under the existing operator process.
 
-This changes Activity internals and durable payloads, not Workflow commands,
-Activity names, or Activity result types. There is no command-graph change and
-no new Temporal version marker. Already completed Activity results in Temporal
-history are replayed unchanged; the new code does not repair old incomplete
-history results or completed Runs. Inventory those separately before upgrade.
+## UNKNOWN Grant recovery in the existing Run
+
+When GrantExecutor times out, the Activity saves the already-issued Grant ID in
+the unresolved Execution payload. The versioned Release Workflow records the
+step as `UNKNOWN`/Run `BLOCKED`, keeps the fenced scheduler reservation, and
+continues as an open Temporal Workflow. Every five minutes a read-only Activity
+loads the same Grant dispatch and checks its Run, Step, Plan hash, target,
+capability, artifact digest and idempotency key. Rollback recovery also matches
+the Grant's external execution ID to the durable successful deploy. It never
+issues a new Grant or calls a provider Write.
+
+A verified terminal success updates the existing Execution with the complete
+typed result, then resumes verification and normal Run completion. A rejected
+result escalates the Run. While unresolved, an operator cancel marks the Run
+cancelled but preserves the UNKNOWN step and scheduler reservation. A cancelled
+or otherwise terminal Run cannot be advanced by the recovery Activity. Legacy or
+non-Grant executions without a durable Grant ID remain blocked for operator
+reconciliation.
+
+This adds one versioned Temporal branch (`persistent-runner-recovery-wait`) and
+the `RecoverExecution` Activity. Histories without that marker retain the prior
+terminal BLOCKED behavior; completed Activity results are replayed unchanged.
+The new path does not repair already-completed Runs or legacy records without a
+Grant ID. Inventory those separately before upgrade.
 Downgrading Workers would again return incomplete retry results, so a downgrade
 does not preserve the new recovery guarantee.
 
@@ -59,6 +77,15 @@ THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL='postgres://USER:PASSWORD@HOST:PORT/
   go test -tags=integration ./internal/workflow -run '^TestPostgresDeploymentSuccessResponseLoss$' -count=1
 ```
 
+`TestPostgresUnknownGrantRecoveryAfterWorkerReplacement` stores the unresolved
+Execution and Grant in PostgreSQL, reconnects with replacement Activities,
+applies a terminal read-only Grant recovery and restores the typed Deployment
+without another Write. `TestReleaseWorkflowWaitsForReadOnlyGrantRecovery` and
+`TestCancelDuringUnknownRecoveryKeepsStepAndReservationUnresolved` exercise the
+versioned Workflow state transitions in Temporal's deterministic test suite.
+They do not yet constitute a live Temporal-server restart test for this new
+UNKNOWN path.
+
 `TestRestoredDeploymentIssuesBoundRollbackGrant` connects the restored result to
 the real GrantExecutor and asserts rollback Run, service, external source ID and
 idempotency key. Runner results in that test are simulated: it does not prove
@@ -74,10 +101,6 @@ This models a lost completion and Worker replacement; it is not an OS process
 kill or a live provider failure. Existing Temporal replay tests cover unchanged
 history structure. No result here is a production-readiness claim.
 
-Local verification on 2026-10-18 (macOS arm64, Go 1.26.9): full ordinary package
-tests, affected workflow/application/executor race/vet, all-package build, the
-dedicated PostgreSQL reconnect test, and the real Temporal completion-loss test
-passed. The latter used PostgreSQL 17.6 and Temporal 1.29.6.1, isolated from
-existing services. First/second Worker replacement and both server-driven
-Activity retries completed in approximately six seconds. Provider Writes and
-verification evidence in these recovery tests are simulated.
+Provider Writes and verification evidence in these recovery tests are
+simulated. Record current per-commit results in the handoff progress log; older
+verification above applies only to its named commits and tests.

@@ -14,6 +14,7 @@ import (
 	"themisy/internal/scheduler"
 	"themisy/internal/store"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
 )
 
@@ -58,6 +59,7 @@ func TestReleaseWorkflowDoesNotDispatchAtZeroRunnerCapacity(t *testing.T) {
 	env.RegisterActivity(activities.Rollback)
 	env.RegisterActivity(activities.AcquireSchedule)
 	env.RegisterActivity(activities.CompleteSchedule)
+	env.RegisterActivity(activities.RecoverExecution)
 	env.ExecuteWorkflow(ReleaseWorkflow, ReleaseInput{Run: run})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -151,6 +153,68 @@ func TestUnknownDeployStateNeverCreatesSecondWrite(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowWaitsForReadOnlyGrantRecovery(t *testing.T) {
+	run, memory, exec := workflowFixture(t, false, nil)
+	activities := NewActivities(memory, policy.New(), pendingGrantExecutor{ReleaseExecutor: exec, grantID: "grant-pending"})
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivity(activities.PersistRun)
+	env.RegisterActivity(activities.EvaluateStep)
+	env.RegisterActivity(activities.Deploy)
+	env.RegisterActivity(activities.Verify)
+	env.RegisterActivity(activities.Rollback)
+	env.RegisterActivity(activities.AcquireSchedule)
+	env.RegisterActivity(activities.CompleteSchedule)
+	recoveryCalls := 0
+	env.RegisterActivityWithOptions(func(context.Context, RecoverExecutionInput) (RecoverExecutionResult, error) {
+		recoveryCalls++
+		if recoveryCalls == 1 {
+			return RecoverExecutionResult{Supported: true}, nil
+		}
+		return RecoverExecutionResult{Supported: true, Ready: true, Execution: domain.Execution{ID: "recovered-execution", Status: string(store.ExecutionSucceeded), ExternalExecutionID: "deployment-1"}, Deployment: executor.Deployment{RunID: run.ID, Service: "identity", Environment: string(run.Environment), DesiredVersion: "sha-1", IdempotencyKey: run.ID + "/" + string(run.Environment) + "/identity/sha-1", ExternalID: "deployment-1", StartedAt: run.CreatedAt, FinishedAt: run.CreatedAt.Add(time.Second)}}, nil
+	}, activity.RegisterOptions{Name: ActivityRecoverExecution})
+	env.ExecuteWorkflow(ReleaseWorkflow, ReleaseInput{Run: run})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result domain.ReleaseRun
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.RunSucceeded || recoveryCalls < 2 {
+		t.Fatalf("workflow result=%s recovery calls=%d", result.Status, recoveryCalls)
+	}
+}
+
+func TestCancelDuringUnknownRecoveryKeepsStepAndReservationUnresolved(t *testing.T) {
+	run, memory, exec := workflowFixture(t, false, nil)
+	activities := NewActivities(memory, policy.New(), pendingGrantExecutor{ReleaseExecutor: exec, grantID: "grant-pending"})
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivity(activities.PersistRun)
+	env.RegisterActivity(activities.EvaluateStep)
+	env.RegisterActivity(activities.Deploy)
+	env.RegisterActivity(activities.Verify)
+	env.RegisterActivity(activities.Rollback)
+	env.RegisterActivity(activities.AcquireSchedule)
+	env.RegisterActivity(activities.CompleteSchedule)
+	env.RegisterActivityWithOptions(func(context.Context, RecoverExecutionInput) (RecoverExecutionResult, error) {
+		return RecoverExecutionResult{Supported: true}, nil
+	}, activity.RegisterOptions{Name: ActivityRecoverExecution})
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(SignalCancel, ControlSignal{Actor: "operator"}) }, time.Minute)
+	env.ExecuteWorkflow(ReleaseWorkflow, ReleaseInput{Run: run})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result domain.ReleaseRun
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.RunCancelled || result.Steps[0].Status != domain.StepUnknown {
+		t.Fatalf("cancel overwrote unresolved step: run=%s step=%s", result.Status, result.Steps[0].Status)
+	}
+}
+
 func TestDurableCoordinatorUnavailableAndMissingLeaseFailClosed(t *testing.T) {
 	run, memory, exec := workflowFixture(t, false, nil)
 	coordinator := &coordinatorTestStore{Memory: memory, acquireErr: errors.New("database unavailable")}
@@ -209,6 +273,7 @@ func newWorkflowEnvironment(st store.DurableStore, exec executor.ReleaseExecutor
 	env.RegisterActivity(activities.Rollback)
 	env.RegisterActivity(activities.AcquireSchedule)
 	env.RegisterActivity(activities.CompleteSchedule)
+	env.RegisterActivity(activities.RecoverExecution)
 	return env
 }
 

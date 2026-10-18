@@ -24,6 +24,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		return run, err
 	}
 	scheduleVersion := workflow.GetVersion(ctx, "persistent-schedule-coordinator", workflow.DefaultVersion, 1)
+	recoveryVersion := workflow.GetVersion(ctx, "persistent-runner-recovery-wait", workflow.DefaultVersion, 1)
 	activityContext := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Second, MaximumAttempts: 3}})
 	executionContext := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute, ScheduleToCloseTimeout: 12 * time.Minute, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Second, MaximumAttempts: 3}})
 	approvalChannel := workflow.GetSignalChannel(ctx, SignalApproval)
@@ -129,11 +130,57 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 			run.Status = domain.RunBlocked
 			cancelDownstream(&run, index+1)
 			run.UpdatedAt = workflow.Now(ctx).UTC()
-			run, persistErr := persist(activityContext, run, nil, "deployment.unknown")
+			var persistErr error
+			run, persistErr = persist(activityContext, run, nil, "deployment.unknown")
 			if persistErr != nil {
 				return run, persistErr
 			}
-			return run, nil
+			if recoveryVersion == workflow.DefaultVersion {
+				return run, nil
+			}
+			for {
+				var recovery RecoverExecutionResult
+				recoveryErr := workflow.ExecuteActivity(activityContext, ActivityRecoverExecution, RecoverExecutionInput{RunID: run.ID, Service: step.Service, Environment: string(run.Environment), DesiredVersion: step.Change.DesiredVersion, IdempotencyKey: deployInput.IdempotencyKey}).Get(activityContext, &recovery)
+				var pendingCancel ControlSignal
+				if cancelChannel.ReceiveAsync(&pendingCancel) && pendingCancel.Actor != "" {
+					return cancelRun(activityContext, ctx, run, index, pendingCancel.Actor)
+				}
+				if recoveryErr == nil && !recovery.Supported {
+					return run, nil
+				}
+				if recoveryErr == nil && recovery.Ready {
+					if recovery.Failed {
+						if completeErr := completeScheduling(activityContext, run.ID, step.Service, true, false, scheduleResult.Lease, scheduleVersion); completeErr != nil {
+							return run, completeErr
+						}
+						step.Status = domain.StepEscalated
+						step.Failure = "recovered runner result rejected; operator review required"
+						run.Status = domain.RunEscalated
+						cancelDownstream(&run, index+1)
+						run.UpdatedAt = workflow.Now(ctx).UTC()
+						return persist(activityContext, run, nil, "deployment.recovery.rejected")
+					}
+					deployed = DeployResult{Execution: recovery.Execution, Deployment: recovery.Deployment}
+					step.Execution = &deployed.Execution
+					run.Status = domain.RunRunning
+					run.UpdatedAt = workflow.Now(ctx).UTC()
+					run, err = persist(activityContext, run, nil, "deployment.recovered")
+					if err != nil {
+						return run, err
+					}
+					step = &run.Steps[index]
+					break
+				}
+				var cancel ControlSignal
+				timer := workflow.NewTimer(ctx, 5*time.Minute)
+				selector := workflow.NewSelector(ctx)
+				selector.AddReceive(cancelChannel, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, &cancel) })
+				selector.AddFuture(timer, func(workflow.Future) {})
+				selector.Select(ctx)
+				if cancel.Actor != "" {
+					return cancelRun(activityContext, ctx, run, index, cancel.Actor)
+				}
+			}
 		}
 		step.Execution = &deployed.Execution
 		if !step.VerificationRequired {
@@ -193,30 +240,84 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 			step = &run.Steps[index]
 			var rolledBack RollbackResult
 			if err := workflow.ExecuteActivity(executionContext, ActivityRollback, RollbackInput{Deploy: deployInput, Deployment: deployed.Deployment}).Get(executionContext, &rolledBack); err != nil {
-				step.Status = domain.StepEscalated
-				step.Failure = "rollback failed or unknown: " + err.Error()
-				run.Status = domain.RunEscalated
-			} else {
-				step.RollbackExecution = &rolledBack.Execution
-				if err := workflow.Sleep(ctx, observationDuration(step.ObservationWindow)); err != nil {
+				if completeErr := completeScheduling(activityContext, run.ID, step.Service, true, true, scheduleResult.Lease, scheduleVersion); completeErr != nil {
+					return run, completeErr
+				}
+				step.Status = domain.StepUnknown
+				step.Failure = "rollback state unknown; reconciliation required"
+				run.Status = domain.RunBlocked
+				cancelDownstream(&run, index+1)
+				run.UpdatedAt = workflow.Now(ctx).UTC()
+				run, err = persist(activityContext, run, nil, "rollback.unknown")
+				if err != nil {
 					return run, err
 				}
-				var rollbackVerification executor.VerificationResult
-				if err := workflow.ExecuteActivity(activityContext, ActivityVerify, VerifyInput{Deployment: rolledBack.Deployment}).Get(activityContext, &rollbackVerification); err != nil {
+				if recoveryVersion == workflow.DefaultVersion {
+					return run, nil
+				}
+				for {
+					var recovery RecoverExecutionResult
+					recoveryErr := workflow.ExecuteActivity(activityContext, ActivityRecoverExecution, RecoverExecutionInput{RunID: run.ID, Service: step.Service, Environment: string(run.Environment), DesiredVersion: step.Change.DesiredVersion, IdempotencyKey: deployInput.IdempotencyKey, Rollback: true}).Get(activityContext, &recovery)
+					var pendingCancel ControlSignal
+					if cancelChannel.ReceiveAsync(&pendingCancel) && pendingCancel.Actor != "" {
+						return cancelRun(activityContext, ctx, run, index, pendingCancel.Actor)
+					}
+					if recoveryErr == nil && !recovery.Supported {
+						return run, nil
+					}
+					var cancel ControlSignal
+					if recoveryErr == nil && recovery.Ready {
+						if recovery.Failed {
+							if err := completeScheduling(activityContext, run.ID, step.Service, true, false, scheduleResult.Lease, scheduleVersion); err != nil {
+								return run, err
+							}
+							step.Status = domain.StepEscalated
+							step.Failure = "recovered rollback result rejected; operator review required"
+							run.Status = domain.RunEscalated
+							cancelDownstream(&run, index+1)
+							run.UpdatedAt = workflow.Now(ctx).UTC()
+							return persist(activityContext, run, nil, "rollback.recovery.rejected")
+						}
+						rolledBack = RollbackResult{Execution: recovery.Execution, Deployment: recovery.Deployment}
+						step.RollbackExecution = &rolledBack.Execution
+						run.Status = domain.RunRunning
+						run.UpdatedAt = workflow.Now(ctx).UTC()
+						run, err = persist(activityContext, run, nil, "rollback.recovered")
+						if err != nil {
+							return run, err
+						}
+						step = &run.Steps[index]
+						break
+					}
+					timer := workflow.NewTimer(ctx, 5*time.Minute)
+					selector := workflow.NewSelector(ctx)
+					selector.AddReceive(cancelChannel, func(c workflow.ReceiveChannel, _ bool) { c.Receive(ctx, &cancel) })
+					selector.AddFuture(timer, func(workflow.Future) {})
+					selector.Select(ctx)
+					if cancel.Actor != "" {
+						return cancelRun(activityContext, ctx, run, index, cancel.Actor)
+					}
+				}
+			}
+			step.RollbackExecution = &rolledBack.Execution
+			if err := workflow.Sleep(ctx, observationDuration(step.ObservationWindow)); err != nil {
+				return run, err
+			}
+			var rollbackVerification executor.VerificationResult
+			if err := workflow.ExecuteActivity(activityContext, ActivityVerify, VerifyInput{Deployment: rolledBack.Deployment}).Get(activityContext, &rollbackVerification); err != nil {
+				step.Status = domain.StepEscalated
+				step.Failure = "rollback verification unavailable: " + err.Error()
+				run.Status = domain.RunEscalated
+			} else {
+				step.RollbackVerification = verificationProjection(rollbackVerification, workflow.Now(ctx).UTC())
+				if rollbackVerification.Outcome() != adapter.VerificationPass {
 					step.Status = domain.StepEscalated
-					step.Failure = "rollback verification unavailable: " + err.Error()
+					step.Failure = "rollback verification did not pass: " + string(rollbackVerification.Outcome())
 					run.Status = domain.RunEscalated
 				} else {
-					step.RollbackVerification = verificationProjection(rollbackVerification, workflow.Now(ctx).UTC())
-					if rollbackVerification.Outcome() != adapter.VerificationPass {
-						step.Status = domain.StepEscalated
-						step.Failure = "rollback verification did not pass: " + string(rollbackVerification.Outcome())
-						run.Status = domain.RunEscalated
-					} else {
-						step.Status = domain.StepRolledBack
-						step.Failure = verification.Reason
-						run.Status = domain.RunFailed
-					}
+					step.Status = domain.StepRolledBack
+					step.Failure = verification.Reason
+					run.Status = domain.RunFailed
 				}
 			}
 			cancelDownstream(&run, index+1)

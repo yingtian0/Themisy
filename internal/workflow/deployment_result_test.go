@@ -6,11 +6,13 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"themisy/internal/domain"
 	"themisy/internal/executor"
 	"themisy/internal/policy"
 	"themisy/internal/store"
+	"themisy/pkg/protocol"
 )
 
 // Commits the success before dropping the persistence response. The Activity
@@ -48,6 +50,20 @@ type forbidWriteExecutor struct {
 type countRollbackExecutor struct {
 	executor.ReleaseExecutor
 	rollbacks int
+}
+
+type pendingGrantExecutor struct {
+	executor.ReleaseExecutor
+	grantID string
+}
+
+type identifiedGrantError struct{ id string }
+
+func (e identifiedGrantError) Error() string   { return "grant result pending" }
+func (e identifiedGrantError) GrantID() string { return e.id }
+
+func (e pendingGrantExecutor) Deploy(context.Context, executor.DeployRequest) (executor.Deployment, error) {
+	return executor.Deployment{}, identifiedGrantError{id: e.grantID}
 }
 
 func (e *countRollbackExecutor) Rollback(ctx context.Context, d executor.Deployment) (executor.Deployment, error) {
@@ -108,6 +124,62 @@ func TestSuccessResponseLossRestoresCompleteDeployment(t *testing.T) {
 	}
 	if noWrites.calls != 0 || exec.DeployCalls(input.IdempotencyKey) != 1 || counted.rollbacks != 1 {
 		t.Fatalf("unexpected writes: %d", noWrites.calls)
+	}
+}
+
+func TestUnknownGrantRecoveryPersistsAndResolvesSameGrantWithoutWrite(t *testing.T) {
+	run, memory, exec := workflowFixture(t, false, nil)
+	run.TenantID = "tenant-test"
+	run.Plan.Phases[0].Steps[0].Scheduling = domain.SchedulingContext{TenantID: run.TenantID, Environment: run.Environment, RunnerGroup: "runner-group"}
+	if err := memory.UpdateRunAtomic(&run, run.StateVersion, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	input := DeployInput{RunID: run.ID, RequestedBy: run.RequestedBy, AgentID: run.Agent.ID, Service: "identity", Environment: "staging", DesiredVersion: "sha-1", IdempotencyKey: "grant-recovery"}
+	grantID := "grant-recovery-1"
+	a := NewActivities(memory, policy.New(), pendingGrantExecutor{ReleaseExecutor: exec, grantID: grantID})
+	if _, err := a.Deploy(context.Background(), input); err == nil {
+		t.Fatal("pending grant must not be reported as a deployment success")
+	}
+	unknown, err := memory.GetExecution(a.AdapterName, input.IdempotencyKey)
+	if err != nil || unknown.Status != store.ExecutionUnknown || unknown.Payload["grant_id"] != grantID {
+		t.Fatalf("unknown execution=%+v err=%v", unknown, err)
+	}
+	run.Status = domain.RunBlocked
+	run.Steps[0].Status = domain.StepUnknown
+	if err := memory.UpdateRunAtomic(&run, run.StateVersion, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	grant := protocol.ActionGrant{GrantID: grantID, RunID: run.ID, StepID: input.Service, TenantID: run.TenantID, RunnerGroup: "runner-group", Target: protocol.Target{Service: input.Service, Environment: input.Environment}, Action: protocol.Action{Capability: protocol.CapabilityDeploy, ArtifactDigest: input.DesiredVersion}, PlanHash: run.Plan.Hash, IdempotencyKey: input.IdempotencyKey, IssuedAt: run.CreatedAt, ExpiresAt: run.CreatedAt.Add(time.Hour)}
+	if _, _, err := memory.CreateGrantDispatch(context.Background(), store.GrantDispatchRecord{Grant: grant}, domain.AuditEvent{ID: "grant-issue"}, domain.OutboxEvent{ID: "grant-outbox"}); err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := memory.ClaimGrantDispatch(context.Background(), run.TenantID, "runner-group", "runner-1", "delivery-token", run.CreatedAt, run.CreatedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err = memory.AcknowledgeGrantDispatch(context.Background(), grantID, "runner-1", dispatch.DeliveryToken, run.CreatedAt, run.CreatedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownResult := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grantID, RunID: run.ID, StepID: input.Service, Status: protocol.ResultUnknown, ReasonCode: "RECONCILIATION_REQUIRED", CompletedAt: run.CreatedAt.Add(time.Second)}
+	dispatch, err = memory.CompleteGrantDispatch(context.Background(), grantID, "runner-1", dispatch.DeliveryToken, unknownResult, unknownResult.CompletedAt, domain.AuditEvent{ID: "grant-unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryInput := RecoverExecutionInput{RunID: run.ID, Service: input.Service, Environment: input.Environment, DesiredVersion: input.DesiredVersion, IdempotencyKey: input.IdempotencyKey}
+	if result, err := a.RecoverExecution(context.Background(), recoveryInput); err != nil || !result.Supported || result.Ready {
+		t.Fatalf("unresolved recovery=%+v err=%v", result, err)
+	}
+	recovered := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grantID, RunID: run.ID, StepID: input.Service, Status: protocol.ResultSucceeded, ExternalExecutionID: "deployment-recovered", CompletedAt: run.CreatedAt.Add(2 * time.Second)}
+	if err := memory.ReconcileGrantDispatch(context.Background(), grantID, dispatch.StateVersion, recovered, domain.AuditEvent{ID: "grant-reconciled", Timestamp: recovered.CompletedAt}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.RecoverExecution(context.Background(), recoveryInput)
+	if err != nil || !result.Ready || result.Failed || result.Deployment.ExternalID != recovered.ExternalExecutionID {
+		t.Fatalf("recovered=%+v err=%v", result, err)
+	}
+	if calls := exec.DeployCalls(input.IdempotencyKey); calls != 0 {
+		t.Fatalf("recovery performed a provider write: calls=%d", calls)
 	}
 }
 
