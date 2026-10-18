@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"themisy/pkg/adapter"
 )
 
-const ResultReportVersion = "themisy.result-report/v1"
+const (
+	ResultReportVersionV1 = "themisy.result-report/v1"
+	ResultReportVersion   = "themisy.result-report/v2"
+)
 
 // ResultReport identifies the reporting Runner, which may recover another
 // Runner's journal entry. It does not attest that the reporter executed the write.
@@ -25,7 +30,7 @@ type ResultReport struct {
 // Key ID and algorithm are signed; only the signature value is excluded.
 // Times use UTC RFC3339Nano. No map ordering or transport whitespace is signed.
 func CanonicalResultReportPayload(report ResultReport) ([]byte, error) {
-	if report.Version != ResultReportVersion || report.RunnerID == "" || report.TenantID == "" || report.RunnerGroup == "" || report.Signature.KeyID == "" || report.Signature.Algorithm != "Ed25519" {
+	if (report.Version != ResultReportVersionV1 && report.Version != ResultReportVersion) || report.RunnerID == "" || report.TenantID == "" || report.RunnerGroup == "" || report.Signature.KeyID == "" || report.Signature.Algorithm != "Ed25519" {
 		return nil, fmt.Errorf("invalid result report identity, version or signing metadata")
 	}
 	r := report.Result
@@ -39,6 +44,23 @@ func CanonicalResultReportPayload(report ResultReport) ([]byte, error) {
 	}
 	if r.Status == ResultSucceeded && r.ExternalExecutionID == "" {
 		return nil, fmt.Errorf("successful report requires external execution ID")
+	}
+	if report.Version == ResultReportVersionV1 && r.Evidence != nil {
+		return nil, fmt.Errorf("result-report/v1 does not support an Evidence body")
+	}
+	if r.Evidence != nil {
+		evidence := *r.Evidence
+		if err := adapter.ValidateEvidence(evidence); err != nil {
+			return nil, fmt.Errorf("invalid result evidence: %w", err)
+		}
+		hash, err := adapter.EvidenceHash(evidence)
+		if err != nil || hash != r.EvidenceHash || hash != evidence.EvidenceHash {
+			return nil, fmt.Errorf("result evidence hash mismatch")
+		}
+		evidence.Window.From = evidence.Window.From.UTC()
+		evidence.Window.To = evidence.Window.To.UTC()
+		evidence.ObservedAt = evidence.ObservedAt.UTC()
+		r.Evidence = &evidence
 	}
 	for _, value := range []string{report.RunnerID, report.TenantID, report.RunnerGroup, report.Signature.KeyID, r.GrantID, r.RunID, r.StepID, r.ReasonCode, r.ExternalExecutionID} {
 		if len(value) > 4096 || strings.ContainsAny(value, "\x00\r\n") {
@@ -56,14 +78,15 @@ func CanonicalResultReportPayload(report ResultReport) ([]byte, error) {
 			return nil, fmt.Errorf("invalid result digest")
 		}
 	}
+	report.Result = r
 	report.Result.CompletedAt = r.CompletedAt.UTC()
 	report.Signature.Value = ""
 	payload, err := json.Marshal(report)
 	if err != nil {
 		return nil, err
 	}
-	if len(payload)+len(ResultReportVersion)+1 > 4096 {
+	if len(payload)+len(report.Version)+1 > 4096 {
 		return nil, fmt.Errorf("result report exceeds signing size limit")
 	}
-	return append([]byte(ResultReportVersion+"\x00"), payload...), nil
+	return append([]byte(report.Version+"\x00"), payload...), nil
 }

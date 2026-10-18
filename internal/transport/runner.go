@@ -222,7 +222,7 @@ func (s *RunnerServer) result(writer http.ResponseWriter, request *http.Request)
 		writeGrantStoreError(writer, err)
 		return
 	}
-	if body.Result != body.Report.Result || s.ResultVerifier.Verify(request.Context(), resultreport.Identity{RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup}, record.Grant, body.Report) != nil {
+	if !protocol.ResultEqual(body.Result, body.Report.Result) || s.ResultVerifier.Verify(request.Context(), resultreport.Identity{RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup}, record.Grant, body.Report) != nil {
 		s.rejectReport(writer, request, identity, record.Grant, "grant.result")
 		return
 	}

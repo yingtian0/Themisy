@@ -73,6 +73,9 @@ func ValidateEvidence(evidence Evidence) error {
 
 func EvidenceHash(evidence Evidence) (string, error) {
 	evidence.EvidenceHash = ""
+	evidence.Window.From = evidence.Window.From.UTC()
+	evidence.Window.To = evidence.Window.To.UTC()
+	evidence.ObservedAt = evidence.ObservedAt.UTC()
 	payload, err := json.Marshal(evidence)
 	if err != nil {
 		return "", err

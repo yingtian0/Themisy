@@ -202,7 +202,7 @@ func (m *Memory) CompleteGrantDispatch(_ context.Context, grantID, runnerID, tok
 		return GrantDispatchRecord{}, ErrConflict
 	}
 	if grantComplete(record.Status) {
-		if record.Result == result {
+		if protocol.ResultEqual(record.Result, result) {
 			m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
 			return cloneGrantDispatch(record), nil
 		}
