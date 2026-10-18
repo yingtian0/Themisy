@@ -1,8 +1,6 @@
 # Themisy
 
-Try the [15-minute offline planning course](docs/guides/offline-quickstart.md)
-without cloud credentials, a database, Temporal, or a Runner. It validates local
-Contracts/Profiles and shows a normal plan and a rejection; it authorizes no writes.
+Try the 15-minute offline planning course: [English](docs/guides/offline-quickstart.md) · [日本語](docs/guides/offline-quickstart.ja.md). It needs no cloud credentials, database, Temporal, or Runner; it validates local Contracts/Profiles and shows a normal plan and a rejection without authorizing writes.
 
 > **Prototype / not production ready.** The current implementation has a PostgreSQL/Temporal durable core, a fail-closed Runner authorization boundary, a typed GitHub Actions adapter, and Datadog evidence classification. It still lacks production KMS/JWKS discovery, Runner transport integration, and a completed dedicated-staging deploy/rollback exercise. It must not be connected to production credentials or production write APIs.
 
