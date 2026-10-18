@@ -78,8 +78,13 @@ func TestGrantExecutorWaitsForRunnerResult(t *testing.T) {
 			}
 			_, err = memory.AcknowledgeGrantDispatch(context.Background(), record.Grant.GrantID, "runner-1", record.DeliveryToken, now, now.Add(time.Minute))
 			if err == nil {
-				result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: record.Grant.GrantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultSucceeded, ExternalExecutionID: "ecs:deployment", CompletedAt: now.Add(time.Second)}
-				_, err = memory.CompleteGrantDispatch(context.Background(), record.Grant.GrantID, "runner-1", record.DeliveryToken, result, now.Add(time.Second), testGrantAudit(now))
+				unknown := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: record.Grant.GrantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultUnknown, ReasonCode: "RECONCILIATION_REQUIRED", CompletedAt: now.Add(time.Second)}
+				var unresolved store.GrantDispatchRecord
+				unresolved, err = memory.CompleteGrantDispatch(context.Background(), record.Grant.GrantID, "runner-1", record.DeliveryToken, unknown, now.Add(time.Second), testGrantAudit(now))
+				if err == nil {
+					recovered := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: record.Grant.GrantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultSucceeded, ExternalExecutionID: "ecs:deployment", CompletedAt: now.Add(2 * time.Second)}
+					err = memory.ReconcileGrantDispatch(context.Background(), record.Grant.GrantID, unresolved.StateVersion, recovered, testGrantAudit(now.Add(2*time.Second)))
+				}
 			}
 			done <- err
 			return
@@ -93,6 +98,138 @@ func TestGrantExecutorWaitsForRunnerResult(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGrantExecutorRollbackWaitsForRecoveredRunnerResult(t *testing.T) {
+	now := time.Date(2026, 9, 4, 2, 0, 0, 0, time.UTC)
+	memory := store.NewMemory()
+	run := grantRun(now)
+	run.Steps[1].Status = domain.StepRollingBack
+	if _, _, err := memory.CreateRun(run); err != nil {
+		t.Fatal(err)
+	}
+	signer, _, err := grant.NewDevelopmentSigner("key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewGrants(memory, signer, "https://control.example", fiveMinutes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Now = func() time.Time { return now }
+	done := make(chan error, 1)
+	go func() {
+		for range 100 {
+			dispatches, err := memory.PendingOutboxByType("grant.dispatch.requested", 10)
+			if err != nil {
+				done <- err
+				return
+			}
+			if len(dispatches) == 0 {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			grantID := dispatches[0].AggregateID
+			record, err := memory.ClaimGrantDispatch(context.Background(), run.TenantID, "payments-prod", "runner-1", "rollback-delivery", now, now.Add(time.Minute))
+			if err == nil {
+				_, err = memory.AcknowledgeGrantDispatch(context.Background(), grantID, "runner-1", record.DeliveryToken, now, now.Add(time.Minute))
+			}
+			if err == nil {
+				unknown := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultUnknown, ReasonCode: "RECONCILIATION_REQUIRED", CompletedAt: now.Add(time.Second)}
+				var unresolved store.GrantDispatchRecord
+				unresolved, err = memory.CompleteGrantDispatch(context.Background(), grantID, "runner-1", record.DeliveryToken, unknown, now.Add(time.Second), testGrantAudit(now))
+				if err == nil {
+					recovered := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultSucceeded, ExternalExecutionID: "ecs:rollback", CompletedAt: now.Add(2 * time.Second)}
+					err = memory.ReconcileGrantDispatch(context.Background(), grantID, unresolved.StateVersion, recovered, testGrantAudit(now.Add(2*time.Second)))
+				}
+			}
+			done <- err
+			return
+		}
+		done <- errors.New("rollback grant was not dispatched")
+	}()
+	execution := &GrantExecutor{Grants: service, PollInterval: time.Millisecond}
+	digest := run.Steps[1].Change.DesiredVersion
+	deployment, err := execution.Rollback(context.Background(), executor.Deployment{ExternalID: "ecs:deployment", StartedAt: now, FinishedAt: now.Add(time.Second), RunID: run.ID, Service: "payment-api", Environment: "production", DesiredVersion: digest, IdempotencyKey: "run-1/production/payment-api/" + digest})
+	if err != nil || deployment.ExternalID != "ecs:rollback" {
+		t.Fatalf("rollback deployment=%#v err=%v", deployment, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitResultKeepsUnknownPendingUntilExistingGrantRecovers(t *testing.T) {
+	now := time.Date(2026, 9, 4, 2, 0, 0, 0, time.UTC)
+	memory := store.NewMemory()
+	run := grantRun(now)
+	if _, _, err := memory.CreateRun(run); err != nil {
+		t.Fatal(err)
+	}
+	signer, _, err := grant.NewDevelopmentSigner("key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewGrants(memory, signer, "https://control.example", fiveMinutes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Now = func() time.Time { return now }
+	record, created, err := service.Issue(context.Background(), GrantIssueRequest{RunID: run.ID, StepID: "payment-api", Capability: protocol.CapabilityDeploy, IdempotencyKey: "durable-recovery-key"})
+	if err != nil || !created {
+		t.Fatalf("issue created=%v err=%v", created, err)
+	}
+	leased, err := memory.ClaimGrantDispatch(context.Background(), run.TenantID, record.Grant.RunnerGroup, "runner-1", "delivery", now, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: record.Grant.GrantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultUnknown, ReasonCode: "RECONCILIATION_REQUIRED", CompletedAt: now.Add(time.Second)}
+	unresolved, err := memory.CompleteGrantDispatch(context.Background(), record.Grant.GrantID, "runner-1", leased.DeliveryToken, unknown, now.Add(time.Second), testGrantAudit(now.Add(time.Second)))
+	if err != nil || unresolved.Status != store.GrantDispatchUnknown {
+		t.Fatalf("unknown status=%s err=%v", unresolved.Status, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	resultChannel := make(chan protocol.Result, 1)
+	errorChannel := make(chan error, 1)
+	go func() {
+		result, err := service.WaitResult(ctx, record.Grant.GrantID, time.Millisecond)
+		if err != nil {
+			errorChannel <- err
+			return
+		}
+		resultChannel <- result
+	}()
+	time.Sleep(10 * time.Millisecond)
+	select {
+	case result := <-resultChannel:
+		t.Fatalf("UNKNOWN must remain pending, got early result %#v", result)
+	case err := <-errorChannel:
+		t.Fatalf("UNKNOWN wait ended before recovery: %v", err)
+	default:
+	}
+
+	// Recovery changes the existing dispatch record; the grant identity/key
+	// stay fixed and no second Grant or dispatch is created.
+	recovered := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: record.Grant.GrantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultSucceeded, ExternalExecutionID: "ecs:deployment", CompletedAt: now.Add(2 * time.Second)}
+	if err := memory.ReconcileGrantDispatch(context.Background(), record.Grant.GrantID, unresolved.StateVersion, recovered, testGrantAudit(now.Add(2*time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-resultChannel:
+		if result != recovered {
+			t.Fatalf("recovered result=%#v want %#v", result, recovered)
+		}
+	case err := <-errorChannel:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal("WaitResult did not observe recovery on the existing Grant")
+	}
+	final, err := memory.GetGrantDispatch(context.Background(), record.Grant.GrantID)
+	if err != nil || final.StateVersion != unresolved.StateVersion+1 || final.Result != recovered {
+		t.Fatalf("final record=%#v err=%v", final, err)
 	}
 }
 

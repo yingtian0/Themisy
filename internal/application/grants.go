@@ -183,8 +183,12 @@ func (g *Grants) WaitResult(ctx context.Context, grantID string, interval time.D
 			return protocol.Result{}, err
 		}
 		switch record.Status {
-		case store.GrantDispatchSucceeded, store.GrantDispatchRejected, store.GrantDispatchUnknown:
+		case store.GrantDispatchSucceeded, store.GrantDispatchRejected:
 			return record.Result, nil
+		case store.GrantDispatchUnknown:
+			// UNKNOWN is an unresolved observation, not a terminal result. Keep
+			// this activity read-only and wait for the existing Grant's recovery
+			// report; never issue a replacement Grant or provider write here.
 		}
 		select {
 		case <-ctx.Done():
