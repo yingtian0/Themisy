@@ -43,10 +43,59 @@ role. Existing valid tokens retain signed memberships until expiry/revocation;
 there is no live Directory lookup or immediate per-user revocation in this unit.
 JWKS cache/freshness remains governed by the separately configured
 [resolver](oidc-jwks-resolver.md). Role/Delegation revocation at Grant issuance,
-identity audit, all-route authentication, real IdP rollout, issuer-qualified
+all-route authentication, real IdP rollout, issuer-qualified
 subject persistence and trusted-proxy edge configuration remain open. Do not
 make the Header development resolver a fallback after OIDC failure.
 
 Validation: `go test -race ./internal/api ./internal/identity`. Independent
 maintainer review, proposed ADR acceptance and full Issue #12 acceptance remain
 outstanding.
+
+## Audit admission gate
+
+`NewAuditedOIDCIdentityResolver(config, sink)` is an additional explicit choice
+for the same identity hook. Its sink must implement
+`AppendAuditContext(context.Context, domain.AuditEvent) error`, commit before
+returning nil and honor cancellation. The existing PostgreSQL Store implements
+this method transactionally; Memory is only a test/development sink. A missing
+sink or any append failure returns `IDENTITY_AUDIT_UNAVAILABLE` with no Principal. A valid
+identity is not admitted on the strength of an uncommitted audit or a previous
+decision. The default non-audited constructor is unchanged; operators must not
+substitute it as a fallback after failure of the audit gate.
+
+Each call appends one `identity.resolve` event under a server-generated
+`identity/<configured-tenant>/<random-id>` correlation. It includes configured
+tenant/issuer/audience and stable reason codes `OIDC_PRINCIPAL_VERIFIED` or
+`OIDC_PRINCIPAL_REJECTED`. Only successful verification adds subject, mapped
+roles and proof expiry. Invalid identity records no unverified subject or claim.
+Authorization headers, bearer tokens, arbitrary claims, body/delegation fields,
+request URLs, query values and caller correlation IDs are not copied. A
+Delegation reference is intentionally absent until a trusted Delegation
+verification path exists. Audit access remains operator-side through the
+existing store; this adds no public audit endpoint.
+
+Audit writes have a five-second ceiling bounded by the request context. There
+is no internal append retry or read-back-to-allow fallback on ambiguous storage
+responses. Even if an event committed but its response was lost, no Principal is
+returned. Cancellation or proof expiry during a slow append also refuses
+admission. An event describes verification at its timestamp, not business-action
+authorization or approval success; application operations retain their own
+transactional audit. Principals carry normalized issuer and expiry metadata,
+without the original token. Existing authentication cache/role-revocation limits
+above still apply.
+
+`make test-identity-audit` creates an owned PostgreSQL 17.6 Alpine tmpfs container
+with synthetic credentials and a dynamic loopback port, migrates only a fresh
+specifically named fixture database, runs the integration test with race, and
+removes that exact container and its anonymous volumes. It does not use caller
+database URLs, existing Compose services, customer data or destructive resets.
+Cleanup errors fail the target. The direct tagged test skips if its dedicated
+endpoint is absent; that skip is not a live database verification result.
+
+The real PostgreSQL test checks VERIFIED/REJECTED events across store reopen and
+uses a separate read-only client session to make audit INSERT fail, then proves
+zero approval workflow signals. Unit tests also cover commit-response loss,
+secret canaries, cancellation and expiry during append. The PostgreSQL persistence
+is real; the IdP JWTs are synthetic and application/workflow fixtures are still
+memory/fakes. This unit does not complete identity-decision correlation to
+Plan/Grant/Delegation or the whole Issue #12 audit/production acceptance gate.

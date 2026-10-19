@@ -105,5 +105,5 @@ func (o *OIDCIdentityResolver) Resolve(r *http.Request) (Principal, error) {
 		roles = append(roles, role)
 	}
 	sort.Strings(roles)
-	return Principal{Subject: subject.ID, TenantID: o.tenantID, Roles: roles}, nil
+	return Principal{Subject: subject.ID, TenantID: o.tenantID, Roles: roles, Issuer: subject.Issuer, ExpiresAt: subject.ExpiresAt}, nil
 }

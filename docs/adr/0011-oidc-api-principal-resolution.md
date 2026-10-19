@@ -57,7 +57,7 @@ already issued valid token can still assert its earlier membership until expiry
 or actual issuer/key revocation. This does not solve immediate Directory role
 revocation, Delegation issuance/revocation, full approval proof persistence,
 Grant-time identity revalidation, cross-issuer subject namespacing, whole-API
-tenant authorization or identity decision auditing. Existing approval application
+tenant authorization or identity-decision correlation to Plan/Grant/Delegation. Existing approval application
 checks still enforce required roles and requester/approver separation within
 this single-issuer tenant. Enabling a production deployment requires all those
 remaining Issue #12 conditions, a reviewed integration design and maintainer
@@ -73,3 +73,30 @@ required role refusal and self-approval refusal. Application storage and workflo
 signals are fakes in these API scenarios, not real IdP/Directory or live Writes.
 An additional local TLS Discovery/JWKS scenario crosses cache expiry and refuses
 an approval when key refresh is unavailable or all keys have been removed.
+
+## Explicit audited hook
+
+An optional `NewAuditedOIDCIdentityResolver` requires an audit sink implementing
+context-aware append and admits a verified Principal only after a committed
+identity decision. PostgreSQL uses the existing audit schema and transaction;
+Memory is only a development/test implementation. Existing `AppendAudit` callers
+retain compatibility through a background-context delegate. The new method does
+not change the Control Plane/Runner Journal persistence authorities of ADR-0005
+and ADR-0009.
+
+Events contain configured tenant/issuer/audience, server-generated correlation,
+stable verification reasons and, only after verification, normalized subject,
+roles and expiry. They exclude tokens, raw claims, unverified Delegation/body
+fields, URLs and caller-selected correlation values. This is an authentication
+observation, not business authorization or an approval result. No public audit
+read API or deployment default is added.
+
+Audit append respects request cancellation and a five-second ceiling. Failure,
+timeout or ambiguous commit response refuses the Principal without retry;
+previous events cannot be used to admit a request. Proof expiry during the append
+also refuses admission. Business operations still persist their own audit in
+their own transactions; this is not an atomic approval/Grant/audit transaction.
+Tests include real PostgreSQL committed-event recovery after reopen, a read-only
+session refusing INSERT with zero workflow approval signals, and synthetic
+commit-response loss/cancel/expiry cases. Full identity lifecycle correlation and
+independent maintainer review remain open.
