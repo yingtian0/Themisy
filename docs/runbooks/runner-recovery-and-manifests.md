@@ -121,13 +121,31 @@ identity claims are true. Authoritative fact collection and IdP roles remain
 - Roll out the same trust configuration to all replicas before activating new
   manifests. Expired/missing approval material means zero new writes.
 
-For the local Compose operational drill, run `make verify-runner-journal-backup-restore`.
-It dumps only `themisy_runner`, restores into a uniquely named temporary database,
-probes the restored nonce and idempotency uniqueness constraints inside a rolled
-back transaction, then removes only the database it created. It does not touch
-the source database. This verifies the local backup/restore mechanics; production
-restore still requires the customer's isolated target, WAL/PITR recovery point,
-and reconciliation of writes after the snapshot before any Runner resumes.
+For the local operational drill, run `make verify-runner-journal-backup-restore`
+with Go and Docker. The existing pg_dump/pg_restore script now creates a fresh
+PostgreSQL container with tmpfs storage and loopback-only port, then allocates
+isolated fixture/restore databases. It does not connect to or modify the normal
+Compose database and ignores caller database addresses.
+
+Before backup, the real Runner migration/store APIs save SUCCEEDED and UNKNOWN
+Journal results, two signed Manifest revisions, the current revision fence, audit
+records and a reported-version marker. After restore, the drill compares every
+stored row/payload and reads through the actual Runner store. Both previously
+used nonce and idempotency keys must still return the old record with no fresh
+reservation or audit mutation. The original new-probe uniqueness check remains
+inside a rolled-back transaction.
+
+Schema-only restoration, missing Journal data and matching empty source/restore
+are explicit negative controls. Only the expected data-mismatch/precondition
+failure counts as rejection; connection, migration or tool errors fail the drill.
+Cleanup tracks successful temporary database creations and the newly allocated
+container ID; no pre-existing container, database or volume is removed. A failure
+keeps synthetic diagnostics and dumps in a printed temporary directory.
+
+This proves local full-data recovery for the seeded snapshot, not production
+restore readiness. A real restore still requires the customer's isolated target,
+WAL/PITR recovery point and reconciliation of writes after the snapshot before
+any Runner resumes. No AWS or customer database is used by this drill.
 
 ## Verification
 
