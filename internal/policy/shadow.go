@@ -12,6 +12,7 @@ import (
 )
 
 const ShadowReportVersion = "themisy.policy-shadow/v1"
+const ShadowReportMode = "OFFLINE_SHADOW_ONLY"
 const maximumShadowCases = 256
 
 type ShadowCase struct {
@@ -33,6 +34,7 @@ type ShadowComparison struct {
 }
 
 type ShadowReport struct {
+	Mode          string             `json:"mode"`
 	Version       string             `json:"version"`
 	ObservedAt    time.Time          `json:"observed_at"`
 	CurrentHash   string             `json:"current_hash"`
@@ -64,7 +66,7 @@ func CompareSignedBundles(ctx context.Context, current, candidate Bundle, issuer
 	if err != nil {
 		return ShadowReport{}, fmt.Errorf("SHADOW_CANDIDATE_INVALID: %w", err)
 	}
-	report := ShadowReport{Version: ShadowReportVersion, ObservedAt: now.UTC(), CurrentHash: current.Hash, CandidateHash: candidate.Hash, Cases: make([]ShadowComparison, 0, len(cases))}
+	report := ShadowReport{Mode: ShadowReportMode, Version: ShadowReportVersion, ObservedAt: now.UTC(), CurrentHash: current.Hash, CandidateHash: candidate.Hash, Cases: make([]ShadowComparison, 0, len(cases))}
 	for _, c := range cases {
 		if err := ctx.Err(); err != nil {
 			return ShadowReport{}, err

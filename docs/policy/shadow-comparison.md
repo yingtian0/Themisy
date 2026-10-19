@@ -47,8 +47,50 @@ caller-state preservation, invalid signatures/keys/issuer/expiry, malformed
 Rego/evaluation, cancellation, case validation, no network calls and no reuse
 after expiry. Existing hierarchy tests remain separate.
 
-This first unit is an internal Go API; no service endpoint, automatic collector,
-UI or CLI is connected yet. Registration/distribution/state APIs, durable audit,
+The internal Go API is also available through the offline `themisyctl policy-shadow`
+command below. No service endpoint, automatic collector or UI is connected yet. Registration/distribution/state APIs, durable audit,
 Runner-applied hashes, staged rollout/rollback, maintainer review and live
 operational verification remain open. The report is not a signed attestation or
 a policy deployment record. Issue #10 stays open.
+
+## Offline CLI example
+
+Build the CLI, then compare the committed synthetic signed examples:
+
+```bash
+go build -o /tmp/themisyctl ./cmd/themisyctl
+/tmp/themisyctl policy-shadow \
+  -current examples/policy-shadow/current.json \
+  -candidate examples/policy-shadow/candidate.json \
+  -cases examples/policy-shadow/cases.json \
+  -issuer example://offline-policy-shadow \
+  -key-id synthetic-shadow-key \
+  -public-key examples/policy-shadow/public.key \
+  -at 2026-10-19T00:00:00Z
+```
+
+This example returns mode `OFFLINE_SHADOW_ONLY`, three cases and one changed
+case: `frozen-service` changes from ALLOW to DENY with `SERVICE_FREEZE`. The
+missing-subject case stays DENY. The fixtures were signed with a discarded
+synthetic development key; only its public key is committed. Never configure
+that sample key as production policy trust.
+
+The frozen `-at` is the analysis time for this historical fixture. Omit `-at`
+for current-time analysis of real operator-supplied Bundles. Backdating an
+analysis does not renew a Bundle or authorize its deployment. The example's
+expired Bundles intentionally fail at the current time; do not extend or ignore
+expiry to make them eligible for execution.
+
+Supply issuer/key ID/public key independently of candidate content. This CLI
+unit supports one explicitly trusted Ed25519 key for both Bundles; the internal
+API supports a separately configured resolver for multi-key comparisons. Files
+must contain one bounded JSON value with known fields; cases use the canonical
+Input schema. No server address, cloud credential or actor role is used by this
+command. Building the binary can still require Go module downloads.
+
+A successful comparison exits 0 **whether or not cases differ**. Inspect the
+report's Decisions, Reason Codes and `changed_cases`; exit 0 means only that
+analysis completed. Invalid input/signature/key/expiry, restricted builtins,
+evaluation failure or cancellation exits 1 with no JSON report. `policy-shadow
+-h` exits 0 and explains the same limits. Preserve Bundle/input hashes with any
+review record; the CLI does not write a durable policy deployment audit.

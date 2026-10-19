@@ -1,0 +1,22 @@
+{
+  "version": "synthetic-current-v1",
+  "issuer": "example://offline-policy-shadow",
+  "compatibility": [
+    "themisy.policy.input/v1alpha1"
+  ],
+  "issued_at": "2026-10-18T23:00:00Z",
+  "expires_at": "2026-10-19T01:00:00Z",
+  "modules": [
+    {
+      "name": "main.rego",
+      "layer": "platform_mandatory",
+      "source": "package themisy.authorization\n\nimport rego.v1\n\ndeny contains \"MISSING_SUBJECT\" if {\n\tinput.user_id == \"\"\n}\n\ndeny contains \"MISSING_AGENT\" if {\n\tinput.agent_id == \"\"\n}\n\nvalid_subject_type if {\n\tinput.subject_type == \"user\"\n}\n\nvalid_subject_type if {\n\tinput.subject_type == \"ci\"\n}\n\ndeny contains \"INVALID_SUBJECT_TYPE\" if {\n\tinput.environment == \"production\"\n\tnot valid_subject_type\n}\n\ndeny contains \"MISSING_DELEGATION\" if {\n\tinput.environment == \"production\"\n\tinput.delegation_ref == \"\"\n}\n\ndeny contains \"UNSUPPORTED_POLICY_INPUT\" if {\n\tinput.version != \"themisy.policy.input/v1alpha1\"\n}\n\ndeny contains \"MISSING_PINNED_CONTEXT\" if {\n\tinput.environment == \"production\"\n\thashes := [\n\t\tobject.get(input, \"plan_hash\", \"\"),\n\t\tobject.get(input, \"contract_hash\", \"\"),\n\t\tobject.get(input, \"profile_hash\", \"\"),\n\t\tobject.get(input, \"policy_hash\", \"\"),\n\t\tobject.get(input, \"evidence_hash\", \"\"),\n\t]\n\tsome value in hashes\n\tnot startswith(value, \"sha256:\")\n}\n\napproval_required contains \"MISSING_APPROVAL_PROOF\" if {\n\tinput.risk == \"high\"\n\tcount(object.get(input, \"approval_proofs\", [])) == 0\n}\n\ndefault allow := false\n\nallow if {\n\tcount(deny) == 0\n\tcount(approval_required) == 0\n}\n\ndefault require_approval := false\n\nrequire_approval if {\n\tcount(deny) == 0\n\tcount(approval_required) \u003e 0\n}\n\ndecision := {\n\t\"allow\": allow,\n\t\"require_approval\": require_approval,\n\t\"reasons\": sort(array.concat([reason | some reason in deny], [reason | some reason in approval_required])),\n\t\"required_roles\": [\"service-owner\"],\n}\n"
+    }
+  ],
+  "hash": "sha256:086bce054e2cc5338304767edf7890d08ec4bf9fb78e0072392664eabb11f846",
+  "signature": {
+    "algorithm": "Ed25519",
+    "key_id": "synthetic-shadow-key",
+    "value": "_icp8pH360NeU5rKPJRegurpn5qa_frnMiusYSIT8TwewnCJ1fzViO2Zr5UFcAZFwbYcFqaCpeftkWUcLrSSDg"
+  }
+}
