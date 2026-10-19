@@ -135,6 +135,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 			if persistErr != nil {
 				return run, persistErr
 			}
+			step = &run.Steps[index]
 			if recoveryVersion == workflow.DefaultVersion {
 				return run, nil
 			}
@@ -252,6 +253,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 				if err != nil {
 					return run, err
 				}
+				step = &run.Steps[index]
 				if recoveryVersion == workflow.DefaultVersion {
 					return run, nil
 				}

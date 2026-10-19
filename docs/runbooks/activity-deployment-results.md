@@ -118,3 +118,18 @@ for both version markers and checks terminal BLOCKED/UNKNOWN with no recovery
 Activity. This is branch coverage in the Temporal test suite, **not** a replay of
 recorded server history. Real old-history replay and live UNKNOWN recovery across
 Worker replacement remain required before claiming upgrade compatibility.
+
+`TestRecoveredRollbackRequiresIndependentVerification` covers pending then ready,
+all four verification outcomes, unavailable verification, rejected recovery,
+cancel while pending and the legacy version branch. It checks the rollback
+recovery binding, exact restored Deployment passed to verification, durable
+Run/Step outcomes and one dispatch of each operation. PASS after rollback means
+ROLLED_BACK/FAILED, never release success. These are simulated Activities in the
+Temporal test suite, not a live provider or server restart test.
+
+After persisting UNKNOWN, the Workflow must rebind its Step pointer to the Run
+returned by persistence before applying a recovered rejection. Persistence
+returns a fresh snapshot; changing the previous snapshot would otherwise leave
+the saved Step UNKNOWN while the Run becomes ESCALATED. Both deploy and rollback
+rejections now persist ESCALATED consistently. This pointer correction adds no
+Temporal commands or marker versions; historical Activity results stay intact.
