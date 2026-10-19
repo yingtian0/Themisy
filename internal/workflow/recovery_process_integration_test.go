@@ -9,13 +9,16 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"themisy/internal/application"
+	"themisy/internal/domain"
 	"themisy/internal/executor"
 	"themisy/internal/grant"
 	"themisy/internal/policy"
+	"themisy/internal/store"
 	postgresstore "themisy/internal/store/postgres"
 	wf "themisy/internal/workflow"
 	"themisy/pkg/adapter"
@@ -58,6 +61,22 @@ func TestRecoveryWorkerProcess(t *testing.T) {
 	}
 	forbidden := &forbidWriteExecutor{ReleaseExecutor: verification}
 	var execution executor.ReleaseExecutor = forbidden
+	guarded := &forbidNewRecoveryGrantStore{DurableStore: st}
+	durableRun, err := st.GetRun(queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode == "replacement" && len(durableRun.Steps) > 1 {
+		signer, _, err := grant.NewDevelopmentSigner("grant-key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		issuer, err := application.NewGrants(guarded, signer, "https://control.example", 2*time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		execution = &application.GrantExecutor{Grants: issuer, Verification: verification, PollInterval: 10 * time.Millisecond}
+	}
 	if mode == "first" {
 		signer, _, err := grant.NewDevelopmentSigner("grant-key")
 		if err != nil {
@@ -109,6 +128,9 @@ func TestRecoveryWorkerProcess(t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(2 * time.Minute):
 		t.Fatal("parent did not stop child Worker")
+	}
+	if guarded.calls.Load() != 0 {
+		t.Fatal("replacement attempted a new Grant after Plan expiry")
 	}
 	if forbidden.calls.Load() != 0 {
 		t.Fatalf("replacement dispatched %d writes", forbidden.calls.Load())
@@ -197,4 +219,19 @@ func TestTemporalSignedRecoveryAcrossProcesses(t *testing.T) {
 
 func TestTemporalSignedRecoveryCancelAcrossProcesses(t *testing.T) {
 	testTemporalSignedRecoveryScenario(t, false, true, true)
+}
+
+// The real Grants.Issue must reject expired Plan context before reaching this
+// persistence boundary. The guard also prevents a fixture bug from issuing.
+type forbidNewRecoveryGrantStore struct {
+	store.DurableStore
+	calls atomic.Int32
+}
+
+func (s *forbidNewRecoveryGrantStore) CreateGrantDispatch(context.Context, store.GrantDispatchRecord, domain.AuditEvent, domain.OutboxEvent) (store.GrantDispatchRecord, bool, error) {
+	s.calls.Add(1)
+	return store.GrantDispatchRecord{}, false, fmt.Errorf("new Grant forbidden in expired recovery fixture")
+}
+func TestTemporalExpiredRecoveryCannotAuthorizeNextStep(t *testing.T) {
+	testTemporalSignedRecoveryOptions(t, signedRecoveryOptions{separateProcesses: true, nextStepAfterExpiry: true})
 }

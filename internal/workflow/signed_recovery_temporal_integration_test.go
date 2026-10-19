@@ -75,7 +75,15 @@ func testTemporalSignedRecovery(t *testing.T, rollback bool) {
 func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separateProcesses bool) {
 	testTemporalSignedRecoveryScenario(t, rollback, separateProcesses, false)
 }
+
+type signedRecoveryOptions struct{ rollback, separateProcesses, cancelBeforeRecovery, nextStepAfterExpiry bool }
+
 func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesses, cancelBeforeRecovery bool) {
+	testTemporalSignedRecoveryOptions(t, signedRecoveryOptions{rollback: rollback, separateProcesses: separateProcesses, cancelBeforeRecovery: cancelBeforeRecovery})
+}
+func testTemporalSignedRecoveryOptions(t *testing.T, options signedRecoveryOptions) {
+	rollback, separateProcesses, cancelBeforeRecovery := options.rollback, options.separateProcesses, options.cancelBeforeRecovery
+	expiringContext := cancelBeforeRecovery || options.nextStepAfterExpiry
 	url, address := os.Getenv("THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL"), os.Getenv("THEMISY_TEMPORAL_ADDRESS")
 	if url == "" || address == "" {
 		t.Skip("requires explicitly dedicated PostgreSQL and Temporal")
@@ -103,7 +111,7 @@ func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesse
 	}
 	run.ID += "-signed-recovery-" + time.Now().UTC().Format("20060102150405.000000000")
 	run.WorkflowID, run.RequestID = run.ID, run.ID
-	if cancelBeforeRecovery {
+	if expiringContext {
 		run.Plan.ExpiresAt = time.Now().UTC().Add(20 * time.Second)
 	}
 	run.TenantID, run.SubjectType, run.UserIdentityProof, run.DelegationRef = "test-tenant-"+run.ID, "user", "synthetic-identity", "synthetic-delegation"
@@ -113,6 +121,15 @@ func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesse
 	planned := &run.Plan.Phases[0].Steps[0]
 	planned.DesiredVersion, planned.ContractHash, planned.ProfileHash = digest, digest, digest
 	planned.Scheduling = domain.SchedulingContext{TenantID: run.TenantID, Environment: run.Environment, RunnerGroup: "test-group", RiskTier: "low"}
+	if options.nextStepAfterExpiry {
+		next := *planned
+		next.Service = "payments"
+		run.Plan.Phases[0].Steps = append(run.Plan.Phases[0].Steps, next)
+		nextStep := run.Steps[0]
+		nextStep.Service = "payments"
+		nextStep.Change.Service = "payments"
+		run.Steps = append(run.Steps, nextStep)
+	}
 	if _, _, err := st.CreateRun(&run); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +138,7 @@ func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesse
 		t.Fatal(err)
 	}
 	grantTTL := 2 * time.Minute
-	if cancelBeforeRecovery {
+	if expiringContext {
 		grantTTL = 2 * time.Second
 	}
 	issuer, err := application.NewGrants(st, grantSigner, "https://control.example", grantTTL)
@@ -272,7 +289,7 @@ func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesse
 	forbidden := &forbidWriteExecutor{ReleaseExecutor: verification}
 	second := startWorker(wf.NewActivities(replacement, policy.New(), forbidden), false)
 	defer second.Stop()
-	if cancelBeforeRecovery {
+	if expiringContext {
 		// The child issues a normal short-lived Grant bounded by Plan expiry.
 		// Wait until it has expired; observing its old Write remains permitted.
 		timer := time.NewTimer(time.Until(dispatch.Grant.ExpiresAt) + time.Millisecond)
@@ -324,7 +341,13 @@ func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesse
 	if cancelBeforeRecovery {
 		wantRun, wantStep = domain.RunCancelled, domain.StepUnknown
 	}
+	if options.nextStepAfterExpiry {
+		wantRun = domain.RunBlocked
+	}
 	for _, value := range []domain.ReleaseRun{finished, *saved} {
+		if options.nextStepAfterExpiry && (len(value.Steps) != 2 || value.Steps[1].Status != domain.StepUnknown) {
+			t.Fatalf("expired downstream context advanced: %+v", value)
+		}
 		if cancelBeforeRecovery {
 			if value.Status != wantRun || value.Steps[0].Status != wantStep || value.Steps[0].Verification != nil {
 				t.Fatalf("late recovery overrode cancellation: %+v", value)
@@ -358,6 +381,18 @@ func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesse
 			t.Fatal("delayed recovery mutated cancellation")
 		}
 	}
+	if options.nextStepAfterExpiry {
+		if !time.Now().After(run.Plan.ExpiresAt) || !time.Now().After(dispatch.Grant.ExpiresAt) {
+			t.Fatal("recovery did not cross expiry")
+		}
+		next, err := replacement.GetExecution("mock", run.ID+"/staging/payments/"+digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.Status != store.ExecutionUnknown || next.Payload["grant_id"] != nil {
+			t.Fatal("expired downstream step obtained a Grant or advanced")
+		}
+	}
 	// Claiming the initial deploy consumes its dispatch outbox row. Count
 	// durable issuance audits, not just still-pending delivery notifications.
 	audits, err := replacement.AuditEvents(run.ID)
@@ -365,10 +400,17 @@ func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesse
 		t.Fatal(err)
 	}
 	counts := map[protocol.Capability]int{}
+	expiryDenied := false
 	for _, event := range audits {
+		if event.Action == "deployment.result" && event.ResourceID == "payments" && strings.Contains(fmt.Sprint(event.Details["error"]), "plan or grant expired") {
+			expiryDenied = true
+		}
 		if event.Action == "grant.issue" {
 			counts[protocol.Capability(fmt.Sprint(event.Details["capability"]))]++
 		}
+	}
+	if options.nextStepAfterExpiry && !expiryDenied {
+		t.Fatal("downstream rejection was not caused by Plan expiry")
 	}
 	if counts[protocol.CapabilityDeploy] != 1 || counts[protocol.CapabilityRollback] != int(wantRollbacks) {
 		t.Fatalf("unexpected Grant issuance counts: %+v", counts)

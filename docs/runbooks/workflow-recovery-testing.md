@@ -4,7 +4,7 @@ Run `make test-workflow-recovery` from the source checkout with Go and Docker.
 The target creates its own PostgreSQL 17.6, Temporal 1.29.6.1, Docker network and
 loopback-only dynamic ports. It ignores any caller-provided database address.
 It does not use the normal Compose database, stop existing services, contact AWS
-or publish artifacts. Allow roughly six minutes for the fixed server timeouts.
+or publish artifacts. Allow roughly seven minutes for the fixed server timeouts.
 
 The target runs race-enabled integration tests for:
 
@@ -14,6 +14,7 @@ The target runs race-enabled integration tests for:
 | Existing Grant recovery | Same Execution and Grant survive a store replacement |
 | UNKNOWN + cancel | Worker replacement preserves CANCELLED/UNKNOWN; server history replays |
 | Signed deploy/rollback recovery | Real issuance, HTTP signature verification and durable coordinator; independent verification after recovery |
+| Expired downstream Plan | Old result recovers, but the real issuer refuses a new Grant for the next Step |
 | Expiry/cancel race | Expired Plan/Grant do not permit another Write or overwrite cancellation |
 | OS process crash | First Worker process is killed while a recovery completion is pending; replacement process reads the same Grant; no replacement Write |
 

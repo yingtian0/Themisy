@@ -204,3 +204,13 @@ process may record the old operation's terminal observation, but the Run remains
 CANCELLED and the Step UNKNOWN with no new verification/Grant/Write. A further
 recovery call against that terminal Run is refused. This tests read-only result
 acceptance after expiry; it grants no permission to repeat an expired Write.
+
+`TestTemporalExpiredRecoveryCannotAuthorizeNextStep` uses a two-Step Plan and
+independent Worker processes. The first authorized operation can recover and
+verify after Plan/Grant expiry, but the real issuer rejects the next Step because
+its Plan expired. The rejection audit must identify expiry, not a missing fixture
+field. A store guard fails any attempted new Grant persistence. The Run stays
+BLOCKED, the next Step UNKNOWN, and only the first Grant exists. This deliberately
+retains the current conservative UNKNOWN projection for a failed downstream
+activity; lifecycle classification improvements remain #51. No expiry is extended
+and no provider Write is used to discover the old result.
