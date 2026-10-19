@@ -21,12 +21,23 @@ cleanup() {
     [[ -z "$temporal_id" ]] || docker logs "$temporal_id" >"$scratch/temporal.log" 2>&1 || true
     echo "Recovery test failed; diagnostics retained in $scratch" >&2
   fi
-  # IDs are assigned only after successful creation by this script. Never
-  # delete by a potentially pre-existing name or run Compose down.
-  [[ -z "$temporal_id" ]] || docker rm -f "$temporal_id" >/dev/null || true
-  [[ -z "$pg_id" ]] || docker rm -f "$pg_id" >/dev/null || true
-  [[ -z "$network_id" ]] || docker network rm "$network_id" >/dev/null || true
-  if [[ $result -eq 0 ]]; then rm -rf "$scratch"; fi
+  # IDs are assigned only after successful creation by this script. These
+  # containers have no caller mounts; -v removes only their anonymous volumes.
+  # Never delete by a potentially pre-existing name or run Compose down/prune.
+  cleanup_failed=0
+  for owned_container in "$temporal_id" "$pg_id"; do
+    if [[ -n "$owned_container" ]] && ! docker rm -f -v "$owned_container" >/dev/null; then cleanup_failed=1; fi
+  done
+  if [[ -n "$network_id" ]] && ! docker network rm "$network_id" >/dev/null; then cleanup_failed=1; fi
+  if [[ $cleanup_failed -ne 0 ]]; then
+    echo "Owned recovery infrastructure cleanup failed" >&2
+    if [[ $result -eq 0 ]]; then result=1; fi
+  fi
+  if [[ $result -eq 0 ]]; then
+    rm -rf "$scratch"
+  else
+    echo "Recovery diagnostics retained in $scratch" >&2
+  fi
   exit "$result"
 }
 trap cleanup EXIT

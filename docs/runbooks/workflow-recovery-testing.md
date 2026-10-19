@@ -22,7 +22,8 @@ are synthetic. Runner Journal/provider reconciliation, final Runner policy
 acceptance, actual AWS IAM and live runtime observations are separate gates.
 Passing this target is not production readiness or completion of Issues #9/#11.
 
-Only successfully created resource IDs are removed by the cleanup trap. The
+Only successfully created resource IDs and their anonymous container volumes
+are removed by the cleanup trap. A cleanup failure fails the target. The
 script never removes pre-existing resources by name or runs Compose down. On
 failure it keeps service diagnostics in a newly allocated temporary directory
 and prints that location; inspect and delete that directory when no longer
