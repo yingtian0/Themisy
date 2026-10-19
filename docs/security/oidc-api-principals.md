@@ -4,7 +4,7 @@
 `api.NewWithIdentity` constructor. It is not enabled by `cmd/themisy` and does not
 authenticate routes that do not already use this hook. Do not deploy this unit
 as complete production API authentication. See proposed
-[ADR-0011](../adr/0011-oidc-api-principal-resolution.md).
+[ADR-0014](../adr/0014-oidc-api-principal-resolution.md).
 
 The operator supplies one tenant ID, trusted OIDC verifier (issuer/audience/key
 resolver), the IdP's authoritative tenant and group claim names, and exact group

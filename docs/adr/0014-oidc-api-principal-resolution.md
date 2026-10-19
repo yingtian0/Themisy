@@ -1,4 +1,4 @@
-# ADR-0011: Opt-in OIDC principals for existing API identity hooks
+# ADR-0014: Opt-in OIDC principals for existing API identity hooks
 
 - Status: Proposed
 - Date: 2026-10-20
