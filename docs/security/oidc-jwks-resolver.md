@@ -2,9 +2,9 @@
 
 `internal/identity.OIDCJWKSResolver` resolves signing keys only for issuers
 provided by trusted application configuration. It is a key-resolution
-component; it does not implement tenant discovery, role mapping, delegation
-issuance/revocation, or production HTTP header authentication. The current
-server composition is not switched to this resolver by this change.
+component wired into the Runner's subject-verification composition. It does
+not implement tenant discovery, role mapping, delegation issuance/revocation,
+or production HTTP header authentication.
 
 Each configured issuer needs its exact OIDC issuer URL and an HTTPS discovery
 URL. Discovery's returned `issuer` must match exactly, and `jwks_uri` must also
@@ -30,7 +30,15 @@ with its own trusted issuer and audience settings. This resolver does not infer
 tenant trust from `iss`, and a key response alone is not sufficient to authorize
 a subject.
 
-The resolver's tests use local TLS test servers and synthetic keys. They do not
-demonstrate integration with an external identity provider, administrator
-configuration, organization roles, current delegation revocation, or production
-service composition.
+Runner configuration selects `identity.discovery_url` and may set
+`identity.jwks_cache_ttl` (default `5m`, bounded to `1s`–`1h`). Production
+requires Discovery/JWKS and rejects static `trust_key_id`/`trust_key_file`
+settings. A static Ed25519 key remains available only in explicit development
+mode. The issuer and audience remain explicit configuration values and are not
+learned from token claims.
+
+Composition tests verify that the production-style settings select the
+resolver without contacting an IdP. Resolver tests use local TLS servers and
+synthetic keys. They do not demonstrate external identity-provider or
+administrator configuration, organization roles, tenant-specific dynamic
+configuration, current delegation revocation, or production operations.
