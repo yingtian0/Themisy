@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,7 @@ import (
 	postgresstore "themisy/internal/store/postgres"
 	"themisy/internal/transport"
 	wf "themisy/internal/workflow"
+	"themisy/pkg/adapter"
 	"themisy/pkg/protocol"
 
 	enumspb "go.temporal.io/api/enums/v1"
@@ -38,17 +40,34 @@ import (
 // Workflow's production Activity timeout or granting permission to retry a Write.
 type shortGrantWaitExecutor struct {
 	executor.ReleaseExecutor
-	calls atomic.Int32
+	calls           atomic.Int32
+	rollbackCalls   atomic.Int32
+	pendingRollback bool
 }
 
 func (e *shortGrantWaitExecutor) Deploy(ctx context.Context, input executor.DeployRequest) (executor.Deployment, error) {
 	e.calls.Add(1)
+	if e.pendingRollback {
+		return e.ReleaseExecutor.Deploy(ctx, input)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
 	return e.ReleaseExecutor.Deploy(ctx, input)
 }
 
-func TestTemporalSignedGrantRecoveryAcrossWorkers(t *testing.T) {
+func (e *shortGrantWaitExecutor) Rollback(ctx context.Context, input executor.Deployment) (executor.Deployment, error) {
+	e.rollbackCalls.Add(1)
+	ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	return e.ReleaseExecutor.Rollback(ctx, input)
+}
+
+func TestTemporalSignedGrantRecoveryAcrossWorkers(t *testing.T) { testTemporalSignedRecovery(t, false) }
+func TestTemporalSignedRollbackRecoveryAcrossWorkers(t *testing.T) {
+	testTemporalSignedRecovery(t, true)
+}
+
+func testTemporalSignedRecovery(t *testing.T, rollback bool) {
 	url, address := os.Getenv("THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL"), os.Getenv("THEMISY_TEMPORAL_ADDRESS")
 	if url == "" || address == "" {
 		t.Skip("requires explicitly dedicated PostgreSQL and Temporal")
@@ -70,10 +89,13 @@ func TestTemporalSignedGrantRecoveryAcrossWorkers(t *testing.T) {
 	defer tc.Close()
 	nowFixture := time.Now().UTC()
 	run := domain.ReleaseRun{ID: "run", WorkflowID: "run", RequestID: "request", ReleaseVersion: "v1", Environment: domain.EnvironmentStaging, RequestedBy: "requester", Agent: domain.AgentIdentity{ID: "agent", Scopes: []string{"release:deploy"}}, Plan: domain.ReleasePlan{Environment: domain.EnvironmentStaging, Phases: []domain.PlanPhase{{Number: 0, Steps: []domain.PlanStep{{Service: "identity", VerificationRequired: true, ObservationWindow: "1s", RollbackMode: domain.RollbackAutomatic}}}}}, Status: domain.RunPending, Steps: []domain.ReleaseStep{{Service: "identity", Status: domain.StepPending, Change: domain.Change{Service: "identity", CISuccess: true, DependenciesHealthy: true}, VerificationRequired: true, ObservationWindow: "1s", RollbackMode: domain.RollbackAutomatic}}, StateVersion: 1, CreatedAt: nowFixture, UpdatedAt: nowFixture}
-	verification := executor.NewMock(nil)
+	var verification executor.ReleaseExecutor = executor.NewMock(nil)
+	if rollback {
+		verification = rollbackPathVerifier{ReleaseExecutor: verification, failed: executor.NewMock(map[string]executor.MockBehavior{"": {VerifyStatus: adapter.VerificationFail}})}
+	}
 	run.ID += "-signed-recovery-" + time.Now().UTC().Format("20060102150405.000000000")
 	run.WorkflowID, run.RequestID = run.ID, run.ID
-	run.TenantID, run.SubjectType, run.UserIdentityProof, run.DelegationRef = "test-tenant", "user", "synthetic-identity", "synthetic-delegation"
+	run.TenantID, run.SubjectType, run.UserIdentityProof, run.DelegationRef = "test-tenant-"+run.ID, "user", "synthetic-identity", "synthetic-delegation"
 	digest := "sha256:" + strings.Repeat("a", 64)
 	run.Steps[0].Change.DesiredVersion = digest
 	run.Plan.Hash, run.Plan.PlanHash, run.Plan.PolicyHash, run.Plan.EvidenceHash = digest, digest, digest, digest
@@ -91,7 +113,7 @@ func TestTemporalSignedGrantRecoveryAcrossWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial := &shortGrantWaitExecutor{ReleaseExecutor: &application.GrantExecutor{Grants: issuer, Verification: verification, PollInterval: 10 * time.Millisecond}}
+	initial := &shortGrantWaitExecutor{pendingRollback: rollback, ReleaseExecutor: &application.GrantExecutor{Grants: issuer, Verification: verification, PollInterval: 10 * time.Millisecond}}
 	ready := make(chan struct{}, 1)
 	firstActivities := wf.NewActivities(st, policy.New(), initial)
 	startWorker := func(a *wf.Activities, dropCompletion bool) worker.Worker {
@@ -129,39 +151,6 @@ func TestTemporalSignedGrantRecoveryAcrossWorkers(t *testing.T) {
 		}
 		return w
 	}
-	first := startWorker(firstActivities, true)
-	stopped := false
-	defer func() {
-		if !stopped {
-			first.Stop()
-		}
-	}()
-	execution, err := tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: run.ID, TaskQueue: run.ID}, wf.ReleaseWorkflow, wf.ReleaseInput{Run: run})
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-ready:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	key := run.ID + "/staging/identity/" + digest
-	unresolved, err := st.GetExecution("mock", key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	grantID, ok := unresolved.Payload["grant_id"].(string)
-	if !ok || grantID == "" || unresolved.Status != store.ExecutionUnknown {
-		t.Fatalf("missing durable Grant: %+v", unresolved)
-	}
-	dispatch, err := st.GetGrantDispatch(ctx, grantID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash, err := protocol.GrantHash(dispatch.Grant)
-	if err != nil {
-		t.Fatal(err)
-	}
 	identity := resultreport.Identity{RunnerID: "test-runner", TenantID: run.TenantID, RunnerGroup: "test-group"}
 	resultSigner, public, err := grant.NewDevelopmentSigner("result-key")
 	if err != nil {
@@ -180,6 +169,76 @@ func TestTemporalSignedGrantRecoveryAcrossWorkers(t *testing.T) {
 	server := httptest.NewServer((&transport.RunnerServer{Store: st, Audit: st, ResultVerifier: &resultreport.Verifier{Keys: resultreport.FileKeys{Path: trustPath, Identity: identity}}, Auth: transport.StaticRunnerAuthenticator{identity.RunnerID: {TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup, Token: "synthetic-token"}}}).Handler())
 	defer server.Close()
 	runner := &transport.RunnerClient{BaseURL: server.URL, RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup, Token: "synthetic-token", HTTP: server.Client(), ResultSigner: &resultreport.Signer{Signer: resultSigner, KeyID: "result-key"}}
+	first := startWorker(firstActivities, true)
+	stopped := false
+	defer func() {
+		if !stopped {
+			first.Stop()
+		}
+	}()
+	execution, err := tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: run.ID, TaskQueue: run.ID}, wf.ReleaseWorkflow, wf.ReleaseInput{Run: run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollback {
+		// Supply the initial deploy's signed success. Its FAIL verification then
+		// authorizes the already-configured automatic rollback through Grants.Issue.
+		var deployed store.GrantDispatchRecord
+		for {
+			deployed, err = st.ClaimGrantDispatch(ctx, run.TenantID, identity.RunnerGroup, identity.RunnerID, "synthetic-delivery", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, store.ErrNotFound) {
+				t.Fatal(err)
+			}
+			select {
+			case <-time.After(20 * time.Millisecond):
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}
+		if _, err := st.AcknowledgeGrantDispatch(ctx, deployed.Grant.GrantID, identity.RunnerID, deployed.DeliveryToken, time.Now().UTC(), time.Now().UTC().Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := protocol.GrantHash(deployed.Grant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runner.ReportRecovery(ctx, store.RunnerActionRecord{GrantID: deployed.Grant.GrantID, RequestHash: hash, Result: protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: deployed.Grant.GrantID, RunID: run.ID, StepID: "identity", Status: protocol.ResultSucceeded, ExternalExecutionID: "initial-deploy", CompletedAt: time.Now().UTC()}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	key := run.ID + "/staging/identity/" + digest
+	adapterName := "mock"
+	if rollback {
+		adapterName += ".rollback"
+		key += "/rollback"
+	}
+	unresolved, err := st.GetExecution(adapterName, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantID, ok := unresolved.Payload["grant_id"].(string)
+	if !ok || grantID == "" || unresolved.Status != store.ExecutionUnknown {
+		t.Fatalf("missing durable Grant: %+v", unresolved)
+	}
+	dispatch, err := st.GetGrantDispatch(ctx, grantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollback && dispatch.Grant.Action.ExternalExecutionID != "initial-deploy" {
+		t.Fatal("rollback Grant lost durable source binding")
+	}
+	hash, err := protocol.GrantHash(dispatch.Grant)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grantID, RunID: run.ID, StepID: "identity", Status: protocol.ResultUnknown, ReasonCode: "RECONCILIATION_REQUIRED", CompletedAt: time.Now().UTC()}
 	report := store.RunnerActionRecord{GrantID: grantID, RequestHash: hash, Result: result}
 	if err := runner.ReportRecovery(ctx, report); err != nil {
@@ -223,34 +282,39 @@ func TestTemporalSignedGrantRecoveryAcrossWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantRun, wantStep := domain.RunSucceeded, domain.StepSucceeded
+	wantRollbacks := int32(0)
+	if rollback {
+		wantRun, wantStep, wantRollbacks = domain.RunFailed, domain.StepRolledBack, 1
+	}
 	for _, value := range []domain.ReleaseRun{finished, *saved} {
-		if value.Status != domain.RunSucceeded || value.Steps[0].Status != domain.StepSucceeded || value.Steps[0].Execution == nil || value.Steps[0].Execution.ID != unresolved.ID || value.Steps[0].Execution.ExternalExecutionID != report.Result.ExternalExecutionID || value.Steps[0].Verification == nil {
+		executed, verified := value.Steps[0].Execution, value.Steps[0].Verification
+		if rollback {
+			executed, verified = value.Steps[0].RollbackExecution, value.Steps[0].RollbackVerification
+		}
+		if value.Status != wantRun || value.Steps[0].Status != wantStep || executed == nil || executed.ID != unresolved.ID || executed.ExternalExecutionID != report.Result.ExternalExecutionID || verified == nil || verified.Status != domain.VerificationPass {
 			t.Fatalf("recovery did not converge existing execution: %+v", value)
 		}
 	}
-	if initial.calls.Load() != 1 || forbidden.calls.Load() != 0 {
-		t.Fatalf("dispatch calls=%d replacement writes=%d", initial.calls.Load(), forbidden.calls.Load())
+	if initial.calls.Load() != 1 || initial.rollbackCalls.Load() != wantRollbacks || forbidden.calls.Load() != 0 {
+		t.Fatalf("deploy calls=%d rollback calls=%d replacement writes=%d", initial.calls.Load(), initial.rollbackCalls.Load(), forbidden.calls.Load())
 	}
 	outbox, err := replacement.PendingOutboxByType("grant.dispatch.requested", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	issued := 0
+	counts := map[protocol.Capability]int{}
 	for _, event := range outbox {
-		if event.AggregateID == grantID {
-			issued++
-		} else {
-			record, err := replacement.GetGrantDispatch(ctx, event.AggregateID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if record.Grant.RunID == run.ID {
-				t.Fatal("replacement Grant issued")
-			}
+		record, err := replacement.GetGrantDispatch(ctx, event.AggregateID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Grant.RunID == run.ID {
+			counts[record.Grant.Action.Capability]++
 		}
 	}
-	if issued != 1 {
-		t.Fatalf("Grant issuance outbox count=%d", issued)
+	if counts[protocol.CapabilityDeploy] != 1 || counts[protocol.CapabilityRollback] != int(wantRollbacks) {
+		t.Fatalf("unexpected Grant issuance counts: %+v", counts)
 	}
 	history := &historypb.History{}
 	iterator := tc.GetWorkflowHistory(ctx, run.ID, execution.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
@@ -281,4 +345,18 @@ func (e *forbidWriteExecutor) Deploy(context.Context, executor.DeployRequest) (e
 func (e *forbidWriteExecutor) Rollback(context.Context, executor.Deployment) (executor.Deployment, error) {
 	e.calls.Add(1)
 	return executor.Deployment{}, fmt.Errorf("unexpected rollback")
+}
+
+// Observations are synthetic but still pass the real Activities.Verify evidence
+// validation. Fail the deploy, then pass the separately restored rollback.
+type rollbackPathVerifier struct {
+	executor.ReleaseExecutor
+	failed executor.ReleaseExecutor
+}
+
+func (v rollbackPathVerifier) Verify(ctx context.Context, d executor.Deployment) (executor.VerificationResult, error) {
+	if strings.HasSuffix(d.IdempotencyKey, "/rollback") {
+		return v.ReleaseExecutor.Verify(ctx, d)
+	}
+	return v.failed.Verify(ctx, d)
 }

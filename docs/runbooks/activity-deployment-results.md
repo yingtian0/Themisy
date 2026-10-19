@@ -176,3 +176,13 @@ exact old main revision before either version marker existed. Their provenance,
 old outcomes, normalized infrastructure metadata and regeneration procedure are
 in [testdata](../../internal/workflow/testdata/README.md). This covers those two
 legacy error paths, not every old approval/timer/cancel history.
+
+`TestTemporalSignedRollbackRecoveryAcrossWorkers` additionally supplies the
+initial deploy's signed success, observes failed deploy verification, issues one
+rollback Grant bound to that saved deployment, then loses the rollback recovery
+completion and replaces the Worker. Signed recovery restores that same rollback
+Execution; independent rollback verification passes and the Run ends
+ROLLED_BACK/FAILED. It asserts one deploy Grant, one rollback Grant and zero
+replacement Writes. Both signed tests use distinct tenant scopes and the actual
+PostgreSQL coordinator; synthetic observations still do not prove live runtime
+health or Runner final authorization.
