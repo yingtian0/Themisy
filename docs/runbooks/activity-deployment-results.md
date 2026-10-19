@@ -154,3 +154,25 @@ THEMISY_TEMPORAL_ADDRESS='DISPOSABLE_TEMPORAL:7233' \
 
 Without either address this targeted test skips; a skip is not a passing live
 integration result. Never point it at an existing shared database or namespace.
+
+`TestTemporalSignedGrantRecoveryAcrossWorkers` connects actual Grant issuance,
+GrantExecutor result waiting, signed Runner recovery over the existing HTTP
+endpoint, fresh file-backed result trust, PostgreSQL Execution and shared
+scheduler, and the live Temporal Workflow. A test-only short initial result wait
+records the issued Grant as unresolved; the first recovery Activity loses its
+completion. A replacement Worker retries that read-only Activity after the real
+one-minute server timeout. An untrusted signature is rejected without advancing
+the Grant, while the trusted report restores the same Execution, resumes Verify
+and persists success. The test checks one Grant issuance, no replacement Write
+and replay of the resulting success history. It needs the same two explicit
+disposable environment variables as the cancel test and takes about a minute.
+The provider, identity/delegation inputs and verification observations are
+synthetic. This is not live AWS, a production trust-chain proof, or OS process
+kill coverage. Rollback success through this complete signed path remains a
+separate acceptance test.
+
+`TestMainUnknownHistoriesReplay` replays two server histories produced by the
+exact old main revision before either version marker existed. Their provenance,
+old outcomes, normalized infrastructure metadata and regeneration procedure are
+in [testdata](../../internal/workflow/testdata/README.md). This covers those two
+legacy error paths, not every old approval/timer/cancel history.
