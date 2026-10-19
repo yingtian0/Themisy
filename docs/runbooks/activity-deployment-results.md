@@ -104,3 +104,17 @@ history structure. No result here is a production-readiness claim.
 Provider Writes and verification evidence in these recovery tests are
 simulated. Record current per-commit results in the handoff progress log; older
 verification above applies only to its named commits and tests.
+
+## Recovery verification regression scope
+
+`TestRecoveredDeploymentStillRequiresVerification` feeds an already-verified
+recovery result into the Workflow and checks that the exact restored Deployment
+reaches verification. PASS permits completion; FAIL, MISSING and INCONCLUSIVE
+escalate when rollback is manual-only; unavailable verification blocks. It uses
+simulated Activity results, not live runtime observations or signature validation.
+
+`TestLegacyUnknownHistoryBranchDoesNotScheduleRecovery` selects DefaultVersion
+for both version markers and checks terminal BLOCKED/UNKNOWN with no recovery
+Activity. This is branch coverage in the Temporal test suite, **not** a replay of
+recorded server history. Real old-history replay and live UNKNOWN recovery across
+Worker replacement remain required before claiming upgrade compatibility.
