@@ -20,7 +20,10 @@ Missing runs/artifacts remain `MISSING`; unsuccessful runs are `FAIL`; partial,
 stale, mismatched, unauthorized, rate-limited, or unavailable provider data is
 `INCONCLUSIVE`. None of these states is converted to `PASS`.
 
-This is an adapter contract and fixture-tested provider unit. It is not wired
+This is an adapter contract and fixture-tested provider unit. A process-local
+[CI snapshot collector](ci-snapshot.md) can retain its exact source observations
+with tenant/target/capture-time/hash binding. Exported records are unsigned and
+cannot be imported as trusted snapshots. The adapter is not wired
 into Planner, Policy, Plan hashing, Grant issuance, or approval invalidation.
 The existing `ci_success` request field therefore remains prototype input and
 must not be used as production authorization evidence. Dependency health,

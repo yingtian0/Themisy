@@ -15,6 +15,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0007](0007-first-deployment-adapter.md) | Accepted | Use a locally allow-listed GitHub Actions workflow as the first typed deployment adapter |
 | [0008](0008-runner-grant-transport-and-ecs.md) | Accepted | Dispatch signed grants over an outbound Runner channel and resolve ECS targets locally |
 | [0009](0009-shared-postgresql-runner-journal.md) | Accepted | Share a customer-environment PostgreSQL journal across Runner replicas |
+| [0015](0015-ci-only-context-snapshots.md) | Proposed | Collect immutable CI-only observations without trusting imported JSON as source evidence |
 
 ## Process
 
