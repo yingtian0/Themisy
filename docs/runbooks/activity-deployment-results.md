@@ -196,3 +196,11 @@ complete history. The replacement process checks zero Write calls before exit.
 Grant issuance is counted from durable `grant.issue` audits, since claiming a
 delivery consumes its pending outbox entry. Synthetic provider/health and
 identity inputs remain outside the live AWS/production identity gate.
+
+`TestTemporalSignedRecoveryCancelAcrossProcesses` expires the short Grant and
+Plan while its recovery Activity is pending, kills the first Worker, supplies a
+valid signed success observation and cancels the Workflow. The replacement
+process may record the old operation's terminal observation, but the Run remains
+CANCELLED and the Step UNKNOWN with no new verification/Grant/Write. A further
+recovery call against that terminal Run is refused. This tests read-only result
+acceptance after expiry; it grants no permission to repeat an expired Write.

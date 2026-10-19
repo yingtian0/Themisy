@@ -73,6 +73,9 @@ func testTemporalSignedRecovery(t *testing.T, rollback bool) {
 	testTemporalSignedRecoveryWithProcesses(t, rollback, false)
 }
 func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separateProcesses bool) {
+	testTemporalSignedRecoveryScenario(t, rollback, separateProcesses, false)
+}
+func testTemporalSignedRecoveryScenario(t *testing.T, rollback, separateProcesses, cancelBeforeRecovery bool) {
 	url, address := os.Getenv("THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL"), os.Getenv("THEMISY_TEMPORAL_ADDRESS")
 	if url == "" || address == "" {
 		t.Skip("requires explicitly dedicated PostgreSQL and Temporal")
@@ -100,6 +103,9 @@ func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separatePro
 	}
 	run.ID += "-signed-recovery-" + time.Now().UTC().Format("20060102150405.000000000")
 	run.WorkflowID, run.RequestID = run.ID, run.ID
+	if cancelBeforeRecovery {
+		run.Plan.ExpiresAt = time.Now().UTC().Add(20 * time.Second)
+	}
 	run.TenantID, run.SubjectType, run.UserIdentityProof, run.DelegationRef = "test-tenant-"+run.ID, "user", "synthetic-identity", "synthetic-delegation"
 	digest := "sha256:" + strings.Repeat("a", 64)
 	run.Steps[0].Change.DesiredVersion = digest
@@ -114,7 +120,11 @@ func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separatePro
 	if err != nil {
 		t.Fatal(err)
 	}
-	issuer, err := application.NewGrants(st, grantSigner, "https://control.example", 2*time.Minute)
+	grantTTL := 2 * time.Minute
+	if cancelBeforeRecovery {
+		grantTTL = 2 * time.Second
+	}
+	issuer, err := application.NewGrants(st, grantSigner, "https://control.example", grantTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,6 +272,17 @@ func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separatePro
 	forbidden := &forbidWriteExecutor{ReleaseExecutor: verification}
 	second := startWorker(wf.NewActivities(replacement, policy.New(), forbidden), false)
 	defer second.Stop()
+	if cancelBeforeRecovery {
+		// The child issues a normal short-lived Grant bounded by Plan expiry.
+		// Wait until it has expired; observing its old Write remains permitted.
+		timer := time.NewTimer(time.Until(dispatch.Grant.ExpiresAt) + time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatal(ctx.Err())
+		}
+	}
 	report.Result.Status, report.Result.ExternalExecutionID, report.Result.ReasonCode, report.Result.CompletedAt = protocol.ResultSucceeded, "synthetic-provider-execution", "", time.Now().UTC()
 	wrongSigner, _, err := grant.NewDevelopmentSigner("result-key")
 	if err != nil {
@@ -282,6 +303,11 @@ func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separatePro
 	if err := runner.ReportRecovery(ctx, report); err != nil {
 		t.Fatal(err)
 	}
+	if cancelBeforeRecovery {
+		if err := tc.SignalWorkflow(ctx, run.ID, execution.GetRunID(), wf.SignalCancel, wf.ControlSignal{Actor: "operator"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var finished domain.ReleaseRun
 	if err := execution.Get(ctx, &finished); err != nil {
 		t.Fatal(err)
@@ -295,7 +321,16 @@ func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separatePro
 	if rollback {
 		wantRun, wantStep, wantRollbacks = domain.RunFailed, domain.StepRolledBack, 1
 	}
+	if cancelBeforeRecovery {
+		wantRun, wantStep = domain.RunCancelled, domain.StepUnknown
+	}
 	for _, value := range []domain.ReleaseRun{finished, *saved} {
+		if cancelBeforeRecovery {
+			if value.Status != wantRun || value.Steps[0].Status != wantStep || value.Steps[0].Verification != nil {
+				t.Fatalf("late recovery overrode cancellation: %+v", value)
+			}
+			continue
+		}
 		executed, verified := value.Steps[0].Execution, value.Steps[0].Verification
 		if rollback {
 			executed, verified = value.Steps[0].RollbackExecution, value.Steps[0].RollbackVerification
@@ -306,6 +341,22 @@ func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separatePro
 	}
 	if !separateProcesses && (initial.calls.Load() != 1 || initial.rollbackCalls.Load() != wantRollbacks || forbidden.calls.Load() != 0) {
 		t.Fatalf("deploy calls=%d rollback calls=%d replacement writes=%d", initial.calls.Load(), initial.rollbackCalls.Load(), forbidden.calls.Load())
+	}
+	if cancelBeforeRecovery {
+		if !time.Now().After(run.Plan.ExpiresAt) || !time.Now().After(dispatch.Grant.ExpiresAt) {
+			t.Fatal("test did not cross Plan and Grant expiry")
+		}
+		activity := wf.NewActivities(replacement, policy.New(), forbidden)
+		if _, err := activity.RecoverExecution(ctx, wf.RecoverExecutionInput{RunID: run.ID, Service: "identity", Environment: "staging", DesiredVersion: digest, IdempotencyKey: key}); err == nil {
+			t.Fatal("terminal cancelled Run accepted delayed recovery")
+		}
+		after, err := replacement.GetRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Status != domain.RunCancelled || after.Steps[0].Status != domain.StepUnknown {
+			t.Fatal("delayed recovery mutated cancellation")
+		}
 	}
 	// Claiming the initial deploy consumes its dispatch outbox row. Count
 	// durable issuance audits, not just still-pending delivery notifications.

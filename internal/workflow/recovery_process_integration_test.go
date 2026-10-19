@@ -63,7 +63,15 @@ func TestRecoveryWorkerProcess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		issuer, err := application.NewGrants(st, signer, "https://control.example", 2*time.Minute)
+		ttl := 2 * time.Minute
+		run, err := st.GetRun(queue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !run.Plan.ExpiresAt.IsZero() {
+			ttl = 2 * time.Second
+		}
+		issuer, err := application.NewGrants(st, signer, "https://control.example", ttl)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -185,4 +193,8 @@ func TestTemporalSignedRecoveryAcrossProcesses(t *testing.T) {
 	for _, rollback := range []bool{false, true} {
 		t.Run(fmt.Sprintf("rollback=%t", rollback), func(t *testing.T) { testTemporalSignedRecoveryWithProcesses(t, rollback, true) })
 	}
+}
+
+func TestTemporalSignedRecoveryCancelAcrossProcesses(t *testing.T) {
+	testTemporalSignedRecoveryScenario(t, false, true, true)
 }
