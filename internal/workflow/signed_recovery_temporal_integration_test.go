@@ -67,7 +67,12 @@ func TestTemporalSignedRollbackRecoveryAcrossWorkers(t *testing.T) {
 	testTemporalSignedRecovery(t, true)
 }
 
+type recoveryTestWorker interface{ Stop() }
+
 func testTemporalSignedRecovery(t *testing.T, rollback bool) {
+	testTemporalSignedRecoveryWithProcesses(t, rollback, false)
+}
+func testTemporalSignedRecoveryWithProcesses(t *testing.T, rollback, separateProcesses bool) {
 	url, address := os.Getenv("THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL"), os.Getenv("THEMISY_TEMPORAL_ADDRESS")
 	if url == "" || address == "" {
 		t.Skip("requires explicitly dedicated PostgreSQL and Temporal")
@@ -116,7 +121,10 @@ func testTemporalSignedRecovery(t *testing.T, rollback bool) {
 	initial := &shortGrantWaitExecutor{pendingRollback: rollback, ReleaseExecutor: &application.GrantExecutor{Grants: issuer, Verification: verification, PollInterval: 10 * time.Millisecond}}
 	ready := make(chan struct{}, 1)
 	firstActivities := wf.NewActivities(st, policy.New(), initial)
-	startWorker := func(a *wf.Activities, dropCompletion bool) worker.Worker {
+	startWorker := func(a *wf.Activities, dropCompletion bool) recoveryTestWorker {
+		if separateProcesses {
+			return startRecoveryWorkerProcess(t, ctx, run.ID, rollback, dropCompletion, ready)
+		}
 		w := worker.New(tc, run.ID, worker.Options{})
 		w.RegisterWorkflow(wf.ReleaseWorkflow)
 		w.RegisterActivity(a.PersistRun)
@@ -296,21 +304,19 @@ func testTemporalSignedRecovery(t *testing.T, rollback bool) {
 			t.Fatalf("recovery did not converge existing execution: %+v", value)
 		}
 	}
-	if initial.calls.Load() != 1 || initial.rollbackCalls.Load() != wantRollbacks || forbidden.calls.Load() != 0 {
+	if !separateProcesses && (initial.calls.Load() != 1 || initial.rollbackCalls.Load() != wantRollbacks || forbidden.calls.Load() != 0) {
 		t.Fatalf("deploy calls=%d rollback calls=%d replacement writes=%d", initial.calls.Load(), initial.rollbackCalls.Load(), forbidden.calls.Load())
 	}
-	outbox, err := replacement.PendingOutboxByType("grant.dispatch.requested", 100)
+	// Claiming the initial deploy consumes its dispatch outbox row. Count
+	// durable issuance audits, not just still-pending delivery notifications.
+	audits, err := replacement.AuditEvents(run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	counts := map[protocol.Capability]int{}
-	for _, event := range outbox {
-		record, err := replacement.GetGrantDispatch(ctx, event.AggregateID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if record.Grant.RunID == run.ID {
-			counts[record.Grant.Action.Capability]++
+	for _, event := range audits {
+		if event.Action == "grant.issue" {
+			counts[protocol.Capability(fmt.Sprint(event.Details["capability"]))]++
 		}
 	}
 	if counts[protocol.CapabilityDeploy] != 1 || counts[protocol.CapabilityRollback] != int(wantRollbacks) {

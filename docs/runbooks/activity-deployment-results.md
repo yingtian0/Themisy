@@ -186,3 +186,13 @@ ROLLED_BACK/FAILED. It asserts one deploy Grant, one rollback Grant and zero
 replacement Writes. Both signed tests use distinct tenant scopes and the actual
 PostgreSQL coordinator; synthetic observations still do not prove live runtime
 health or Runner final authorization.
+
+`TestTemporalSignedRecoveryAcrossProcesses` runs both signed recovery paths in
+separate Worker OS processes. The first process is forcibly killed after the
+read-only recovery Activity begins without completing. A fresh process with a
+new store and write-forbidding executor resumes after server timeout. It must
+converge the same Execution, preserve signed Grant/source bindings and replay the
+complete history. The replacement process checks zero Write calls before exit.
+Grant issuance is counted from durable `grant.issue` audits, since claiming a
+delivery consumes its pending outbox entry. Synthetic provider/health and
+identity inputs remain outside the live AWS/production identity gate.
