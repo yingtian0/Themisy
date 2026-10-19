@@ -70,4 +70,4 @@ export THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL="postgres://themisy:themisy@$
 export THEMISY_TEMPORAL_ADDRESS="$temporal_address"
 echo "Running recovery acceptance on dedicated PostgreSQL/Temporal (including OS process crashes)" >&2
 go test -race -tags=integration -count=1 -timeout=10m ./internal/workflow \
-  -run '^(TestPostgresDeploymentSuccessResponseLoss|TestPostgresUnknownGrantRecoveryAfterWorkerReplacement|TestTemporalUnknownWaitCancelAcrossWorkersAndReplay|TestTemporalSigned(Grant|Rollback)RecoveryAcrossWorkers|TestTemporalSignedRecovery(Cancel)?AcrossProcesses|TestTemporalExpiredRecoveryCannotAuthorizeNextStep)$'
+  -run '^(TestPostgresDeploymentSuccessResponseLoss|TestPostgresUnknownGrantRecoveryAfterWorkerReplacement|TestTemporalDeploymentCompletionLossAcrossWorkers|TestTemporalUnknownWaitCancelAcrossWorkersAndReplay|TestTemporalSigned(Grant|Rollback)RecoveryAcrossWorkers|TestTemporalSignedRecovery(Cancel)?AcrossProcesses|TestTemporalExpiredRecoveryCannotAuthorizeNextStep)$'

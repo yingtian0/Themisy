@@ -11,6 +11,7 @@ import (
 
 	"themisy/internal/executor"
 	"themisy/internal/policy"
+	"themisy/internal/scheduler"
 	postgresstore "themisy/internal/store/postgres"
 
 	"go.temporal.io/sdk/activity"
@@ -57,13 +58,42 @@ type restoredOperationResults struct {
 	Rollback RollbackResult
 }
 
-func deploymentRetryWorkflow(ctx temporalworkflow.Context, input DeployInput) (restoredOperationResults, error) {
+type deploymentRetryInput struct {
+	Deploy   DeployInput
+	Schedule scheduler.Step
+}
+
+func deploymentRetryWorkflow(ctx temporalworkflow.Context, fixture deploymentRetryInput) (restoredOperationResults, error) {
 	ctx = temporalworkflow.WithActivityOptions(ctx, temporalworkflow.ActivityOptions{StartToCloseTimeout: 2 * time.Second, ScheduleToCloseTimeout: 45 * time.Second, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, MaximumAttempts: 5}})
 	var result restoredOperationResults
+	input := fixture.Deploy
+	var scheduled ScheduleResult
+	if err := temporalworkflow.ExecuteActivity(ctx, ActivityAcquireSchedule, ScheduleInput{RunID: input.RunID, Step: fixture.Schedule}).Get(ctx, &scheduled); err != nil {
+		return result, err
+	}
+	if !scheduled.Allowed || scheduled.Lease == nil {
+		return result, temporal.NewNonRetryableApplicationError("fixture deploy reservation refused", "FIXTURE_SCHEDULE_UNAVAILABLE", nil)
+	}
+	input.ScheduleLease = scheduled.Lease
 	if err := temporalworkflow.ExecuteActivity(ctx, ActivityDeploy, input).Get(ctx, &result.Deploy); err != nil {
 		return result, err
 	}
+	if err := temporalworkflow.ExecuteActivity(ctx, ActivityCompleteSchedule, ScheduleCompleteInput{RunID: input.RunID, StepID: fixture.Schedule.ID, Lease: scheduled.Lease}).Get(ctx, nil); err != nil {
+		return result, err
+	}
+	rollbackStep := fixture.Schedule
+	rollbackStep.ID += "/rollback"
+	if err := temporalworkflow.ExecuteActivity(ctx, ActivityAcquireSchedule, ScheduleInput{RunID: input.RunID, Step: rollbackStep}).Get(ctx, &scheduled); err != nil {
+		return result, err
+	}
+	if !scheduled.Allowed || scheduled.Lease == nil {
+		return result, temporal.NewNonRetryableApplicationError("fixture rollback reservation refused", "FIXTURE_SCHEDULE_UNAVAILABLE", nil)
+	}
+	input.ScheduleLease = scheduled.Lease
 	if err := temporalworkflow.ExecuteActivity(ctx, ActivityRollback, RollbackInput{Deploy: input, Deployment: result.Deploy.Deployment}).Get(ctx, &result.Rollback); err != nil {
+		return result, err
+	}
+	if err := temporalworkflow.ExecuteActivity(ctx, ActivityCompleteSchedule, ScheduleCompleteInput{RunID: input.RunID, StepID: rollbackStep.ID, Lease: scheduled.Lease}).Get(ctx, nil); err != nil {
 		return result, err
 	}
 	var verified executor.VerificationResult
@@ -72,10 +102,13 @@ func deploymentRetryWorkflow(ctx temporalworkflow.Context, input DeployInput) (r
 }
 
 func TestTemporalDeploymentCompletionLossAcrossWorkers(t *testing.T) {
-	if os.Getenv("THEMISY_INTEGRATION") != "1" {
+	if os.Getenv("THEMISY_INTEGRATION") != "1" && os.Getenv("THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL") == "" {
 		t.Skip("requires dedicated PostgreSQL/Temporal environment")
 	}
-	url := os.Getenv("THEMISY_DATABASE_URL")
+	url := os.Getenv("THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL")
+	if url == "" {
+		url = os.Getenv("THEMISY_DATABASE_URL")
+	}
 	if url == "" {
 		url = "postgres://themisy:themisy@localhost:5432/themisy?sslmode=disable"
 	}
@@ -108,16 +141,18 @@ func TestTemporalDeploymentCompletionLossAcrossWorkers(t *testing.T) {
 	startWorker := func(drop *droppedDeploymentCompletion) worker.Worker {
 		w := worker.New(tc, queue, worker.Options{})
 		w.RegisterWorkflow(deploymentRetryWorkflow)
+		a := NewActivities(st, policy.New(), &forbidWriteExecutor{ReleaseExecutor: exec})
 		if drop != nil {
+			a = drop.activities
 			w.RegisterActivityWithOptions(drop.Deploy, activity.RegisterOptions{Name: ActivityDeploy})
 			w.RegisterActivityWithOptions(drop.Rollback, activity.RegisterOptions{Name: ActivityRollback})
 		} else {
-			a := NewActivities(st, policy.New(), &forbidWriteExecutor{ReleaseExecutor: exec})
 			w.RegisterActivityWithOptions(a.Deploy, activity.RegisterOptions{Name: ActivityDeploy})
 			w.RegisterActivityWithOptions(a.Rollback, activity.RegisterOptions{Name: ActivityRollback})
 		}
-		a := NewActivities(st, policy.New(), exec)
 		w.RegisterActivityWithOptions(a.Verify, activity.RegisterOptions{Name: ActivityVerify})
+		w.RegisterActivityWithOptions(a.AcquireSchedule, activity.RegisterOptions{Name: ActivityAcquireSchedule})
+		w.RegisterActivityWithOptions(a.CompleteSchedule, activity.RegisterOptions{Name: ActivityCompleteSchedule})
 		if err := w.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -127,7 +162,12 @@ func TestTemporalDeploymentCompletionLossAcrossWorkers(t *testing.T) {
 	defer cancel()
 	input := DeployInput{RunID: run.ID, Service: "identity", Environment: "staging", DesiredVersion: "sha-1", IdempotencyKey: run.ID + "/operation"}
 	first := startWorker(&droppedDeploymentCompletion{activities: NewActivities(st, policy.New(), counted), committed: committed})
-	execution, err := tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: run.ID, TaskQueue: queue}, deploymentRetryWorkflow, input)
+	fixture := deploymentRetryInput{Deploy: input, Schedule: schedulingStep(run, run.Steps[0])}
+	if fixture.Schedule.ID != input.Service {
+		first.Stop()
+		t.Fatal("fixture schedule target differs from deployment")
+	}
+	execution, err := tc.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: run.ID, TaskQueue: queue}, deploymentRetryWorkflow, fixture)
 	if err != nil {
 		first.Stop()
 		t.Fatal(err)
@@ -159,5 +199,18 @@ func TestTemporalDeploymentCompletionLossAcrossWorkers(t *testing.T) {
 	}
 	if exec.DeployCalls(input.IdempotencyKey) != 1 || counted.rollbacks != 1 {
 		t.Fatal("duplicate Write across Worker restart")
+	}
+	audits, err := st.AuditEvents(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, event := range audits {
+		counts[event.Action]++
+	}
+	for _, action := range []string{"schedule.acquire", "schedule.admit", "schedule.complete"} {
+		if counts[action] != 2 {
+			t.Fatalf("expected one durable reservation per deploy/rollback; %s=%d", action, counts[action])
+		}
 	}
 }

@@ -11,6 +11,7 @@ The target runs race-enabled integration tests for:
 | Boundary | Evidence |
 |---|---|
 | Saved Deployment response loss | PostgreSQL reconnect restores the complete result |
+| Temporal completion loss | Three Worker instances restore deploy/rollback results; real PostgreSQL schedule acquisition, admission and completion each occur once per operation, with one deploy and one rollback Write |
 | Existing Grant recovery | Same Execution and Grant survive a store replacement |
 | UNKNOWN + cancel | Worker replacement preserves CANCELLED/UNKNOWN; server history replays |
 | Signed deploy/rollback recovery | Real issuance, HTTP signature verification and durable coordinator; independent verification after recovery |
@@ -38,6 +39,13 @@ addition does not change workflow triggers or GitHub permissions. A feature
 branch push alone still does not run PR CI; record the exact commit/run when a
 PR can be opened. Explicit-address tests invoked directly skip when either
 required address is absent; that skip is never live acceptance evidence.
+
+The completion-loss fixture uses its own small test Workflow with real durable
+schedule Activities. It does not hide the coordinator or remove production
+lease checks. Its additional test-only commands do not change the production
+`ReleaseWorkflow` graph or its version markers. In the isolated target the
+dedicated database address takes precedence; the older Compose integration entry
+point remains supported separately.
 
 For older-history command compatibility, ordinary `go test ./internal/workflow`
 replays the two committed pre-marker main histories. Their exact source and
