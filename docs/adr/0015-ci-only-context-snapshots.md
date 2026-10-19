@@ -19,8 +19,9 @@ It accepts no arbitrary provider selectors, URL or success/health flags. Its
 private-field `CISnapshot` can only be minted by source collection in this
 package. Exported records preserve source evidence and add typed target/time/
 schema/hash binding. They cannot be imported back into a trusted snapshot.
-Import failure clears an older positive value rather than retaining a cache
-success after a rejected replacement.
+The JSON method clears its receiver before refusing an imported record. Callers
+must discard destinations on all decoding errors, including syntax failures
+which the standard decoder can reject before invoking custom methods.
 
 Fresh CI checks keep all four evidence statuses, require PASS with a strictly
 unexpired source freshness window and check the snapshot hash. Exported

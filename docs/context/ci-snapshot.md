@@ -31,8 +31,10 @@ invalid-request errors return no usable snapshot and expose no raw provider erro
 
 `CIRecord` is unsigned data, not a proof. Anyone can recompute an exported JSON
 record's hash, so it must not be accepted from request bodies, files or an Agent
-as trusted CI success. `CISnapshot` has no public value constructor or import
-path. JSON import explicitly fails and clears any previous positive value.
+as trusted CI success. `CISnapshot` has no public constructor for a verified value
+or trusted import path. Its JSON method rejects imported records and clears the
+receiver when invoked. Always discard a decoding destination after any error:
+`encoding/json` can reject malformed syntax before invoking custom methods.
 Recollect through the configured source instead. The configured HTTP client and
 token source are trusted components, not requester-selected plugins. Cross-process
 transport/persistence needs its own reviewed authentication and freshness design.
