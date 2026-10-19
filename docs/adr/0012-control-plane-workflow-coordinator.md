@@ -1,4 +1,4 @@
-# ADR 0010: Durable Control Plane workflow coordinator
+# ADR 0012: Durable Control Plane workflow coordinator
 
 - Status: Proposed
 - Date: 2026-10-19
