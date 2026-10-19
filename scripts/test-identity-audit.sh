@@ -26,7 +26,7 @@ port=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "5432/tcp
 [[ "$port" =~ ^[0-9]+$ ]] || { echo "invalid identity audit fixture port" >&2; exit 1; }
 ready=false
 for ((attempt=0; attempt<30; attempt++)); do
-  if docker exec "$owned_container" pg_isready -U identity_fixture -d themisy_identity_audit_fixture >/dev/null 2>&1; then
+  if docker exec "$owned_container" pg_isready -h 127.0.0.1 -U identity_fixture -d themisy_identity_audit_fixture >/dev/null 2>&1; then
     ready=true
     break
   fi
