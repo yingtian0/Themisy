@@ -48,7 +48,10 @@ Rego/evaluation, cancellation, case validation, no network calls and no reuse
 after expiry. Existing hierarchy tests remain separate.
 
 The internal Go API is also available through the offline `themisyctl policy-shadow`
-command below. No service endpoint, automatic collector or UI is connected yet. Registration/distribution/state APIs, durable audit,
+command below. The opt-in [local candidate catalog](candidate-catalog.md) can
+retain signed artifacts by exact hash with fresh validation on every read; it
+does not apply them or preserve a deployment approval. No service endpoint,
+automatic collector or UI is connected yet. Registration/distribution/state service APIs, durable audit,
 Runner-applied hashes, staged rollout/rollback, maintainer review and live
 operational verification remain open. The report is not a signed attestation or
 a policy deployment record. Issue #10 stays open.
