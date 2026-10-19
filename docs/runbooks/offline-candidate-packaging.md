@@ -51,3 +51,10 @@ authenticated build time. SPDX structure and unknown-field conventions follow
 [SPDX 2.3](https://spdx.github.io/spdx-spec/v2.3.1/package-information/).
 Go `h1` directory sums are recorded as source metadata, not mislabelled as archive
 SHA-256 checksums. The binary checksum is calculated from the actual file.
+
+The packaging tests also rewrite an archive and recompute its outer checksum:
+a wrong source commit, omitted dependency, stale SBOM hash and a self-consistent
+but forged BuildInfo/SBOM pair must still fail their specific inner checks.
+The trusted candidate's original binary is used; test artifacts are separate.
+CI runs these controls only after building its own native candidate, so absence
+of an explicit candidate is not presented as a passed tampering test.

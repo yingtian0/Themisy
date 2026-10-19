@@ -79,12 +79,14 @@ jobs:
         run: go build -trimpath ./...
 
       - name: Test offline package SBOM metadata
-        run: python3 -m unittest discover -s tests/packaging -v
+        run: python3 -m unittest discover -s tests/packaging -p test_offline_sbom.py -v
 
       - name: Build and verify local offline candidate
         run: |
           python3 scripts/package-offline.py --output "$RUNNER_TEMP/offline-candidate"
           python3 scripts/verify-offline-package.py "$RUNNER_TEMP/offline-candidate"
+          THEMISY_OFFLINE_CANDIDATE_TEST_DIRECTORY="$RUNNER_TEMP/offline-candidate" \
+            python3 -m unittest discover -s tests/packaging -p test_offline_package.py -v
 
       - name: Upload coverage report
         if: always()
