@@ -1,4 +1,4 @@
-# ADR-0010: Local signed Policy candidate catalog
+# ADR-0013: Local signed Policy candidate catalog
 
 - Status: Proposed
 - Date: 2026-10-20

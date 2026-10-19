@@ -26,7 +26,7 @@ policy, tenant assignment, rollout, Runner acknowledgement, HTTP endpoint or
 durable deployment audit. Registration does not validate every possible policy
 decision, prove mandatory baseline equivalence, authorize a Write, or count as
 Issue #10's registration/distribution/status service API. Review
-[ADR-0010](../adr/0010-local-policy-candidate-catalog.md) and use the
+[ADR-0013](../adr/0013-local-policy-candidate-catalog.md) and use the
 [Shadow comparison](shadow-comparison.md) for separate behavioral analysis.
 
 Validation: `go test -race ./internal/policy`. Tests use signed synthetic Bundles
