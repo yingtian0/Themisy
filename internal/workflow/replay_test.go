@@ -6,9 +6,10 @@ import (
 	"testing"
 )
 
-// A full history replay is exercised against the real Temporal service by the
-// integration test. This guard prevents the common sources of nondeterminism
-// from entering the workflow definition before that replay test runs.
+// Current UNKNOWN/cancel history is replayed by
+// TestTemporalUnknownWaitCancelAcrossWorkersAndReplay with a real server.
+// Old-history upgrade replay remains a separate requirement. This source guard
+// only catches common direct nondeterministic I/O; it is not a replay test.
 func TestWorkflowDefinitionContainsNoDirectNondeterministicIO(t *testing.T) {
 	data, err := os.ReadFile("release.go")
 	if err != nil {

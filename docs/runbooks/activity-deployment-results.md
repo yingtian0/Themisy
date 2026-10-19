@@ -133,3 +133,24 @@ returns a fresh snapshot; changing the previous snapshot would otherwise leave
 the saved Step UNKNOWN while the Run becomes ESCALATED. Both deploy and rollback
 rejections now persist ESCALATED consistently. This pointer correction adds no
 Temporal commands or marker versions; historical Activity results stay intact.
+
+`TestTemporalUnknownWaitCancelAcrossWorkersAndReplay` uses a dedicated real
+PostgreSQL and Temporal server. For both deploy and rollback UNKNOWN, it waits
+for the recovery Activity, replaces the Worker and database connection, sends
+cancel, and checks CANCELLED/UNKNOWN in both Workflow result and PostgreSQL.
+The complete fetched server history must replay with the current Workflow.
+Provider/Grant-recovery results and the in-process coordinator in this fixture
+are simulated. This proves current-history replay and cancellation across Worker
+instances in one test process; it does not prove old-history upgrade replay,
+OS process crash recovery, successful signed Grant convergence, or #50's shared
+coordinator acceptance. Run only with explicit disposable environment addresses:
+
+```bash
+THEMISY_DEPLOYMENT_RESULT_TEST_DATABASE_URL='postgres://USER:PASSWORD@HOST:PORT/DISPOSABLE_DB?sslmode=disable' \
+THEMISY_TEMPORAL_ADDRESS='DISPOSABLE_TEMPORAL:7233' \
+  go test -tags=integration ./internal/workflow \
+    -run '^TestTemporalUnknownWaitCancelAcrossWorkersAndReplay$' -count=1
+```
+
+Without either address this targeted test skips; a skip is not a passing live
+integration result. Never point it at an existing shared database or namespace.
