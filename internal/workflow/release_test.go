@@ -215,6 +215,37 @@ func TestCancelDuringUnknownRecoveryKeepsStepAndReservationUnresolved(t *testing
 	}
 }
 
+func TestRecoverExecutionKeepsTerminalUnknownRunQuarantined(t *testing.T) {
+	for _, status := range []domain.RunStatus{domain.RunCancelled, domain.RunSucceeded, domain.RunFailed, domain.RunEscalated} {
+		t.Run(string(status), func(t *testing.T) {
+			run, memory, exec := workflowFixture(t, false, nil)
+			run.Status = status
+			run.Steps[0].Status = domain.StepUnknown
+			if err := memory.UpdateRun(&run, 1); err != nil {
+				t.Fatal(err)
+			}
+			activities := NewActivities(memory, policy.New(), exec)
+			_, err := activities.RecoverExecution(context.Background(), RecoverExecutionInput{
+				RunID: run.ID, Service: run.Steps[0].Service, Environment: string(run.Environment),
+				DesiredVersion: run.Steps[0].Change.DesiredVersion, IdempotencyKey: run.ID + "/" + string(run.Environment) + "/identity/sha-1",
+			})
+			if err == nil {
+				t.Fatal("terminal run must not be mutated by delayed recovery")
+			}
+			persisted, getErr := memory.GetRun(run.ID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if persisted.Status != status || persisted.Steps[0].Status != domain.StepUnknown {
+				t.Fatalf("recovery changed terminal state: run=%s step=%s", persisted.Status, persisted.Steps[0].Status)
+			}
+			if calls := exec.DeployCalls(run.ID + "/" + string(run.Environment) + "/identity/sha-1"); calls != 0 {
+				t.Fatalf("recovery issued provider write: calls=%d", calls)
+			}
+		})
+	}
+}
+
 func TestDurableCoordinatorUnavailableAndMissingLeaseFailClosed(t *testing.T) {
 	run, memory, exec := workflowFixture(t, false, nil)
 	coordinator := &coordinatorTestStore{Memory: memory, acquireErr: errors.New("database unavailable")}
