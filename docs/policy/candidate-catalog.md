@@ -32,3 +32,39 @@ Issue #10's registration/distribution/status service API. Review
 Validation: `go test -race ./internal/policy`. Tests use signed synthetic Bundles
 and real temporary files, including reopening a catalog and concurrent catalog
 instances. No live Runner adoption or deployment is claimed.
+
+## CLI
+
+Build `go build -o /tmp/themisyctl ./cmd/themisyctl`, provision an empty local
+directory, then use a currently valid operator-signed Bundle and independently
+configured public key:
+
+```bash
+mkdir -m 700 ./policy-candidates
+/tmp/themisyctl policy-candidate register \
+  -directory ./policy-candidates -bundle ./signed-candidate.json \
+  -issuer YOUR_TRUSTED_ISSUER -key-id YOUR_TRUSTED_KEY_ID \
+  -public-key ./trusted-policy-public.key
+/tmp/themisyctl policy-candidate get \
+  -directory ./policy-candidates -hash sha256:EXACT_HASH_FROM_REGISTRATION \
+  -issuer YOUR_TRUSTED_ISSUER -key-id YOUR_TRUSTED_KEY_ID \
+  -public-key ./trusted-policy-public.key
+```
+
+The placeholder paths/issuer/key/hash must be supplied by the operator. Do not
+use the committed historical Shadow fixture as a currently valid candidate or
+configure its sample key as production trust. There is no `-at` clock override:
+an expired Bundle must be reissued through the actual signing/review process.
+Both commands emit `mode: LOCAL_CANDIDATE_ONLY` and `hash`; `get` also emits the
+complete signed `bundle`. This is an artifact result, not rollout status or a
+Runner acknowledgement. Successful operations exit 0; validation/storage errors
+exit 1 with no success JSON. An output-write failure can occur after successful
+storage, so use the same hash for a verified retry. `-h` prints help and exits 0.
+
+Neither command contacts the server, even if `-server` or actor environment
+variables are set. Registration writes only this explicitly chosen local cache;
+retrieval does not update the cache. The commands do not create missing
+directories, fetch candidates, sign them, repair corrupted objects or activate
+policies. CLI tests sign fresh synthetic Bundles in temporary directories, verify
+register/get/idempotency and HTTP request count zero, and reject stale/tampered
+inputs, wrong trust, path-like hashes and clock overrides without success JSON.

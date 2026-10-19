@@ -44,10 +44,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	remaining := flags.Args()
 	if len(remaining) == 0 {
-		return errors.New("command is required: services, plan, get-plan, start, status, events, pause, resume, cancel, approvals, approve, deny, revoke, runners, freeze-runner, validate-contract, policy-shadow")
+		return errors.New("command is required: services, plan, get-plan, start, status, events, pause, resume, cancel, approvals, approve, deny, revoke, runners, freeze-runner, validate-contract, policy-shadow, policy-candidate")
 	}
 	if remaining[0] == "policy-shadow" {
 		return runPolicyShadow(ctx, remaining[1:], stdout, stderr)
+	}
+	if remaining[0] == "policy-candidate" {
+		return runPolicyCandidate(ctx, remaining[1:], stdout, stderr)
 	}
 	c := &client{baseURL: strings.TrimRight(*server, "/"), tenant: *tenant, actor: *actor, roles: *roles, http: &http.Client{Timeout: 30 * time.Second}}
 	command, values := remaining[0], remaining[1:]
