@@ -15,6 +15,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0007](0007-first-deployment-adapter.md) | Accepted | Use a locally allow-listed GitHub Actions workflow as the first typed deployment adapter |
 | [0008](0008-runner-grant-transport-and-ecs.md) | Accepted | Dispatch signed grants over an outbound Runner channel and resolve ECS targets locally |
 | [0009](0009-shared-postgresql-runner-journal.md) | Accepted | Share a customer-environment PostgreSQL journal across Runner replicas |
+| [0010](0010-local-policy-candidate-catalog.md) | Proposed | Retain verified signed candidates in an opt-in local hash-addressed cache without activation authority |
 
 ## Process
 
