@@ -61,8 +61,7 @@ explains its synthetic account mapping; this is not an AWS account credential.
 
 ```bash
 THEMISY_LOCALSTACK_STS_ENDPOINT='http://127.0.0.1:4566' \
-  go test -race -tags=integration ./pkg/credentials \
-    -run '^TestLocalStackSTSBrokerRoundTrip$' -count=1 -v
+  make test-localstack-sts
 ```
 
 The broker uses its fixed tenant/service/environment/deploy-role mapping with a
@@ -74,7 +73,10 @@ unit tests separately check session tags, purpose separation, redaction and
 Runner authorization/Journal-before-acquisition ordering.
 
 Record the exact commit, LocalStack version, synthetic fixture and test result.
-An absent endpoint yields SKIP. An unavailable health service, missing role,
+The Make target refuses an absent endpoint with nonzero exit status. Directly
+invoking the tagged Go test without its endpoint yields SKIP instead; that is not
+live acceptance evidence. Endpoint safety tests also run in the ordinary package
+suite without the integration tag. An unavailable health service, missing role,
 incomplete credential or identity mismatch is failure; neither is a staging PASS.
 Even a successful emulator run does not establish actual IAM trust enforcement,
 workload identity isolation, CloudTrail attribution, real STS availability or ECS
