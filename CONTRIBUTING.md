@@ -20,6 +20,8 @@ make test-race
 make lint
 # Requires Docker for PostgreSQL and Temporal.
 make test-integration
+# Always creates its own disposable PostgreSQL and Temporal environment.
+make test-workflow-recovery
 ```
 
 Use `make fmt` to format Go files. Pull-request CI also verifies that module files are tidy,
