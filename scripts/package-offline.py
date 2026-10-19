@@ -13,6 +13,8 @@ import subprocess
 import tarfile
 import tempfile
 
+from offline_sbom import build_sbom, sha256
+
 
 def run(*args, cwd=None, env=None):
     return subprocess.check_output(args, cwd=cwd, env=env)
@@ -57,14 +59,21 @@ def main():
         shutil.copytree(source / "examples", bundle / "examples")
         shutil.copyfile(source / "LICENSE", bundle / "LICENSE")
         shutil.copyfile(source / "docs/guides/offline-package.md", bundle / "README.md")
-        info = run("go", "version", "-m", str(bundle / "themisyctl")).decode().splitlines()
+        info = run("go", "version", "-m", str(bundle / "themisyctl"), cwd=source, env=env).decode().splitlines()
         (bundle / "build-info.txt").write_text("\n".join(info[1:]) + "\n")
+        structured_info = json.loads(run("go", "version", "-m", "-json", str(bundle / "themisyctl"), cwd=source, env=env))
+        (bundle / "build-info.json").write_text(json.dumps(structured_info, sort_keys=True, indent=2) + "\n")
+        sbom = build_sbom(structured_info, (bundle / "themisyctl").read_bytes(), version, commit, "/".join(host), epoch)
+        sbom_bytes = (json.dumps(sbom, sort_keys=True, indent=2) + "\n").encode()
+        (bundle / "sbom.spdx.json").write_bytes(sbom_bytes)
         (bundle / "build-manifest.json").write_text(json.dumps({
             "kind": "unsigned-local-build-manifest", "version": version,
             "source_commit": commit, "source_date_epoch": epoch,
-            "go_version": run("go", "version").decode().strip(),
+            "go_version": structured_info["GoVersion"],
             "platform": "/".join(host), "scope": "offline planning only",
-            "attestation": "none; not a signed provenance statement or SBOM",
+            "attestation": "none; not a signed provenance statement",
+            "sbom": {"file": "sbom.spdx.json", "sha256": sha256(sbom_bytes),
+                     "scope": "binary and linked Go modules; compiler/stdlib metadata; no file/license completeness claim"},
         }, indent=2) + "\n")
         output.mkdir(parents=True)
         artifact = output / (bundle.name + ".tar.gz")
@@ -83,7 +92,7 @@ def main():
         digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
         (output / "SHA256SUMS").write_text(f"{digest}  {artifact.name}\n")
         print(f"LOCAL CANDIDATE ONLY: {artifact}")
-        print(f"source_commit={commit}; no tag, release, image, SBOM or signed provenance published")
+        print(f"source_commit={commit}; linked-module SPDX SBOM included; no tag, release, image or signed provenance published")
 
 
 if __name__ == "__main__":

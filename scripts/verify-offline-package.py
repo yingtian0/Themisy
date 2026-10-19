@@ -3,10 +3,13 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
+
+from offline_sbom import build_sbom, sha256
 
 
 def verify(directory):
@@ -30,6 +33,21 @@ def verify(directory):
         version = json.loads(subprocess.check_output([str(root / "themisyctl"), "version"], cwd=root))
         if version != {"version": manifest["version"], "source_commit": manifest["source_commit"]}:
             raise ValueError("version/commit mismatch")
+        sbom_info = manifest.get("sbom", {})
+        if sbom_info.get("file") != "sbom.spdx.json":
+            raise ValueError("SBOM file is missing or unsupported")
+        sbom_bytes = (root / "sbom.spdx.json").read_bytes()
+        if sha256(sbom_bytes) != sbom_info.get("sha256"):
+            raise ValueError("SBOM checksum mismatch")
+        build_info = json.loads((root / "build-info.json").read_text())
+        inspected_info = json.loads(subprocess.check_output(["go", "version", "-m", "-json", str(root / "themisyctl")],
+            cwd=root, env=dict(os.environ, GOWORK="off", GOENV="off", GOTOOLCHAIN="local", GOPROXY="off")))
+        if build_info != inspected_info or manifest["go_version"] != inspected_info["GoVersion"]:
+            raise ValueError("stored Go build metadata does not match the binary")
+        expected_sbom = build_sbom(inspected_info, (root / "themisyctl").read_bytes(),
+            manifest["version"], manifest["source_commit"], manifest["platform"], manifest["source_date_epoch"])
+        if json.loads(sbom_bytes) != expected_sbom:
+            raise ValueError("SBOM binary/source/dependency binding mismatch")
         for fixture, code in (("release.json", 0), ("rejected.json", 1)):
             result = subprocess.run([str(root / "themisyctl"), "offline-plan", "-at",
                 "2026-10-18T00:00:00Z", "examples/offline/" + fixture], cwd=root,
@@ -42,8 +60,8 @@ def verify(directory):
                     raise ValueError("invalid offline plan envelope")
             elif result.stdout or 'unknown service "missing-api"' not in result.stderr:
                 raise ValueError("rejection did not preserve its reason/empty output")
-        print("PASS: checksum, embedded source/version and extracted normal/rejected examples")
-        print("Unsigned local candidate; no SBOM/provenance or external-user claim")
+        print("PASS: checksum, linked-module SBOM binding, embedded source/version and extracted normal/rejected examples")
+        print("Unsigned local candidate; SBOM completeness, signed provenance and external-user verification remain unproved")
 
 
 if __name__ == "__main__":
