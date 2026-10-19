@@ -168,8 +168,8 @@ func TestReleaseWorkflowWaitsForReadOnlyGrantRecovery(t *testing.T) {
 	recoveryCalls := 0
 	env.RegisterActivityWithOptions(func(context.Context, RecoverExecutionInput) (RecoverExecutionResult, error) {
 		recoveryCalls++
-		if recoveryCalls == 1 {
-			return RecoverExecutionResult{Supported: true}, nil
+		if recoveryCalls <= 3 {
+			return RecoverExecutionResult{}, errors.New("temporary recovery store outage")
 		}
 		return RecoverExecutionResult{Supported: true, Ready: true, Execution: domain.Execution{ID: "recovered-execution", Status: string(store.ExecutionSucceeded), ExternalExecutionID: "deployment-1"}, Deployment: executor.Deployment{RunID: run.ID, Service: "identity", Environment: string(run.Environment), DesiredVersion: "sha-1", IdempotencyKey: run.ID + "/" + string(run.Environment) + "/identity/sha-1", ExternalID: "deployment-1", StartedAt: run.CreatedAt, FinishedAt: run.CreatedAt.Add(time.Second)}}, nil
 	}, activity.RegisterOptions{Name: ActivityRecoverExecution})
@@ -181,8 +181,8 @@ func TestReleaseWorkflowWaitsForReadOnlyGrantRecovery(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != domain.RunSucceeded || recoveryCalls < 2 {
-		t.Fatalf("workflow result=%s recovery calls=%d", result.Status, recoveryCalls)
+	if result.Status != domain.RunSucceeded || recoveryCalls < 4 {
+		t.Fatalf("workflow result=%s recovery calls=%d; want recovery after exhausted Activity retries", result.Status, recoveryCalls)
 	}
 }
 
