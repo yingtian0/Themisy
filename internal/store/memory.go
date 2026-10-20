@@ -359,8 +359,15 @@ func (m *Memory) UpdateRunAtomic(run *domain.ReleaseRun, expectedVersion int64, 
 }
 
 func (m *Memory) AppendAudit(event domain.AuditEvent) error {
+	return m.AppendAuditContext(context.Background(), event)
+}
+
+func (m *Memory) AppendAuditContext(ctx context.Context, event domain.AuditEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.audit[event.CorrelationID] = append(m.audit[event.CorrelationID], event)
 	return nil
 }

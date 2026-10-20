@@ -25,6 +25,10 @@ control_plane:
 identity:
   issuer: https://identity.example.invalid
   audience: themisy
+  # Production uses issuer-pinned HTTPS Discovery/JWKS with a bounded cache.
+  # discovery_url: https://identity.example.invalid/.well-known/openid-configuration
+  # jwks_cache_ttl: 5m
+  # The single-key settings below are development-only.
   trust_key_id: development-oidc-key
   trust_key_file: ${THEMISY_OIDC_PUBLIC_KEY_FILE}
   delegations_file: ${THEMISY_DELEGATIONS_FILE}

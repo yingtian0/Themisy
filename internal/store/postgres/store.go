@@ -219,7 +219,10 @@ func (s *Store) UpdateRunAtomic(run *domain.ReleaseRun, expectedVersion int64, a
 }
 
 func (s *Store) AppendAudit(event domain.AuditEvent) error {
-	ctx := context.Background()
+	return s.AppendAuditContext(context.Background(), event)
+}
+
+func (s *Store) AppendAuditContext(ctx context.Context, event domain.AuditEvent) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err

@@ -1,4 +1,4 @@
-.PHONY: run compose-up compose-down test test-race test-integration verify-runner-journal-backup-restore test-scenario test-policy test-adapter test-planner benchmark benchmark-planner lint vet check fmt fmt-check test-agent-cycle
+.PHONY: run compose-up compose-down test test-race test-integration test-identity-audit verify-runner-journal-backup-restore test-scenario test-policy test-adapter test-planner benchmark benchmark-planner lint vet check fmt fmt-check test-agent-cycle
 
 run:
 	go run ./cmd/themisy
@@ -24,6 +24,9 @@ test-integration:
 
 verify-runner-journal-backup-restore:
 	./scripts/verify-runner-journal-backup-restore.sh
+
+test-identity-audit:
+	bash scripts/test-identity-audit.sh
 
 test-scenario:
 	go test -count=1 ./test/scenario/...
