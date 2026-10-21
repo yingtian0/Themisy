@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"time"
 
 	"themisy/internal/application"
 	webassets "themisy/web"
@@ -48,6 +49,7 @@ type Server struct {
 	template *template.Template
 	secret   []byte
 	mux      *http.ServeMux
+	now      func() time.Time
 }
 
 func New(app application.ControlPlane, identity IdentityVerifier) (*Server, error) {
@@ -60,6 +62,7 @@ func New(app application.ControlPlane, identity IdentityVerifier) (*Server, erro
 		return nil, err
 	}
 	s := &Server{app: app, identity: identity, template: views, secret: secret, mux: http.NewServeMux()}
+	s.now = time.Now
 	s.mux.HandleFunc("GET /ui/approvals", s.approvals)
 	s.mux.HandleFunc("POST /ui/approvals/{operation}", s.decide)
 	s.mux.HandleFunc("GET /ui/release-runs/{id}", s.run)
@@ -80,8 +83,16 @@ func (s *Server) approvals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := s.csrfToken(identity)
+	cards := make([]approvalCard, 0, len(approvals))
+	for _, summary := range approvals {
+		run, err := s.app.GetForTenant(identity.TenantID, summary.RunID)
+		if err != nil {
+			run = nil
+		}
+		cards = append(cards, makeApprovalCard(summary, run, s.now()))
+	}
 	http.SetCookie(w, &http.Cookie{Name: "themisy_csrf", Value: token, Path: "/ui/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode})
-	if err := s.template.ExecuteTemplate(w, "approval", approvalView{Title: "Approvals", Approvals: approvals, CSRFToken: token}); err != nil {
+	if err := s.template.ExecuteTemplate(w, "approval", approvalView{Title: "Approvals", Approvals: cards, CSRFToken: token}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -128,6 +139,18 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request) {
 	runID := ""
 	for _, approval := range approvals {
 		if approval.Approval.ID == id {
+			if action == "approve" {
+				run, err := s.app.GetForTenant(identity.TenantID, approval.RunID)
+				if err != nil {
+					http.NotFound(w, r)
+					return
+				}
+				card := makeApprovalCard(approval, run, s.now())
+				if !card.Reviewable || r.FormValue("plan_hash") != card.Approval.PlanHash {
+					http.Error(w, "approval display is expired or no longer matches its pinned Plan; refresh and reauthorize", http.StatusConflict)
+					return
+				}
+			}
 			runID = approval.RunID
 			break
 		}

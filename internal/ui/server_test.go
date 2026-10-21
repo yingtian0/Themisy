@@ -39,7 +39,7 @@ func TestApprovalUIRevalidatesIdentityAndRejectsCSRF(t *testing.T) {
 		t.Fatalf("bad csrf status=%d approvals=%d", bad.Code, controller.approvals)
 	}
 
-	form := url.Values{"csrf_token": {csrfCookie.Value}, "actor": {"attacker"}, "roles": {"admin"}}
+	form := url.Values{"csrf_token": {csrfCookie.Value}, "plan_hash": {"plan"}, "actor": {"attacker"}, "roles": {"admin"}}
 	approved := httptest.NewRecorder()
 	approveRequest := httptest.NewRequest(http.MethodPost, "/ui/approvals/approval-1:approve", strings.NewReader(form.Encode()))
 	approveRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -95,6 +95,11 @@ func (*fakeController) Resume(context.Context, string, workflowcore.ControlSigna
 func (*fakeController) Cancel(context.Context, string, workflowcore.ControlSignal) error { return nil }
 
 func uiApplication(t *testing.T) (*application.Releases, *fakeController) {
+	app, controller, _ := uiApplicationWithStore(t)
+	return app, controller
+}
+
+func uiApplicationWithStore(t *testing.T) (*application.Releases, *fakeController, *store.Memory) {
 	t.Helper()
 	p, err := planner.New([]domain.Service{{Name: "identity"}})
 	if err != nil {
@@ -103,9 +108,18 @@ func uiApplication(t *testing.T) (*application.Releases, *fakeController) {
 	memory := store.NewMemory()
 	now := time.Now().UTC()
 	run := &domain.ReleaseRun{ID: "approval-run", WorkflowID: "approval-run", RequestID: "approval-request", TenantID: "tenant-a", RequestedBy: "requester", Plan: domain.ReleasePlan{Hash: "plan"}, Status: domain.RunWaitingApproval, StateVersion: 1, CreatedAt: now, UpdatedAt: now, Steps: []domain.ReleaseStep{{Service: "identity", Approval: &domain.Approval{ID: "approval-1", Status: domain.ApprovalPending, PlanHash: "plan", RequiredRoles: []string{"sre"}, ExpiresAt: now.Add(time.Hour)}}}}
+	run.Environment = domain.EnvironmentStaging
+	run.Agent.ID = "delegated-agent"
+	run.Plan.Environment = run.Environment
+	run.Plan.ExpiresAt = now.Add(time.Hour)
+	run.Plan.ContextSnapshotRef = "pinned-context"
+	run.Plan.Phases = []domain.PlanPhase{{Steps: []domain.PlanStep{{Service: "identity", DesiredVersion: "requested-artifact", Profile: "pinned-profile", ContractHash: "contract-hash", ProfileHash: "profile-hash", VerificationRequired: true, ObservationWindow: "5m", RollbackMode: domain.RollbackAutomatic, Scheduling: domain.SchedulingContext{RiskTier: "high", Team: "declared-team"}}}}}
+	run.Steps[0].Status = domain.StepWaitingApproval
+	run.Steps[0].Change = domain.Change{Service: "identity", DesiredVersion: "requested-artifact"}
+	run.Steps[0].Policy = &domain.PolicyDecision{Decision: domain.DecisionRequireApproval, ReasonCode: "HIGH_BLAST_RADIUS", ReasonDetail: "review the declared impact"}
 	if _, _, err := memory.CreateRun(run); err != nil {
 		t.Fatal(err)
 	}
 	controller := &fakeController{}
-	return application.NewReleases(p, memory, controller), controller
+	return application.NewReleases(p, memory, controller), controller, memory
 }
