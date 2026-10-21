@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"themisy/pkg/adapter"
 )
 
 func TestCanonicalGrantPayloadIsStableAndBindsFields(t *testing.T) {
@@ -33,6 +35,20 @@ func TestCanonicalGrantPayloadIsStableAndBindsFields(t *testing.T) {
 	modifiedHash, _ := GrantHash(grant)
 	if originalHash == modifiedHash {
 		t.Fatal("target mutation did not change hash")
+	}
+}
+
+func TestResultEqualComparesEvidenceBodiesByValue(t *testing.T) {
+	evidence := adapter.Evidence{Source: "datadog", QueryHash: "sha256:query", EvidenceHash: "sha256:evidence"}
+	left := Result{GrantID: "grant", EvidenceHash: evidence.EvidenceHash, Evidence: &evidence}
+	rightEvidence := evidence
+	right := Result{GrantID: "grant", EvidenceHash: evidence.EvidenceHash, Evidence: &rightEvidence}
+	if !ResultEqual(left, right) {
+		t.Fatal("equivalent evidence pointers should compare equal")
+	}
+	rightEvidence.Source = "other"
+	if ResultEqual(left, right) {
+		t.Fatal("different evidence bodies compared equal")
 	}
 }
 

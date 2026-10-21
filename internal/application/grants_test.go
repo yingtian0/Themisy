@@ -229,7 +229,7 @@ func TestWaitResultKeepsUnknownPendingUntilExistingGrantRecovers(t *testing.T) {
 		t.Fatal("WaitResult did not observe recovery on the existing Grant")
 	}
 	final, err := memory.GetGrantDispatch(context.Background(), record.Grant.GrantID)
-	if err != nil || final.StateVersion != unresolved.StateVersion+1 || final.Result != recovered {
+	if err != nil || final.StateVersion != unresolved.StateVersion+1 || !protocol.ResultEqual(final.Result, recovered) {
 		t.Fatalf("final record=%#v err=%v", final, err)
 	}
 }

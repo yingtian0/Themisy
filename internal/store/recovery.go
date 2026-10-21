@@ -16,7 +16,7 @@ func (m *Memory) ReconcileGrantDispatch(_ context.Context, id string, expected i
 	if r.Grant.RunID != result.RunID || r.Grant.StepID != result.StepID || result.GrantID != id {
 		return ErrConflict
 	}
-	if r.Result == result {
+	if protocol.ResultEqual(r.Result, result) {
 		m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
 		return nil
 	}

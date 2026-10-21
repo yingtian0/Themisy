@@ -17,6 +17,7 @@ import (
 	"themisy/internal/grant"
 	"themisy/internal/resultreport"
 	"themisy/internal/store"
+	"themisy/pkg/adapter"
 	"themisy/pkg/protocol"
 	"time"
 )
@@ -118,6 +119,70 @@ func TestSignedReportEndpointsRejectBeforeMutation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSignedEvidenceBodyIsVerifiedBeforeDurableResult(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	memory := store.NewMemory()
+	run := approvedTransportRun(now)
+	if _, _, err := memory.CreateRun(run); err != nil {
+		t.Fatal(err)
+	}
+	grantSigner, _, _ := grant.NewDevelopmentSigner("grant")
+	issuer, _ := application.NewGrants(memory, grantSigner, "https://control.example", time.Minute)
+	issued, _, err := issuer.Issue(ctx, application.GrantIssueRequest{RunID: run.ID, StepID: "payment-api", Capability: protocol.CapabilityDeploy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.ClaimGrantDispatch(ctx, issued.Grant.TenantID, issued.Grant.RunnerGroup, "runner-1", "delivery-secret", now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	evidence := adapter.Evidence{Status: adapter.VerificationPass, ReasonCode: "THRESHOLD_MET", Source: "datadog", QueryHash: "sha256:query", Window: adapter.ObservationWindow{From: now.Add(-time.Minute), To: now}, ObservedAt: now, ObservedValue: 0.2, Threshold: 1, AdapterVersion: "datadog/v1"}
+	evidence.EvidenceHash, err = adapter.EvidenceHash(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: issued.Grant.GrantID, RunID: run.ID, StepID: "payment-api", Status: protocol.ResultSucceeded, ExternalExecutionID: "provider", CompletedAt: now, EvidenceHash: evidence.EvidenceHash, Evidence: &evidence}
+	hash, _ := protocol.GrantHash(issued.Grant)
+	identity := resultreport.Identity{RunnerID: "runner-1", TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup}
+	report, err := testReportSigner().Sign(ctx, identity, hash, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := report
+	tamperedEvidence := *report.Result.Evidence
+	tamperedEvidence.ObservedValue = 0.3
+	tamperedEvidence.EvidenceHash, err = adapter.EvidenceHash(tamperedEvidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered.Result.Evidence = &tamperedEvidence
+	tampered.Result.EvidenceHash = tamperedEvidence.EvidenceHash
+	tamperedResult := tampered.Result
+	post := func(result protocol.Result, signed protocol.ResultReport) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(resultSubmission{ProtocolVersion: protocol.RunnerTransportVersionV1Alpha1, DeliveryToken: "delivery-secret", Result: result, Report: signed})
+		request := httptest.NewRequest(http.MethodPost, "/v1/runner/grants/"+issued.Grant.GrantID+"/result", bytes.NewReader(body))
+		request.Header.Set(runnerIDHeader, "runner-1")
+		request.Header.Set("Authorization", "Bearer auth-secret")
+		response := httptest.NewRecorder()
+		(&RunnerServer{Store: memory, Audit: memory, ResultVerifier: testReportVerifier(), Auth: StaticRunnerAuthenticator{"runner-1": {TenantID: issued.Grant.TenantID, RunnerGroup: issued.Grant.RunnerGroup, Token: "auth-secret"}}}).Handler().ServeHTTP(response, request)
+		return response
+	}
+	if response := post(tamperedResult, tampered); response.Code != http.StatusForbidden {
+		t.Fatalf("tampered body status=%d, want forbidden", response.Code)
+	}
+	unchanged, _ := memory.GetGrantDispatch(ctx, issued.Grant.GrantID)
+	if unchanged.Status != store.GrantDispatchLeased || unchanged.Result.Evidence != nil {
+		t.Fatal("tampered evidence changed durable dispatch state")
+	}
+	if response := post(result, report); response.Code != http.StatusNoContent {
+		t.Fatalf("valid signed evidence status=%d body=%s", response.Code, response.Body.String())
+	}
+	completed, err := memory.GetGrantDispatch(ctx, issued.Grant.GrantID)
+	if err != nil || completed.Status != store.GrantDispatchSucceeded || !protocol.ResultEqual(completed.Result, result) {
+		t.Fatalf("signed evidence was not durably stored: status=%s err=%v", completed.Status, err)
 	}
 }
 

@@ -134,7 +134,7 @@ WHERE id=$1 AND leased_by=$2 AND delivery_token=$3 AND status IN ('LEASED','ACKE
 RETURNING `+grantColumns, grantID, runnerID, token, result.RunID, status, encoded, now))
 	if errors.Is(err, store.ErrNotFound) {
 		existing, getErr := scanGrantDispatch(tx.QueryRow(ctx, `SELECT `+grantColumns+` FROM action_grants WHERE id=$1`, grantID))
-		if getErr == nil && existing.RunnerID == runnerID && existing.DeliveryToken == token && existing.Result == result {
+		if getErr == nil && existing.RunnerID == runnerID && existing.DeliveryToken == token && protocol.ResultEqual(existing.Result, result) {
 			if err := insertAudit(ctx, tx, audit); err != nil {
 				return store.GrantDispatchRecord{}, err
 			}
