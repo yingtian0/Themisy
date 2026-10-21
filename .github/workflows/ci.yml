@@ -149,6 +149,9 @@ jobs:
       - name: Verify durable OIDC identity audit admission
         run: make test-identity-audit
 
+      - name: Verify tenant-bound OIDC read API
+        run: make test-oidc-read-api
+
       - name: Run PostgreSQL and Temporal integration tests
         run: make test-integration
 

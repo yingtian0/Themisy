@@ -16,6 +16,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0008](0008-runner-grant-transport-and-ecs.md) | Accepted | Dispatch signed grants over an outbound Runner channel and resolve ECS targets locally |
 | [0009](0009-shared-postgresql-runner-journal.md) | Accepted | Share a customer-environment PostgreSQL journal across Runner replicas |
 | [0014](0014-oidc-api-principal-resolution.md) | Proposed | Resolve existing API identity hooks from tenant-bound verified OIDC group mappings |
+| [0016](0016-tenant-bound-oidc-read-api.md) | Proposed | Compose an audited tenant-bound OIDC summary API with no command routes |
 
 ## Process
 

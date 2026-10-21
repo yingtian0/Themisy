@@ -28,6 +28,10 @@ verify-runner-journal-backup-restore:
 test-identity-audit:
 	bash scripts/test-identity-audit.sh
 
+.PHONY: test-oidc-read-api
+test-oidc-read-api:
+	bash scripts/test-oidc-read-api.sh
+
 test-scenario:
 	go test -count=1 ./test/scenario/...
 
