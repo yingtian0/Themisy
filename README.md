@@ -1,5 +1,7 @@
 # Themisy
 
+Offline planning course: [English](docs/guides/offline-quickstart.md) · [日本語](docs/guides/offline-quickstart.ja.md).
+
 **Non-production prototype / alpha preparation. Do not connect production credentials or production write APIs.**
 
 Themisy connects a requested change to its approval, a narrowly scoped signed
