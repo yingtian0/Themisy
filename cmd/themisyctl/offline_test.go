@@ -122,3 +122,18 @@ func TestOfflinePlanRejectsContractGraph(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 }
+
+func TestOfflinePlanHelpShowsOptionsExamplesAndReturnsSuccess(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := runOfflinePlan([]string{"-h"}, &stdout, &stderr); err != nil {
+		t.Fatalf("help returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("help wrote to stdout: %s", stdout.String())
+	}
+	for _, want := range []string{"Usage: themisyctl offline-plan", "-contracts DIR", "-profiles DIR", "-at RFC3339", "options before the input filename", "examples/offline/release.json", "examples/offline/rejected.json", "exit 1", "does not authorize execution"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("offline help missing %q: %s", want, stderr.String())
+		}
+	}
+}
