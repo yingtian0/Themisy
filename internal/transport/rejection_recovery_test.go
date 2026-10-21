@@ -104,7 +104,7 @@ func TestRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.T) {
 				t.Fatalf("durable success recovery blocked: %v", err)
 			}
 			dispatch, err = memory.GetGrantDispatch(ctx, actionGrant.GrantID)
-			if err != nil || dispatch.Status != store.GrantDispatchSucceeded || dispatch.Result != durable.Result || writes != 1 {
+			if err != nil || dispatch.Status != store.GrantDispatchSucceeded || !protocol.ResultEqual(dispatch.Result, durable.Result) || writes != 1 {
 				t.Fatalf("dispatch=%#v writes=%d err=%v", dispatch, writes, err)
 			}
 		})

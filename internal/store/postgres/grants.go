@@ -30,6 +30,15 @@ func (s *Store) CreateGrantDispatch(ctx context.Context, record store.GrantDispa
 		return store.GrantDispatchRecord{}, false, err
 	}
 	defer tx.Rollback(ctx)
+	if record.AuthorizingRunVersion > 0 {
+		var version int64
+		if err := tx.QueryRow(ctx, `SELECT state_version FROM release_runs WHERE id=$1 FOR SHARE`, record.Grant.RunID).Scan(&version); err != nil {
+			return store.GrantDispatchRecord{}, false, err
+		}
+		if version != record.AuthorizingRunVersion {
+			return store.GrantDispatchRecord{}, false, store.ErrConflict
+		}
+	}
 	row := tx.QueryRow(ctx, `
 INSERT INTO action_grants (id,run_id,tenant_id,runner_group,issuer,idempotency_key,nonce,policy_hash,status,payload,result,outbox_id,state_version,created_at,updated_at,expires_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
@@ -125,7 +134,7 @@ WHERE id=$1 AND leased_by=$2 AND delivery_token=$3 AND status IN ('LEASED','ACKE
 RETURNING `+grantColumns, grantID, runnerID, token, result.RunID, status, encoded, now))
 	if errors.Is(err, store.ErrNotFound) {
 		existing, getErr := scanGrantDispatch(tx.QueryRow(ctx, `SELECT `+grantColumns+` FROM action_grants WHERE id=$1`, grantID))
-		if getErr == nil && existing.RunnerID == runnerID && existing.DeliveryToken == token && existing.Result == result {
+		if getErr == nil && existing.RunnerID == runnerID && existing.DeliveryToken == token && protocol.ResultEqual(existing.Result, result) {
 			if err := insertAudit(ctx, tx, audit); err != nil {
 				return store.GrantDispatchRecord{}, err
 			}

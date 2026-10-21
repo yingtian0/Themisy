@@ -9,11 +9,25 @@ import (
 	"themisy/internal/domain"
 	"themisy/internal/executor"
 	"themisy/internal/grant"
+	"themisy/internal/policy"
 	"themisy/internal/store"
 	"themisy/pkg/protocol"
 )
 
 var ErrGrantNotAuthorized = errors.New("action grant is not authorized")
+
+// GrantResultPendingError identifies the already-issued Grant whose result
+// must be observed after a read-only recovery. It never authorizes reissue.
+type GrantResultPendingError struct {
+	ID  string
+	Err error
+}
+
+func (e *GrantResultPendingError) Error() string {
+	return fmt.Sprintf("grant %s result remains pending: %v", e.ID, e.Err)
+}
+func (e *GrantResultPendingError) Unwrap() error   { return e.Err }
+func (e *GrantResultPendingError) GrantID() string { return e.ID }
 
 type GrantIssueRequest struct {
 	RunID               string
@@ -41,7 +55,7 @@ func (e *GrantExecutor) Deploy(ctx context.Context, request executor.DeployReque
 	}
 	result, err := e.Grants.WaitResult(ctx, record.Grant.GrantID, e.PollInterval)
 	if err != nil {
-		return executor.Deployment{}, err
+		return executor.Deployment{}, &GrantResultPendingError{ID: record.Grant.GrantID, Err: err}
 	}
 	if result.Status != protocol.ResultSucceeded {
 		return executor.Deployment{}, fmt.Errorf("runner result %s: %s", result.Status, result.ReasonCode)
@@ -59,7 +73,7 @@ func (e *GrantExecutor) Rollback(ctx context.Context, deployment executor.Deploy
 	}
 	result, err := e.Grants.WaitResult(ctx, record.Grant.GrantID, e.PollInterval)
 	if err != nil {
-		return executor.Deployment{}, err
+		return executor.Deployment{}, &GrantResultPendingError{ID: record.Grant.GrantID, Err: err}
 	}
 	if result.Status != protocol.ResultSucceeded {
 		return executor.Deployment{}, fmt.Errorf("runner rollback result %s: %s", result.Status, result.ReasonCode)
@@ -75,6 +89,7 @@ func (e *GrantExecutor) Verify(ctx context.Context, deployment executor.Deployme
 }
 
 type Grants struct {
+	Policy *policy.Engine
 	Store  store.DurableStore
 	Signer grant.Signer
 	Issuer string
@@ -89,7 +104,11 @@ func NewGrants(st store.DurableStore, signer grant.Signer, issuer string, ttl ti
 	if ttl <= 0 || ttl > 15*time.Minute {
 		return nil, errors.New("grant TTL must be between zero and fifteen minutes")
 	}
-	return &Grants{Store: st, Signer: signer, Issuer: issuer, TTL: ttl, Now: time.Now}, nil
+	engine, err := policy.NewMandatoryEngine(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return &Grants{Store: st, Signer: signer, Issuer: issuer, TTL: ttl, Now: time.Now, Policy: engine}, nil
 }
 
 // Issue creates a narrowly typed Action Grant from durable, already-authorized
@@ -113,6 +132,24 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 		}
 	}
 	now := g.now()
+	if step.Approval != nil && (step.Approval.Status != domain.ApprovalApproved || step.Approval.DecidedAt == nil || !step.Approval.ExpiresAt.After(now) || step.Approval.PlanHash != run.Plan.Hash) {
+		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: final approval is unavailable or stale", ErrGrantNotAuthorized)
+	}
+	finalInput := policy.InputForOperation(*run, step, request.Capability)
+	if run.StateVersion <= 0 || !finalInput.CISuccess || !finalInput.DependenciesHealthy {
+		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: final pinned execution facts unavailable", ErrGrantNotAuthorized)
+	}
+	if g.Policy == nil || g.Policy.PolicyHash() != run.Plan.PolicyHash {
+		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: pinned policy unavailable or changed", ErrGrantNotAuthorized)
+	}
+	finalDecision, err := g.Policy.EvaluateContext(ctx, finalInput)
+	if err != nil || finalDecision.Decision != domain.DecisionAllow || finalDecision.PolicyHash != run.Plan.PolicyHash {
+		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: final operation policy requires rejection or new approval", ErrGrantNotAuthorized)
+	}
+	finalHash, err := policy.InputHash(finalInput)
+	if err != nil || finalHash == "" || finalDecision.InputHash != finalHash {
+		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: final policy input mismatch", ErrGrantNotAuthorized)
+	}
 	expiresAt := now.Add(g.TTL)
 	if !run.Plan.ExpiresAt.IsZero() && run.Plan.ExpiresAt.Before(expiresAt) {
 		expiresAt = run.Plan.ExpiresAt
@@ -148,7 +185,7 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 		ContractHash:      planned.ContractHash,
 		ProfileHash:       planned.ProfileHash,
 		PolicyHash:        run.Plan.PolicyHash,
-		PolicyInputHash:   step.Policy.InputHash,
+		PolicyInputHash:   finalHash,
 		EvidenceHash:      run.Plan.EvidenceHash,
 		ApprovalProofs:    approvalProofs,
 		IdempotencyKey:    request.IdempotencyKey,
@@ -162,11 +199,18 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 	}
 	outboxID := "grant-dispatch/" + signed.GrantID
 	record := store.GrantDispatchRecord{Grant: signed, OutboxID: outboxID, CreatedAt: now, UpdatedAt: now}
+	record.AuthorizingRunVersion = run.StateVersion
 	audit := domain.AuditEvent{ID: newID("audit"), CorrelationID: run.ID, ActorType: "system", ActorID: "grant-issuer", DelegatedBy: run.RequestedBy, Action: "grant.issue", ResourceType: "action_grant", ResourceID: signed.GrantID, Result: "AUTHORIZED", Details: map[string]any{"step_id": step.Service, "runner_group": signed.RunnerGroup, "capability": signed.Action.Capability, "plan_hash": signed.PlanHash, "policy_hash": signed.PolicyHash}, Timestamp: now}
+	audit.Details["final_policy_decision"] = finalDecision
+	audit.Details["policy_input_hash"] = finalHash
+	audit.Details["run_state_version"] = run.StateVersion
 	outbox := domain.OutboxEvent{ID: outboxID, AggregateType: "action_grant", AggregateID: signed.GrantID, EventType: "grant.dispatch.requested", Payload: map[string]any{"grant_id": signed.GrantID, "tenant_id": signed.TenantID, "runner_group": signed.RunnerGroup}, CreatedAt: now, AvailableAt: now}
 	created, fresh, err := g.Store.CreateGrantDispatch(ctx, record, audit, outbox)
 	if err != nil {
 		return store.GrantDispatchRecord{}, false, fmt.Errorf("persist action grant: %w", err)
+	}
+	if !fresh && (created.Grant.PolicyInputHash != finalHash || created.Grant.Action != signed.Action || created.Grant.Target != signed.Target || created.Grant.RunID != signed.RunID || created.Grant.StepID != signed.StepID || !created.Grant.ExpiresAt.After(now)) {
+		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: existing operation requires reconciliation or renewed authorization", ErrGrantNotAuthorized)
 	}
 	return created, fresh, nil
 }
@@ -183,8 +227,12 @@ func (g *Grants) WaitResult(ctx context.Context, grantID string, interval time.D
 			return protocol.Result{}, err
 		}
 		switch record.Status {
-		case store.GrantDispatchSucceeded, store.GrantDispatchRejected, store.GrantDispatchUnknown:
+		case store.GrantDispatchSucceeded, store.GrantDispatchRejected:
 			return record.Result, nil
+		case store.GrantDispatchUnknown:
+			// UNKNOWN is an unresolved observation, not a terminal result. Keep
+			// this activity read-only and wait for the existing Grant's recovery
+			// report; never issue a replacement Grant or provider write here.
 		}
 		select {
 		case <-ctx.Done():

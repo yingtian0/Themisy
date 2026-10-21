@@ -1,0 +1,41 @@
+package workflow_test
+
+import (
+ "context"
+ "os"
+ "testing"
+ "time"
+ "themisy/internal/domain"
+ "themisy/internal/executor"
+ "themisy/internal/policy"
+ "themisy/internal/store"
+ wf "themisy/internal/workflow"
+ enumspb "go.temporal.io/api/enums/v1"
+ historypb "go.temporal.io/api/history/v1"
+ "go.temporal.io/sdk/client"
+ "google.golang.org/protobuf/encoding/protojson"
+)
+func TestExportLegacyUnknownHistory(t *testing.T){
+ ctx,cancel:=context.WithTimeout(context.Background(),30*time.Second);defer cancel()
+ tc,err:=client.Dial(client.Options{HostPort:os.Getenv("THEMISY_TEMPORAL_ADDRESS")});if err!=nil{t.Fatal(err)};defer tc.Close()
+ for _,rollback:=range []bool{false,true}{
+ name:="deploy";if rollback{name="rollback"}
+ now:=time.Now().UTC()
+ id:="legacy-8eb8a40-"+name+"-"+now.Format("150405.000000000")
+ run:=domain.ReleaseRun{ID:id,WorkflowID:id,RequestID:id,ReleaseVersion:"v1",Environment:domain.EnvironmentStaging,RequestedBy:"synthetic-requester",Agent:domain.AgentIdentity{ID:"synthetic-agent",Scopes:[]string{"release:deploy"}},Plan:domain.ReleasePlan{Hash:"synthetic-plan-hash",PlanHash:"synthetic-plan-hash",Environment:domain.EnvironmentStaging,Phases:[]domain.PlanPhase{{Number:0,Steps:[]domain.PlanStep{{Service:"identity",DesiredVersion:"synthetic-v1",VerificationRequired:true,ObservationWindow:"1ms",RollbackMode:domain.RollbackAutomatic}}}}},Status:domain.RunPending,Steps:[]domain.ReleaseStep{{Service:"identity",Status:domain.StepPending,Change:domain.Change{Service:"identity",DesiredVersion:"synthetic-v1",CISuccess:true,DependenciesHealthy:true},VerificationRequired:true,ObservationWindow:"1ms",RollbackMode:domain.RollbackAutomatic}},StateVersion:1,CreatedAt:now,UpdatedAt:now}
+ st:=store.NewMemory();if _,_,err:=st.CreateRun(&run);err!=nil{t.Fatal(err)}
+ behavior:=executor.MockBehavior{DeployError:!rollback,RollbackError:rollback,VerifyHealthy:false}
+ a:=wf.NewActivities(st,policy.New(),executor.NewMock(map[string]executor.MockBehavior{"identity":behavior}))
+ w:=wf.NewWorker(tc,id,a);if err:=w.Start();err!=nil{t.Fatal(err)}
+ execution,err:=tc.ExecuteWorkflow(ctx,client.StartWorkflowOptions{ID:id,TaskQueue:id},wf.ReleaseWorkflow,wf.ReleaseInput{Run:run});if err!=nil{w.Stop();t.Fatal(err)}
+ var result domain.ReleaseRun
+ if err:=execution.Get(ctx,&result);err!=nil{w.Stop();t.Fatal(err)}
+ w.Stop()
+ wantRun,wantStep:=domain.RunBlocked,domain.StepUnknown;if rollback{wantRun,wantStep=domain.RunEscalated,domain.StepEscalated}
+ if result.Status!=wantRun || result.Steps[0].Status!=wantStep{t.Fatalf("legacy result=%s/%s",result.Status,result.Steps[0].Status)}
+ history:=&historypb.History{};iterator:=tc.GetWorkflowHistory(ctx,id,execution.GetRunID(),false,enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+ for iterator.HasNext(){event,err:=iterator.Next();if err!=nil{t.Fatal(err)};history.Events=append(history.Events,event)}
+ raw,err:=(protojson.MarshalOptions{Indent:"  "}).Marshal(history);if err!=nil{t.Fatal(err)}
+ if err:=os.WriteFile(os.Getenv("THEMISY_LEGACY_HISTORY_DIRECTORY")+"/main-8eb8a40-"+name+"-unknown.json",raw,0644);err!=nil{t.Fatal(err)}
+ }
+}

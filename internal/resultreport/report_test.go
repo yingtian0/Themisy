@@ -1,6 +1,7 @@
 package resultreport
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"themisy/internal/grant"
+	"themisy/pkg/adapter"
 	"themisy/pkg/protocol"
 	"time"
 )
@@ -27,7 +29,9 @@ func fixture(t *testing.T) (Identity, protocol.ActionGrant, protocol.Result) {
 	now := time.Now().UTC()
 	d := "sha256:" + strings.Repeat("a", 64)
 	g := protocol.ActionGrant{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: "grant", Issuer: "issuer", TenantID: "tenant", RunnerGroup: "group", RunID: "run", StepID: "step", SubjectType: "user", UserSubject: "user", UserIdentityProof: "proof", AgentID: "agent", DelegationRef: "delegation", Target: protocol.Target{Service: "service", Environment: "production"}, Action: protocol.Action{Capability: protocol.CapabilityDeploy, ArtifactDigest: d}, Risk: "low", PlanHash: d, ContractHash: d, ProfileHash: d, PolicyHash: d, PolicyInputHash: d, EvidenceHash: d, IdempotencyKey: "idempotency", Nonce: "nonce", IssuedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)}
-	return Identity{"peer", "tenant", "group"}, g, protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: g.GrantID, RunID: g.RunID, StepID: g.StepID, Status: protocol.ResultSucceeded, ExternalExecutionID: "provider-id", CompletedAt: now.Add(-time.Hour), EvidenceHash: d}
+	evidence := adapter.Evidence{Status: adapter.VerificationPass, ReasonCode: "THRESHOLD_MET", Source: "datadog", QueryHash: d, Window: adapter.ObservationWindow{From: now.Add(-3 * time.Hour), To: now.Add(-2 * time.Hour)}, ObservedAt: now.Add(-2 * time.Hour), ObservedValue: 0.2, Threshold: 1, AdapterVersion: "datadog/v1"}
+	evidence.EvidenceHash, _ = adapter.EvidenceHash(evidence)
+	return Identity{"peer", "tenant", "group"}, g, protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: g.GrantID, RunID: g.RunID, StepID: g.StepID, Status: protocol.ResultSucceeded, ExternalExecutionID: "provider-id", CompletedAt: now.Add(-time.Hour), EvidenceHash: evidence.EvidenceHash, Evidence: &evidence}
 }
 func TestReportSingleSignatureBoundFieldsAndReloadedRevocation(t *testing.T) {
 	ctx := context.Background()
@@ -47,6 +51,21 @@ func TestReportSingleSignatureBoundFieldsAndReloadedRevocation(t *testing.T) {
 	if err != nil || counter.calls != 1 {
 		t.Fatalf("sign: %v calls=%d", err, counter.calls)
 	}
+	payload, err := protocol.CanonicalResultReportPayload(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherZone := report
+	otherEvidence := *report.Result.Evidence
+	zone := time.FixedZone("offset", 9*60*60)
+	otherEvidence.Window.From = otherEvidence.Window.From.In(zone)
+	otherEvidence.Window.To = otherEvidence.Window.To.In(zone)
+	otherEvidence.ObservedAt = otherEvidence.ObservedAt.In(zone)
+	otherZone.Result.Evidence = &otherEvidence
+	otherPayload, err := protocol.CanonicalResultReportPayload(otherZone)
+	if err != nil || !bytes.Equal(payload, otherPayload) {
+		t.Fatalf("equivalent evidence instants changed signed payload: %v", err)
+	}
 	path := filepath.Join(t.TempDir(), "trust.json")
 	bundle := ResultTrustBundle{Version: "themisy.result-trust/v1", RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour), Keys: []ResultTrustKey{{KeyID: "result-1", PublicKey: base64.RawURLEncoding.EncodeToString(pub), Status: "active", NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour)}}}
 	write := func() {
@@ -59,6 +78,32 @@ func TestReportSingleSignatureBoundFieldsAndReloadedRevocation(t *testing.T) {
 	v := &Verifier{Keys: FileKeys{Path: path, Identity: identity, Now: func() time.Time { return now }}}
 	if err := v.Verify(ctx, identity, g, report); err != nil {
 		t.Fatalf("expired grant recovered by peer: %v", err)
+	}
+	legacy := report
+	legacy.Version = protocol.ResultReportVersionV1
+	legacy.Result.Evidence = nil
+	legacy.Signature.Value = ""
+	legacyPayload, err := protocol.CanonicalResultReportPayload(legacy)
+	if err != nil {
+		t.Fatalf("legacy v1 canonical payload: %v", err)
+	}
+	legacy.Signature, err = counter.Sign(ctx, legacyPayload)
+	if err != nil || v.Verify(ctx, identity, g, legacy) != nil {
+		t.Fatalf("legacy report without body should remain verifiable: %v", err)
+	}
+	legacyWithBody := legacy
+	legacyWithBody.Result.Evidence = report.Result.Evidence
+	if _, err := protocol.CanonicalResultReportPayload(legacyWithBody); err == nil {
+		t.Fatal("v1 report accepted an unversioned Evidence body")
+	}
+	tamperedEvidence := report
+	evidence := *report.Result.Evidence
+	evidence.ObservedValue = 0.3
+	evidence.EvidenceHash, _ = adapter.EvidenceHash(evidence)
+	tamperedEvidence.Result.Evidence = &evidence
+	tamperedEvidence.Result.EvidenceHash = evidence.EvidenceHash
+	if v.Verify(ctx, identity, g, tamperedEvidence) == nil {
+		t.Fatal("evidence body mutation with recomputed hash passed the Runner signature")
 	}
 	mutations := map[string]func(*protocol.ResultReport){"runner": func(r *protocol.ResultReport) { r.RunnerID = "other" }, "tenant": func(r *protocol.ResultReport) { r.TenantID = "other" }, "group": func(r *protocol.ResultReport) { r.RunnerGroup = "other" }, "grant": func(r *protocol.ResultReport) { r.Result.GrantID = "other" }, "run": func(r *protocol.ResultReport) { r.Result.RunID = "other" }, "step": func(r *protocol.ResultReport) { r.Result.StepID = "other" }, "status": func(r *protocol.ResultReport) { r.Result.Status = protocol.ResultUnknown }, "provider": func(r *protocol.ResultReport) { r.Result.ExternalExecutionID = "other" }, "time": func(r *protocol.ResultReport) { r.Result.CompletedAt = r.Result.CompletedAt.Add(time.Second) }, "evidence": func(r *protocol.ResultReport) { r.Result.EvidenceHash = "" }, "hash": func(r *protocol.ResultReport) { r.RequestHash = "" }, "key": func(r *protocol.ResultReport) { r.Signature.KeyID = "other" }, "algorithm": func(r *protocol.ResultReport) { r.Signature.Algorithm = "other" }, "version": func(r *protocol.ResultReport) { r.Version = "other" }, "unsigned": func(r *protocol.ResultReport) { r.Signature.Value = "" }}
 	for name, mutate := range mutations {

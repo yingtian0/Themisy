@@ -1,233 +1,128 @@
 # Themisy
 
-> **Prototype / not production ready.** The current implementation has a PostgreSQL/Temporal durable core, a fail-closed Runner authorization boundary, a typed GitHub Actions adapter, and Datadog evidence classification. It still lacks production KMS/JWKS discovery, Runner transport integration, and a completed dedicated-staging deploy/rollback exercise. It must not be connected to production credentials or production write APIs.
+Offline planning course: [English](docs/guides/offline-quickstart.md) · [日本語](docs/guides/offline-quickstart.ja.md).
 
-Themisy is an open-source Agent Operations Control Layer for planning, authorizing, executing, verifying, stopping, and auditing changes requested by people, CI, CLIs, or AI agents through the same deterministic safety boundary.
+**Non-production prototype / alpha preparation. Do not connect production credentials or production write APIs.**
 
-The current repository is an executable prototype. It performs no external writes and demonstrates safety properties with versioned Service Contracts and Release Profiles, PostgreSQL records/read projections, Temporal workflow history, and a mock deploy/verify/rollback adapter. An in-memory store and the original synchronous Engine remain only as test and migration compatibility paths. The original 20-service JSON catalog remains available through an explicit compatibility adapter.
+Themisy connects a requested change to its approval, a narrowly scoped signed
+Action Grant, customer-side execution, and the resulting evidence. The first
+users are Platform/SRE developers using ECS and existing CI/CD; the first
+execution target is one stateless service in dedicated staging.
 
-## What the prototype demonstrates
+The Control Plane coordinates planning and durable workflows. A customer-hosted
+Runner holds credentials, independently authorizes the final operation, and
+invokes a typed adapter against locally configured targets. This adds an
+operation-specific approval and evidence boundary to existing CI/CD and IAM;
+its adoption benefit over those tools has not yet been measured.
 
-- dependency validation, cycle detection, and deterministic release phases
-- typed dependency semantics for rollout, schema, runtime, shared failure domains, migrations, and traffic
-- canonical Contract, Profile, and Plan v2 hashes with expiry and context pinning
-- fail-closed validation for unknown references, profiles, capabilities, and schema versions
-- plan hashes that do not depend on input order
-- separate requester and delegated-agent identities
-- fail-closed policy checks for agent scope, CI, and dependency health
-- `ALLOW`, `DENY`, and `REQUIRE_APPROVAL` decisions
-- role checks, separation of duties, approval expiry, and plan-hash binding
-- request idempotency and execution idempotency keys
-- four-value deploy verification, independently recorded rollback, rollback verification, escalation, and downstream stopping
-- audit records for subjects, policy inputs, decisions, and operations
-- optimistic state versions and a deliberately limited HTTP API
-- durable Approval, pause, resume, cancel, retry, and recovery through Temporal
-- transactional audit/outbox persistence and database-enforced execution idempotency
-- canonical, signed `themisy.protocol/v1alpha1` Action Grants and strict decoding
-- OIDC signature/issuer/audience/expiry verification and trusted delegation scope checks
-- monotonic OPA policy layers with a mandatory local baseline
-- Runner capability allowlists, durable nonce journal, replay protection, and disconnect-safe reconciliation
-- public typed Adapter SDK and explicit retryable/terminal/unknown error taxonomy
-- allow-listed GitHub Actions deploy/rollback workflows with external run IDs and timeout reconciliation
-- Runner-local GitHub and Datadog credential brokers that never return secrets to the Control Plane
-- Datadog `PASS`, `FAIL`, `INCONCLUSIVE`, and `MISSING` evidence with canonical hashes
-- one Application use-case boundary shared by REST, CLI, structured MCP tools, and the server-rendered status/approval UI
-- deterministic release waves, multi-layer concurrency budgets, Runner/rate/queue backpressure, and a production circuit breaker
+## Choose an entry point
 
-## Safety boundary
+| Course | Prerequisites and processes | External writes | Status |
+|---|---|---|---|
+| [15-minute offline planning](docs/guides/offline-quickstart.md) | Go 1.26.9+, local Contract/Profile/Intent files; CLI only | None; no credential acquisition, approval, or Grant | Normal/rejected examples locally verified; external timing not measured |
+| Local execution development | PostgreSQL, Temporal, Control Plane, Worker, configured Runner; provisioned signing/trust material and test identity/context | Can dispatch writes if a real adapter is enabled | Developer assembly only; no turnkey safe mock runtime |
+| [Dedicated ECS staging](docs/runbooks/ecs-runner-iam.md) | Above plus isolated AWS resources, fixed target mappings, STS roles, KMS/trust configuration, runtime/health sources | Real ECS updates and rollback | Not a validated onboarding course; live gate pending #6/#7/#11 |
 
-Values such as agent scopes, approver roles, CI status, dependency health, and service metadata are demo inputs today. They are not trusted production identity or evidence.
+Start with the offline course. [Readiness matrix](docs/readiness.md) records the
+commit, verification types, evidence, known limits, and separate production gates.
+No versioned alpha binary/image has been published by this work (#43).
 
-| Prototype input | Required production source |
-|---|---|
-| Agent scopes | verified short-lived delegation from an identity provider |
-| Approver roles | identity provider or organization directory |
-| `ci_success` | typed read adapter for the CI system |
-| `dependencies_healthy` | typed runtime or observability evidence |
-| Service metadata | versioned Service Contracts and trusted dynamic sources |
+## What is implemented
 
-The runtime currently has no connected Runner verification implementation. Releases
-that require verification become `BLOCKED` with `verification unavailable` after a
-successful deployment, and downstream steps stop. The binary does not substitute
-mock PASS evidence or offer a mock verification option. Real read-only runtime and
-Evidence verification remains Issue #9; signed dispatch results alone do not prove
-runtime health. Tests explicitly inject their own verification fixtures.
-Production Profiles must explicitly require verification; see the
-[Production verification migration runbook](docs/runbooks/production-verification.md)
-for existing Profiles, Plans, approvals, and active runs.
+- Versioned Service Contracts and Release Profiles, strict validation, typed
+  dependencies, deterministic release phases, canonical hashes and Plan expiry.
+- PostgreSQL records/audit/outbox and Temporal workflows for approval, control
+  signals, execution and compensation.
+- Signed Action Grant dispatch over outbound Runner long-poll, acknowledgements,
+  authenticated reporting, freeze/drain, and signed results.
+- Customer-side shared PostgreSQL journal, nonce/idempotency reservation, and
+  read-only reconciliation of ambiguous external writes.
+- Typed ECS and GitHub Actions adapters with Runner-local target mappings and
+  credential brokers. These paths can perform external writes.
+- ECS runtime checks and Datadog four-value evidence foundations. The default
+  Control Plane GrantExecutor still has no verification executor connected;
+  verification-required runs block after dispatch rather than substitute PASS.
+- REST, CLI, structured MCP, and a minimal status/approval UI using the same
+  application boundary.
 
-The target architecture separates a Control Plane from a Customer Environment Runner. Production credentials remain in the customer environment. The Runner accepts only signed, narrowly scoped Action Grants, re-evaluates pinned policy locally, obtains short-lived credentials, and invokes typed adapters. Arbitrary shell, arbitrary HTTP, and generic cloud APIs are not exposed.
+Implementation and mock SDK tests do not establish a working production system.
+The ECS runtime gate added in PR #37 and production verification guard in PR #36
+are completed implementation units; parent #9 still tracks Evidence and workflow
+integration. See the matrix for recovery, expiry and concurrency limits.
 
-See the [architecture overview](docs/architecture/overview.md), [threat model](docs/security/threat-model.md), and [architecture decisions](docs/adr/README.md) before extending an execution path.
+## Trust assumptions
 
-## Run the prototype
+Ordinary CI/Agent identities must have no parallel direct Write permissions for
+this boundary to control writes. The Runner is trusted and remains inside the
+trusted computing base. Its credentials stay in the customer environment; a
+Grant cannot choose arbitrary shell, HTTP, AWS operations, roles, or provider IDs.
 
-Go 1.26.9 or later is required. YAML decoding uses the maintained `go.yaml.in/yaml/v3` module; no JSON Schema runtime is required.
+Local example identity, roles, scopes, CI and health assertions are synthetic;
+request fields do not prove production identity or evidence. Production needs
+verified identity/delegation, organization roles, trusted fresh Context, signed
+Policy Bundles, and independent runtime observation. Missing, inconclusive, or
+unknown results must not be treated as success. An expired lease or a lost
+response does not authorize another write.
+
+Review [architecture](docs/architecture/overview.md), [ADRs](docs/adr/README.md),
+and the [threat model](docs/security/threat-model.md) before extending execution.
+
+## Developer execution setup: prerequisites first
+
+The example configurations are templates, not a ready-to-run deployment.
+`config/themisy.example.yaml` references files **not included** in the repository:
+
+- `/run/secrets/themisy-grant-ed25519`: provisioned mode-0600 development signing
+  seed; production uses deployment-owned KMS signing.
+- `/run/secrets/themisy-runner-token`: development Runner authentication.
+- `/run/config/result-trust.json`: trusted result-signing keys.
+
+`config/runner.example.yaml` additionally requires matching Grant trust, OIDC
+trust/delegation material, signed Policy Bundle, manifest/result signing and
+adapter-specific secret files and allowlists. Inspect its full configuration;
+placeholders are not credentials. Production requires workload identity/mTLS and
+shared durable journal state. The example Runner groups/tenant/targets must be
+aligned with the chosen Contract and authenticated identity; they are not a
+complete sample deployment. See [recovery and manifests](docs/runbooks/runner-recovery-and-manifests.md).
+
+The Compose template defines PostgreSQL, Temporal, Control Plane, Worker and
+Runner. It mounts the source tree but does not provision the above files. Its
+startup is unverified as a complete course; do not assume it starts successfully
+or executes a safe mock. Do not run integration teardown/migration tests against
+an existing database. Use a dedicated disposable environment.
+
+For source contributions, the non-service checks are:
 
 ```bash
+make fmt-check
 make test
-make compose-up
+make test-race
+make lint
 ```
 
-The default process loads `examples/contracts` and `examples/profiles`. To exercise the legacy JSON catalog compatibility adapter instead:
+These check targets are covered by CI on the recorded main; this documentation
+change does not claim a fresh local run of every target. The offline guide lists
+commands actually exercised in this session. Service integration and live AWS
+checks are separately classified in the matrix.
 
-```bash
-go run ./cmd/themisy -config config/themisy.example.yaml -catalog config/services.json
-```
+## Interfaces
 
-The durable runtime uses PostgreSQL for records/read projections and Temporal
-for active workflow history. Start PostgreSQL, Temporal, the Themisy Control Plane, and a
-separate Worker with:
+The existing `themisyctl plan` and `validate-contract` commands call a running
+Control Plane over HTTP. `offline-plan` is explicitly separate and never calls
+that server. Execution commands such as `start` can enqueue real signed Grants;
+they are not part of the offline course.
 
-```bash
-make compose-up
-```
-
-Configuration is loaded from `config/themisy.example.yaml`; `THEMISY_DATABASE_URL`,
-`THEMISY_TEMPORAL_ADDRESS`, and the other `THEMISY_*` variables override file values.
-The compose stack is intended for local development, not production operation.
-
-Packet 04 provides a Runner process scaffold with validated GitHub Actions and Datadog configuration and a health-only inbound endpoint:
-
-```bash
-go run ./cmd/runner -config config/runner.example.yaml -check-config
-```
-
-The Runner receives Action Grants over an outbound HTTPS long-poll; it does not expose an inbound Action endpoint. Production configuration requires mTLS workload identity, durable journal storage, customer-managed trust keys, allow-listed targets, and Runner-local short-lived credentials. The separate health-only endpoint is configurable and defaults to `:8081`. The execution core invokes the typed Adapter SDK only after Grant, identity, policy, audit, and replay checks, and exposes no arbitrary command, HTTP, workflow path, or cloud API field. See Issue #5 and the transport tests for the current boundary and its verification.
-
-GitHub target workflows must declare the fixed `themisy_*` inputs and use the correlation run name `themisy:${{ inputs.themisy_idempotency_key }}`. A dispatch timeout is reconciled by that title and is never blindly retried. See ADR-0007 before enabling a staging adapter.
-
-`examples/release.json` uses the versioned `ReleaseIntent` envelope. The same HTTP paths continue to accept the original unversioned `ReleaseRequest` JSON for compatibility.
-
-In another terminal, create a plan through the OpenAPI v1alpha1 route:
-
-```bash
-curl -sS -X POST http://localhost:8080/v1/plans \
-  -H 'Content-Type: application/json' \
-  --data-binary @examples/release.json
-```
-
-Start the same request. The default adapter is a mock and performs no external write:
-
-```bash
-curl -sS -X POST http://localhost:8080/v1/release-runs \
-  -H 'Content-Type: application/json' \
-  --data-binary @examples/release.json
-```
-
-The same flow is available without AI through `themisyctl`:
-
-```bash
-go run ./cmd/themisyctl -tenant example-tenant plan examples/release.json
-go run ./cmd/themisyctl -tenant example-tenant start examples/release.json
-go run ./cmd/themisyctl -tenant example-tenant status RUN_ID
-```
-
-The minimal UI is served at `/ui/approvals`; it requires authenticated
-`X-Actor-ID`, `X-Tenant-ID`, and trusted `X-Actor-Roles` headers. Approval
-identity is resolved again on every form submission and is never accepted from
-form fields. The stateless MCP endpoint is `/mcp` and exposes only the ten
-structured tools documented by Packet 05. These headers are a trusted-proxy
-development boundary; an internet-facing deployment must populate them only
-after OIDC verification and strip caller-supplied copies.
-
-## API
-
-```text
-GET  /healthz
-GET  /v1/services
-POST /v1/plans
-GET  /v1/plans/{id}
-POST /v1/release-runs
-GET  /v1/release-runs/{id}
-GET  /v1/release-runs/{id}/events
-POST /v1/release-runs/{id}:cancel
-POST /v1/release-runs/{id}:pause
-POST /v1/release-runs/{id}:resume
-GET  /v1/approvals
-POST /v1/approvals/{id}:approve
-POST /v1/approvals/{id}:deny
-POST /v1/approvals/{id}:revoke
-POST /v1/contracts:validate
-GET  /v1/runners
-POST /v1/runners/{id}:freeze
-```
-
-The Packet 00-04 slash-action routes remain temporarily available and return
-`Deprecation: true` plus a successor `Link`. OpenAPI is the REST source of truth
-at `api/openapi/v1alpha1.yaml`.
-
-
-```mermaid
-flowchart TD
-    USER["人間・CI・AI Agent"] -->|"リリース要求（Intent）"| API["Control Plane API"]
-
-    GIT["Git<br/>Service Contract・Release Profile"] -->|"サービス定義・依存関係"| CTX["Context収集"]
-    AWSREAD["AWS ECS<br/>現在の配置状態"] -->|"Read情報"| CTX
-    OBS["Datadog等"] -->|"Metrics・Evidence"| CTX
-
-    subgraph CP["Control Plane"]
-        API --> CTX
-        CTX -->|"固定したContext"| PLANNER["Planner<br/>PlanとStepを生成"]
-        CPPOL["OPA Policy<br/>実行ルール"] -->|"許可・制約・承認条件"| PLANNER
-        PLANNER -->|"Plan・Step・各種hash"| TEMPORAL["Temporal<br/>Stepの進行管理"]
-        TEMPORAL -->|"実行可能になったStep"| ISSUER["Grant発行機能"]
-        ISSUER -->|"署名対象のGrant本文"| KMS["KMS<br/>Control Plane秘密鍵"]
-        KMS -->|"電子署名"| ISSUER
-        CPDB["Control Plane PostgreSQL<br/>Plan・Run・Approval・Audit"] --- PLANNER
-        CPDB --- ISSUER
-    end
-
-    ISSUER -->|"Signed Action Grant<br/>Step・Action・各種hash・key・署名"| VERIFY["Runner<br/>署名検証"]
-
-    subgraph CUSTOMER["顧客AWS環境"]
-        VERIFY -->|"公開鍵で検証"| LOCALPOL["Runner側OPA<br/>署名済みPolicy Bundle"]
-        LOCALPOL -->|"ALLOWの場合のみ"| JOURNAL["共有PostgreSQL Journal<br/>二重実行防止・実行状態"]
-        JOURNAL --> BROKER["Credential Broker"]
-        BROKER -->|"AWS STSの短寿命Credential"| ADAPTER["型付きECS Adapter"]
-        ADAPTER -->|"Deploy・Status・Rollback"| ECS["AWS ECS"]
-        ECS -->|"外部execution ID・実状態"| ADAPTER
-    end
-
-    ADAPTER -->|"実行結果・Evidence"| TEMPORAL
-```
-
-
-## Package map
-
-```text
-cmd/themisy       HTTP server composition root
-cmd/themisyctl    fixed-operation REST CLI
-cmd/runner        customer Runner configuration and process scaffold
-internal/api      OpenAPI-backed REST interface and tenant boundary
-internal/application release use cases and workflow/outbox dispatch
-internal/catalog  prototype service metadata loader
-internal/contract versioned Service Contract loading, validation, canonicalization
-internal/profile  versioned Release Profile loading, validation, canonicalization
-internal/domain   dependency, plan, run, step, approval, and audit model
-internal/planner  typed dependency graph and canonical Plan v2 generation
-internal/grant    Action Grant signing boundary and strict verification
-internal/identity verified OIDC subjects and trusted agent delegation
-internal/policy   canonical policy input, signed bundles, and embedded OPA
-internal/runner   ordered grant/policy/journal/credential/adapter enforcement
-internal/mcp      bounded structured MCP facade
-internal/scheduler release waves, budgets, backpressure, and circuit breaker
-internal/ui       server-rendered status and approval handlers
-internal/verification evidence integrity and Runner-local verification service
-internal/engine   synchronous migration compatibility facade
-internal/executor typed adapter interface and mock implementation
-internal/store    durable store contract, memory test store, PostgreSQL store
-internal/workflow deterministic Temporal workflow and Activity boundaries
-pkg/protocol      versioned Control Plane/Runner messages and canonical payloads
-pkg/adapter       public typed deploy, rollback, reconcile, and verification SDK
-pkg/credentials   Runner-local credential broker interfaces and providers
-adapters/githubactions allow-listed workflow dispatch and reconciliation
-adapters/datadog  fixed-query four-value metrics evidence
-web               embedded templates and static UI assets
-```
+REST routes are defined in [OpenAPI](api/openapi/v1alpha1.yaml). The stateless MCP
+endpoint is `/mcp`; the minimal UI is `/ui/approvals`. Development actor/tenant/role
+headers form a trusted-proxy boundary and must be stripped/replaced by verified
+identity at an internet-facing ingress. They are not production authentication.
 
 ## Contributing and security
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md), [GOVERNANCE.md](GOVERNANCE.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before contributing. Report suspected vulnerabilities privately as described in [SECURITY.md](SECURITY.md); do not open a public issue for a vulnerability.
+See [CONTRIBUTING.md](CONTRIBUTING.md), [governance](GOVERNANCE.md), and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Follow [SECURITY.md](SECURITY.md) for private
+reports; never put vulnerability details in public Issues or PRs. Reporting
+channel availability remains tracked in #39.
 
-Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+[Roadmap #52](https://github.com/yingtian0/Themisy/issues/52) is the current task
+order. Licensed under [Apache License 2.0](LICENSE).

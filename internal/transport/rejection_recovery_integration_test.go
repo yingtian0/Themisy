@@ -214,7 +214,7 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 					if err := testReportVerifier().Verify(ctx, resultreport.Identity{RunnerID: "replacement", TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup}, actionGrant, proof); err != nil {
 						t.Fatalf("persisted report proof invalid: %v", err)
 					}
-					if proof.Result != durable.Result {
+					if !protocol.ResultEqual(proof.Result, durable.Result) {
 						t.Fatal("persisted proof differs from durable observation")
 					}
 				}
@@ -227,7 +227,7 @@ func TestPostgresRedeliveryRefusalDoesNotBlockDurableSuccessRecovery(t *testing.
 				t.Fatalf("journal audit=%#v err=%v", journalEvents, err)
 			}
 			dispatch, err = control.GetGrantDispatch(ctx, actionGrant.GrantID)
-			if err != nil || dispatch.Status != store.GrantDispatchSucceeded || dispatch.Result != durable.Result || writes != 1 {
+			if err != nil || dispatch.Status != store.GrantDispatchSucceeded || !protocol.ResultEqual(dispatch.Result, durable.Result) || writes != 1 {
 				t.Fatalf("dispatch=%#v writes=%d err=%v", dispatch, writes, err)
 			}
 		})

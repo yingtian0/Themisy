@@ -95,7 +95,9 @@ func (m *Mock) Deploy(_ context.Context, request DeployRequest) (Deployment, err
 	now := time.Now().UTC()
 	deployment := Deployment{
 		ExternalID: fmt.Sprintf("mock-%s-%d", request.Service, len(m.deployments)+1),
-		StartedAt:  now, FinishedAt: now,
+		RunID:      request.RunID, Service: request.Service, Environment: request.Environment,
+		DesiredVersion: request.DesiredVersion, IdempotencyKey: request.IdempotencyKey,
+		StartedAt: now, FinishedAt: now,
 	}
 	m.deployments[request.IdempotencyKey] = deployment
 	m.serviceByID[deployment.ExternalID] = request.Service
@@ -136,7 +138,10 @@ func (m *Mock) Rollback(_ context.Context, deployment Deployment) (Deployment, e
 		return Deployment{}, errors.New("simulated rollback failure")
 	}
 	now := time.Now().UTC()
-	rolledBack := Deployment{ExternalID: "rollback-" + deployment.ExternalID, StartedAt: now, FinishedAt: now}
+	rolledBack := deployment
+	rolledBack.ExternalID = "rollback-" + deployment.ExternalID
+	rolledBack.StartedAt, rolledBack.FinishedAt = now, now
+	rolledBack.IdempotencyKey += "/rollback"
 	m.serviceByID[rolledBack.ExternalID] = m.serviceByID[deployment.ExternalID]
 	m.rollbackByID[rolledBack.ExternalID] = true
 	return rolledBack, nil

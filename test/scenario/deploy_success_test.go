@@ -56,6 +56,7 @@ func scenarioEnvironment(memory *store.Memory, releaseExecutor executor.ReleaseE
 	environment.RegisterActivity(activities.Deploy)
 	environment.RegisterActivity(activities.Verify)
 	environment.RegisterActivity(activities.Rollback)
+	environment.RegisterActivity(activities.RecoverExecution)
 	environment.RegisterActivity(activities.AcquireSchedule)
 	environment.RegisterActivity(activities.CompleteSchedule)
 	return environment

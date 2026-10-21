@@ -60,6 +60,18 @@ func TestCLIRequiresActorForMutation(t *testing.T) {
 	}
 }
 
+func TestCLIRootHelpShowsOfflineEntryAndReturnsSuccess(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"-h"}, &stdout, &stderr); err != nil {
+		t.Fatalf("help returned error: %v", err)
+	}
+	for _, want := range []string{"Usage: themisyctl", "offline-plan", "examples/offline/release.json", "examples/offline/rejected.json", "docs/guides/offline-quickstart.md"} {
+		if !bytes.Contains(stderr.Bytes(), []byte(want)) {
+			t.Errorf("root help missing %q: %s", want, stderr.String())
+		}
+	}
+}
+
 type noopController struct{}
 
 func (noopController) StartRelease(context.Context, workflowcore.ReleaseInput) (workflowcore.Execution, error) {

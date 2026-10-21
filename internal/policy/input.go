@@ -67,12 +67,22 @@ func InputHash(input Input) (string, error) {
 }
 
 func InputForRelease(run domain.ReleaseRun, step domain.ReleaseStep) Input {
+	return InputForOperation(run, step, protocol.CapabilityDeploy)
+}
+
+// InputForOperation binds the final approval and the specific typed operation.
+// It uses only the pinned Run/step, never retry arguments or a supplied Grant.
+func InputForOperation(run domain.ReleaseRun, step domain.ReleaseStep, capability protocol.Capability) Input {
 	result := Input{Version: InputVersionV1Alpha1, TenantID: run.TenantID, RunnerGroup: run.RunnerGroup, UserID: run.RequestedBy, UserIssuer: run.SubjectIssuer, AgentID: run.Agent.ID, DelegationRef: run.DelegationRef, AgentScopes: append([]string(nil), run.Agent.Scopes...), Environment: run.Environment, Service: step.Service, Capability: protocol.CapabilityDeploy, ArtifactDigest: step.Change.DesiredVersion, Risk: step.Change.Risk, PlanHash: run.Plan.Hash, PolicyHash: run.Plan.PolicyHash, EvidenceHash: run.Plan.EvidenceHash, CISuccess: step.Change.CISuccess, DependenciesHealthy: step.Change.DependenciesHealthy, DestructiveMigration: step.Change.DestructiveMigration}
 	result.SubjectType = run.SubjectType
+	result.Capability = capability
 	for _, phase := range run.Plan.Phases {
 		for _, planned := range phase.Steps {
 			if planned.Service == step.Service {
 				result.ContractHash, result.ProfileHash = planned.ContractHash, planned.ProfileHash
+				if result.Risk == "" {
+					result.Risk = planned.Scheduling.RiskTier
+				}
 				if planned.Scheduling.RunnerGroup != "" {
 					result.RunnerGroup = planned.Scheduling.RunnerGroup
 				}

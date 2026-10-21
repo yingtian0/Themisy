@@ -126,6 +126,12 @@ func (m *Memory) SetRunnerStatus(_ context.Context, tenantID, runnerID string, s
 func (m *Memory) CreateGrantDispatch(_ context.Context, record GrantDispatchRecord, audit domain.AuditEvent, outbox domain.OutboxEvent) (GrantDispatchRecord, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if record.AuthorizingRunVersion > 0 {
+		run, ok := m.runs[record.Grant.RunID]
+		if !ok || run.StateVersion != record.AuthorizingRunVersion {
+			return GrantDispatchRecord{}, false, ErrConflict
+		}
+	}
 	key := runnerIdempotencyKey(record.Grant.TenantID, record.Grant.RunnerGroup, record.Grant.IdempotencyKey)
 	if id, ok := m.grantByKey[key]; ok {
 		return cloneGrantDispatch(m.grantDispatch[id]), false, nil
@@ -202,7 +208,7 @@ func (m *Memory) CompleteGrantDispatch(_ context.Context, grantID, runnerID, tok
 		return GrantDispatchRecord{}, ErrConflict
 	}
 	if grantComplete(record.Status) {
-		if record.Result == result {
+		if protocol.ResultEqual(record.Result, result) {
 			m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
 			return cloneGrantDispatch(record), nil
 		}

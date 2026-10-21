@@ -55,7 +55,7 @@ func (s *Store) ReconcileGrantDispatch(ctx context.Context, id string, expected 
 	if record.Grant.RunID != result.RunID || record.Grant.StepID != result.StepID || result.GrantID != id {
 		return store.ErrConflict
 	}
-	if record.Result == result {
+	if protocol.ResultEqual(record.Result, result) {
 		if err := insertAudit(ctx, tx, audit); err != nil {
 			return err
 		}

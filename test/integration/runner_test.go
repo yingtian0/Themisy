@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"themisy/internal/application"
 	"themisy/internal/domain"
+	grantpkg "themisy/internal/grant"
 	"themisy/internal/store"
 	postgresstore "themisy/internal/store/postgres"
 	"themisy/pkg/protocol"
@@ -101,8 +103,46 @@ func TestGrantDispatchSurvivesReconnectAndRecordsAckResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	signer, _, err := grantpkg.NewDevelopmentSigner("recovery-wait-" + suffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants, err := application.NewGrants(reconnected, signer, "https://control.example", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancelWait := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelWait()
+	waitResult := make(chan protocol.Result, 1)
+	waitError := make(chan error, 1)
+	go func() {
+		result, err := grants.WaitResult(waitCtx, grant.GrantID, time.Millisecond)
+		if err != nil {
+			waitError <- err
+			return
+		}
+		waitResult <- result
+	}()
+	time.Sleep(10 * time.Millisecond)
+	select {
+	case result := <-waitResult:
+		t.Fatalf("UNKNOWN returned before recovery: %#v", result)
+	case err := <-waitError:
+		t.Fatalf("WaitResult ended on UNKNOWN: %v", err)
+	default:
+	}
 	if err = reconnected.ReconcileGrantDispatch(ctx, grant.GrantID, uncertain.StateVersion, result, integrationAudit("grant-recovery-"+suffix, run.ID, now.Add(3*time.Second))); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case received := <-waitResult:
+		if received != result {
+			t.Fatalf("recovered result=%#v want %#v", received, result)
+		}
+	case err := <-waitError:
+		t.Fatal(err)
+	case <-waitCtx.Done():
+		t.Fatal("waiter did not observe persisted recovery")
 	}
 	if err = reconnected.ReconcileGrantDispatch(ctx, grant.GrantID, uncertain.StateVersion, result, integrationAudit("grant-recovery-replay-"+suffix, run.ID, now.Add(4*time.Second))); err != nil {
 		t.Fatalf("idempotent recovery: %v", err)

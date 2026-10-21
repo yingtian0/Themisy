@@ -5,6 +5,8 @@
   <div><dt>Status</dt><dd><span class="status">{{.Run.Status}}</span></dd></div>
   <div><dt>Tenant</dt><dd>{{.Run.TenantID}}</dd></div>
   <div><dt>Environment</dt><dd>{{.Run.Environment}}</dd></div>
+  <div><dt>Requester / delegated Agent</dt><dd>{{.Run.RequestedBy}} / {{if .Run.Agent.ID}}{{.Run.Agent.ID}}{{else}}not recorded{{end}}</dd></div>
+  <div><dt>Plan expiry</dt><dd>{{if .Run.Plan.ExpiresAt.IsZero}}Unknown / not recorded{{else}}{{.Run.Plan.ExpiresAt}}{{end}}</dd></div>
   <div><dt>Plan hash</dt><dd><code>{{.Run.Plan.Hash}}</code></dd></div>
 </dl>
 <h2>Steps</h2>

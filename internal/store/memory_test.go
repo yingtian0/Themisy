@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"themisy/internal/domain"
+	"themisy/pkg/adapter"
 	"themisy/pkg/protocol"
 )
 
@@ -70,10 +71,15 @@ func TestMemoryGrantDispatchLeaseAckResultAndOutbox(t *testing.T) {
 	if err != nil || acked.Status != GrantDispatchAcked {
 		t.Fatalf("ack=%#v err=%v", acked, err)
 	}
-	result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grant.GrantID, RunID: run.ID, StepID: grant.StepID, Status: protocol.ResultSucceeded, CompletedAt: now.Add(2 * time.Second)}
+	evidence := adapter.Evidence{Status: adapter.VerificationPass, ReasonCode: "THRESHOLD_MET", Source: "datadog", QueryHash: "sha256:query", Window: adapter.ObservationWindow{From: now.Add(-time.Minute), To: now}, ObservedAt: now, AdapterVersion: "datadog/v1"}
+	evidence.EvidenceHash, _ = adapter.EvidenceHash(evidence)
+	result := protocol.Result{ProtocolVersion: protocol.VersionV1Alpha1, GrantID: grant.GrantID, RunID: run.ID, StepID: grant.StepID, Status: protocol.ResultSucceeded, CompletedAt: now.Add(2 * time.Second), EvidenceHash: evidence.EvidenceHash, Evidence: &evidence}
 	completed, err := memory.CompleteGrantDispatch(context.Background(), grant.GrantID, "runner-1", "secret-token", result, now.Add(2*time.Second), testAudit("grant-result", now))
-	if err != nil || completed.Status != GrantDispatchSucceeded || completed.Result != result {
+	if err != nil || completed.Status != GrantDispatchSucceeded || !protocol.ResultEqual(completed.Result, result) {
 		t.Fatalf("complete=%#v err=%v", completed, err)
+	}
+	if _, err := memory.CompleteGrantDispatch(context.Background(), grant.GrantID, "runner-1", "secret-token", result, now.Add(3*time.Second), testAudit("grant-result-retry", now)); err != nil {
+		t.Fatalf("serialized evidence result was not idempotent: %v", err)
 	}
 
 	for _, credentials := range [][2]string{{"other-runner", "secret-token"}, {"runner-1", "wrong-token"}} {

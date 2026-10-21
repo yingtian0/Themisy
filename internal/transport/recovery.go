@@ -44,7 +44,7 @@ func (s *RunnerServer) recovery(w http.ResponseWriter, r *http.Request) {
 		s.rejectReport(w, r, identity, record.Grant, "grant.reconcile")
 		return
 	}
-	if body.Result != body.Report.Result || body.RequestHash != body.Report.RequestHash || s.ResultVerifier.Verify(r.Context(), resultreport.Identity{RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup}, record.Grant, body.Report) != nil {
+	if !protocol.ResultEqual(body.Result, body.Report.Result) || body.RequestHash != body.Report.RequestHash || s.ResultVerifier.Verify(r.Context(), resultreport.Identity{RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup}, record.Grant, body.Report) != nil {
 		s.rejectReport(w, r, identity, record.Grant, "grant.reconcile")
 		return
 	}

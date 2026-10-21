@@ -1,9 +1,10 @@
 # Signed Result reports
 
-Both `POST /v1/runner/grants/{id}/result` and `/reconcile` require a
-`report` object of version `themisy.result-report/v1`. There is no unsigned
-compatibility mode. The existing outer `result` must exactly match
-`report.result`; recovery's outer `request_hash` must match
+Both `POST /v1/runner/grants/{id}/result` and `/reconcile` require a signed
+`report` object. Version `themisy.result-report/v1` supports Results without an
+Evidence body; `themisy.result-report/v2` additionally supports an optional
+Evidence body. There is no unsigned compatibility mode. The existing outer
+`result` must exactly match `report.result`; recovery's outer `request_hash` must match
 `report.request_hash`. Deploy Control Plane and Runner changes together; old
 clients fail closed. Keep durable journal Results: the signed reporting envelope
 is separate and can be regenerated after restart, peer recovery, or key rotation.
@@ -13,11 +14,11 @@ The report contains `version`, reporting `runner_id`, `tenant_id`, `runner_group
 reporter identifies the authenticated observer and is not necessarily the
 original executor. The request hash is the canonical original Grant hash.
 
-Signing bytes are UTF-8 `themisy.result-report/v1`, one NUL byte, and Go's
-fixed-field JSON serialization of ResultReport with the signature value empty.
-The signature metadata remains present. Result completion time is UTC
-RFC3339Nano. Result fields bind protocol version, Grant/run/step, status, reason
-code, provider execution ID, completion time and optional EvidenceHash. The legacy
+Signing bytes are UTF-8 report version, one NUL byte, and Go's fixed-field JSON
+serialization of ResultReport with the signature value empty. The signature
+metadata remains present. Result completion time is UTC RFC3339Nano. Result
+fields bind protocol version, Grant/run/step, status, reason code, provider
+execution ID, completion time and optional EvidenceHash. The legacy
 Result.signature must be empty. Algorithm is Ed25519; signature encoding is raw
 base64url. The entire signing payload is bounded to 4096 bytes for AWS KMS.
 Successful observations require an external execution ID. Reason codes and IDs
@@ -86,7 +87,23 @@ metadata, never unverified report data. Audit failure prevents acknowledgement.
 The delivery endpoint still requires its original Runner/token even on terminal
 retries; registered peers use the recovery endpoint.
 
-This implements Result reporting for issue #9. Optional Result.EvidenceHash binds
-post-execution evidence by digest and is independent of the Grant's pinned
-pre-execution EvidenceHash. Evidence body signing, evidence collection/runtime
-integration and the rest of #9 remain separate work.
+In report v1, `result.evidence` is not allowed. Existing v1 reports remain
+verifiable when the body is absent. Report v2 may include the typed
+post-execution Evidence body in `result.evidence`.
+
+When `result.evidence` is present, it carries the typed post-execution Evidence
+body. Its canonical EvidenceHash is recomputed from the body (timestamps are
+normalized to UTC) and must equal both `result.evidence_hash` and the body's
+`evidence_hash`. The complete body and both hashes are part of the signed report
+payload, so changing evidence and recomputing its hash still invalidates the
+Runner signature. Omitting the body remains compatible with Results that contain
+no post-execution evidence. The report-size bound also applies to this body.
+
+The result EvidenceHash is independent of the Grant's pinned pre-execution
+EvidenceHash. The protocol can preserve and authenticate an Evidence body, but
+the current deployment path does not collect runtime observations or populate
+this field. The new report v2 reader is additive; existing reports use v1 while
+new signers emit v2, so deploy Control Plane and Runner changes together.
+Runner-side evidence collection, separate runtime/evidence storage,
+verification workflow integration, and the remaining #9 acceptance conditions
+are still incomplete; this change does not make those paths operational.

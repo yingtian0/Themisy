@@ -78,6 +78,16 @@ jobs:
       - name: Build all packages
         run: go build -trimpath ./...
 
+      - name: Test offline package SBOM metadata
+        run: python3 -m unittest discover -s tests/packaging -p test_offline_sbom.py -v
+
+      - name: Build and verify local offline candidate
+        run: |
+          python3 scripts/package-offline.py --output "$RUNNER_TEMP/offline-candidate"
+          python3 scripts/verify-offline-package.py "$RUNNER_TEMP/offline-candidate"
+          THEMISY_OFFLINE_CANDIDATE_TEST_DIRECTORY="$RUNNER_TEMP/offline-candidate" \
+            python3 -m unittest discover -s tests/packaging -p test_offline_package.py -v
+
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -149,8 +159,19 @@ jobs:
       - name: Verify durable OIDC identity audit admission
         run: make test-identity-audit
 
+      - name: Verify durable CI observation audit
+        run: make test-ci-observation-audit
+
+      - name: Verify tenant-bound OIDC read API
+        run: make test-oidc-read-api
+
       - name: Run PostgreSQL and Temporal integration tests
         run: make test-integration
+
+      - name: Test isolated Workflow recovery and process crashes
+        run: make test-workflow-recovery
+      - name: Verify final policy issuance transaction
+        run: THEMISY_INTEGRATION=1 go test -tags=integration -count=1 ./internal/application
 
       - name: Capture service logs
         if: failure()

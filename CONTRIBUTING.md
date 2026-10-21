@@ -11,6 +11,12 @@ Thank you for helping build a safer change-execution boundary. This project welc
 
 ## Development setup
 
+For your first contribution, follow the [small first PR guide](docs/guides/first-contribution.md).
+It separates the essential steps from checks needed only for affected boundaries.
+Questions about a non-sensitive change belong on its Issue or
+[#45](https://github.com/yingtian0/Themisy/issues/45). Named review/triage ownership
+and private community contacts are still tracked in #44; no response SLA is promised.
+
 Go 1.26.10 or later is required.
 
 ```bash
@@ -18,10 +24,15 @@ make fmt-check
 make test
 make test-race
 make lint
-# Requires Docker for PostgreSQL and Temporal.
+# Dedicated disposable environment only; includes migrations and service-stop tests.
 make test-integration
+make test-ci-observation-audit
+
+make test-oidc-read-api
 # Creates and removes its own isolated PostgreSQL fixture; ignores caller DB URLs.
 make test-identity-audit
+# Always creates its own disposable PostgreSQL and Temporal environment.
+make test-workflow-recovery
 ```
 
 Use `make fmt` to format Go files. Pull-request CI also verifies that module files are tidy,
@@ -29,8 +40,9 @@ builds every package, enforces the current coverage floor, randomizes test order
 planner safety scenarios, lints workflow files, and scans reachable dependencies with
 `govulncheck`.
 
-Daily work follows the short [Issue-centered workflow](docs/agent-operations/README.md).
-Run relevant local checks; batch complete CI after a coherent change.
+Run checks appropriate to the change; batch complete CI after a coherent change.
+The [Issue-centered workflow](docs/agent-operations/README.md) is supplementary
+maintainer/automation guidance, not a prerequisite for a first contribution.
 
 ## Change process
 
