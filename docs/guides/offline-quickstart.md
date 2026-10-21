@@ -59,6 +59,17 @@ Service Contract. Change it to `identity-api` to resolve this rejection. Contrac
 graph errors also return existing reason codes such as `UNKNOWN_DEPENDENCY` and
 identify the dependency field. The local test suite covers that case.
 
+To see two valid Contracts rejected for a rollout-order cycle, run:
+
+```bash
+/tmp/themisyctl offline-plan -contracts examples/offline/cycle/contracts examples/offline/cycle/release.json
+```
+
+Expected exit code: **1**, no Plan, and `DEPENDENCY_CYCLE`. Both fixture
+Contracts are individually valid; `cycle-a` requires `cycle-b` before rollout
+and `cycle-b` requires `cycle-a`. This uses the existing planner rejection
+without changing the normal course Contracts or adding execution authority.
+
 To try your own files, specify directories before the intent filename:
 
 ```bash

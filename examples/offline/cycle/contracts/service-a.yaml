@@ -1,0 +1,26 @@
+apiVersion: execution.themisy.io/v1alpha1
+kind: ServiceContract
+metadata:
+  name: cycle-a
+  owner: fixture-team
+  repository: github.com/example/offline-cycle
+  riskTier: medium
+environments:
+  staging:
+    releaseProfile: ecs-rolling-standard
+    runnerGroup: staging
+    capabilities: [deploy, get_status, verify_runtime, rollback]
+dependencies:
+  - service: cycle-b
+    type: rollout-order
+    condition: verified
+verification:
+  profile: standard-http-api
+  observationWindow: 5m
+  checks:
+    - type: error-rate
+      threshold: < 1%
+rollback:
+  capability: automatic
+  strategy: previous-task-definition
+  deadline: 30m

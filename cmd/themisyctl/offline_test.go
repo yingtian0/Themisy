@@ -137,3 +137,20 @@ func TestOfflinePlanHelpShowsOptionsExamplesAndReturnsSuccess(t *testing.T) {
 		}
 	}
 }
+
+func TestOfflinePlanRejectsIsolatedRolloutOrderCycle(t *testing.T) {
+	root := filepath.Join("..", "..")
+	var stdout bytes.Buffer
+	err := run(context.Background(), []string{
+		"offline-plan",
+		"-contracts", filepath.Join(root, "examples/offline/cycle/contracts"),
+		"-profiles", filepath.Join(root, "examples/profiles"),
+		filepath.Join(root, "examples/offline/cycle/release.json"),
+	}, &stdout, io.Discard)
+	if code, ok := domain.ReasonOf(err); !ok || code != domain.ReasonDependencyCycle {
+		t.Fatalf("error=%v, want %s", err, domain.ReasonDependencyCycle)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("cycle rejection emitted a plan: %s", stdout.String())
+	}
+}
