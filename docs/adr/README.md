@@ -22,6 +22,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0015](0015-ci-only-context-snapshots.md) | Proposed | Collect immutable CI-only observations without trusting imported JSON as source evidence |
 
 | [0016](0016-tenant-bound-oidc-read-api.md) | Proposed | Compose an audited tenant-bound OIDC summary API with no command routes |
+| [0013](0013-local-policy-candidate-catalog.md) | Proposed | Retain verified signed candidates in an opt-in local hash-addressed cache without activation authority |
 
 ## Process
 

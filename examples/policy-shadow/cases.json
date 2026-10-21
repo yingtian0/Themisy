@@ -1,0 +1,38 @@
+[
+  {
+    "id": "stable-service",
+    "input": {
+      "user_id": "synthetic-user",
+      "agent_id": "synthetic-agent",
+      "environment": "staging",
+      "service": "stable",
+      "risk": "",
+      "ci_success": false,
+      "dependencies_healthy": false
+    }
+  },
+  {
+    "id": "frozen-service",
+    "input": {
+      "user_id": "synthetic-user",
+      "agent_id": "synthetic-agent",
+      "environment": "staging",
+      "service": "identity",
+      "risk": "",
+      "ci_success": false,
+      "dependencies_healthy": false
+    }
+  },
+  {
+    "id": "missing-subject",
+    "input": {
+      "user_id": "",
+      "agent_id": "synthetic-agent",
+      "environment": "staging",
+      "service": "stable",
+      "risk": "",
+      "ci_success": false,
+      "dependencies_healthy": false
+    }
+  }
+]
