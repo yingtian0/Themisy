@@ -1,0 +1,10 @@
+{
+  "api_version": "execution.themisy.io/v1alpha1",
+  "kind": "ReleaseIntent",
+  "request_id": "offline-demo-001",
+  "release_version": "offline-demo",
+  "tenant_id": "synthetic-local",
+  "environment": "staging",
+  "requested_by": "synthetic-user",
+  "changes": [{"service": "identity-api", "desired_version": "sha-demo"}]
+}
