@@ -15,14 +15,14 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0007](0007-first-deployment-adapter.md) | Accepted | Use a locally allow-listed GitHub Actions workflow as the first typed deployment adapter |
 | [0008](0008-runner-grant-transport-and-ecs.md) | Accepted | Dispatch signed grants over an outbound Runner channel and resolve ECS targets locally |
 | [0009](0009-shared-postgresql-runner-journal.md) | Accepted | Share a customer-environment PostgreSQL journal across Runner replicas |
-| [0014](0014-oidc-api-principal-resolution.md) | Proposed | Resolve existing API identity hooks from tenant-bound verified OIDC group mappings |
-| [0012](0012-control-plane-workflow-coordinator.md) | Proposed | Coordinate Control Plane workflow reservations, write admission, and circuit state in shared PostgreSQL |
 | [0010](0010-final-operation-policy-at-grant-issuance.md) | Proposed | Evaluate and atomically commit final operation policy at Grant issuance |
 | [0011](0011-authorization-and-compensation-lifetimes.md) | Proposed | Separate review freshness, short execution Grants and bounded compensation permission |
-| [0015](0015-ci-only-context-snapshots.md) | Proposed | Collect immutable CI-only observations without trusting imported JSON as source evidence |
-
-| [0016](0016-tenant-bound-oidc-read-api.md) | Proposed | Compose an audited tenant-bound OIDC summary API with no command routes |
+| [0012](0012-control-plane-workflow-coordinator.md) | Proposed | Coordinate Control Plane workflow reservations, write admission, and circuit state in shared PostgreSQL |
 | [0013](0013-local-policy-candidate-catalog.md) | Proposed | Retain verified signed candidates in an opt-in local hash-addressed cache without activation authority |
+| [0014](0014-oidc-api-principal-resolution.md) | Proposed | Resolve existing API identity hooks from tenant-bound verified OIDC group mappings |
+| [0015](0015-ci-only-context-snapshots.md) | Proposed | Collect immutable CI-only observations without trusting imported JSON as source evidence |
+| [0016](0016-tenant-bound-oidc-read-api.md) | Proposed | Compose an audited tenant-bound OIDC summary API with no command routes |
+
 
 ## Process
 

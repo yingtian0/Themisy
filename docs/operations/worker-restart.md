@@ -1,6 +1,9 @@
-# Worker restart and unresolved operations
+# Memory-worker restart and unresolved operations
 
-Current scheduler reservations, budgets and breaker windows are process-local.
+This procedure covers the memory-store development mode, whose scheduler
+reservations, budgets and breaker windows are process-local. PostgreSQL-backed
+Workers use the durable coordinator described in [capacity](capacity.md) and
+[circuit breaker](circuit-breaker.md).
 A single Worker is a development restriction, not a restart-safe or production
 guarantee. One task queue, one deployment replica setting, or durable Temporal
 history does not persist these maps. Do not claim multiple-Worker failover or
@@ -31,7 +34,8 @@ conceptually as blocking; do not dispatch a different Run to the same target or
 shared failure domain merely because the new Worker has capacity.
 
 Authenticated signed recovery reporting may repair the existing Grant truth
-after expiry. Run/workflow convergence remains #38; do not manually set a Run to
+after expiry. The versioned recovery Workflow can converge the existing Run after a verified
+terminal result, while legacy/unsupported records remain blocked. Do not manually set a Run to
 success or reset nonce/idempotency reservations. Do not re-Write to discover the
 outcome. If prior breaker samples/open state cannot be established, an empty new
 process window does not authorize closing the incident or unfreezing production.
@@ -43,7 +47,7 @@ If a supported recovery operation cannot express the necessary decision, stay
 stopped; do not edit database rows or temporarily remove checks. A single Worker
 still does not convert this setup into a production-supported deployment.
 
-## Required durable implementation (not provided here)
+## Durable-mode acceptance boundary
 
 Before enabling multi-Worker operation, persist Control Plane reservations and
 budget/breaker decisions in one transactional boundary, with owner tokens/CAS,
@@ -54,6 +58,6 @@ retention, UNKNOWN/expired lease/old-owner return, and store-outage refusal/audi
 This is distinct from customer Journal ownership of a single provider operation;
 do not repurpose or reimplement #8 as the global coordinator.
 
-This documentation change supplies #50's immediate deployment restriction and
-restart guidance only. It introduces no durable scheduler, automatic reset,
-new operator API or guarantee that restart is safe.
+The memory-mode procedure does not provide durable state or automatic reset.
+Use the integrated PostgreSQL coordinator and its isolated tests for durable-mode
+validation; neither mode is a production-readiness claim.
