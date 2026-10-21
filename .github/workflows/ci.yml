@@ -154,6 +154,8 @@ jobs:
 
       - name: Test isolated Workflow recovery and process crashes
         run: make test-workflow-recovery
+      - name: Verify final policy issuance transaction
+        run: THEMISY_INTEGRATION=1 go test -tags=integration -count=1 ./internal/application
 
       - name: Capture service logs
         if: failure()

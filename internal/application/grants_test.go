@@ -10,6 +10,7 @@ import (
 	"themisy/internal/domain"
 	"themisy/internal/executor"
 	"themisy/internal/grant"
+	"themisy/internal/policy"
 	"themisy/internal/store"
 	"themisy/pkg/protocol"
 )
@@ -265,15 +266,25 @@ func TestGrantIssueFailsClosedWithoutApprovalOrDependency(t *testing.T) {
 const fiveMinutes = 5 * time.Minute
 
 func grantRun(now time.Time) *domain.ReleaseRun {
+	engine, err := policy.NewMandatoryEngine(context.Background())
+	if err != nil {
+		panic(err)
+	}
 	digest := "sha256:" + strings.Repeat("a", 64)
 	decided := now.Add(-time.Minute)
-	return &domain.ReleaseRun{
+	run := &domain.ReleaseRun{
 		ID: "run-1", RequestID: "request-1", WorkflowID: "run-1", ReleaseVersion: "release-1", Environment: domain.EnvironmentProduction,
 		RequestedBy: "user-1", SubjectType: "user", SubjectIssuer: "https://idp.example", UserIdentityProof: "signed.oidc.proof", TenantID: "tenant-1", DelegationRef: "delegation-1", Agent: domain.AgentIdentity{ID: "agent-1"},
 		Plan:   domain.ReleasePlan{Hash: digest, PlanHash: digest, PolicyHash: digest, EvidenceHash: digest, ExpiresAt: now.Add(time.Hour), Phases: []domain.PlanPhase{{Steps: []domain.PlanStep{{Service: "database", ContractHash: digest, ProfileHash: digest}, {Service: "payment-api", ContractHash: digest, ProfileHash: digest, Dependencies: []domain.Dependency{{Service: "database", Type: domain.DependencyRolloutOrder}}, Scheduling: domain.SchedulingContext{RunnerGroup: "payments-prod", RiskTier: "high"}}}}}},
 		Status: domain.RunRunning, StateVersion: 1, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
 		Steps: []domain.ReleaseStep{{Service: "database", Status: domain.StepSucceeded}, {Service: "payment-api", Status: domain.StepExecuting, Change: domain.Change{Service: "payment-api", DesiredVersion: digest, Risk: "high"}, Policy: &domain.PolicyDecision{Decision: domain.DecisionRequireApproval, InputHash: digest}, Approval: &domain.Approval{ID: "approval-1", Status: domain.ApprovalApproved, PlanHash: digest, ExpiresAt: now.Add(time.Hour), DecidedAt: &decided}}},
 	}
+	run.Plan.PolicyHash = engine.PolicyHash()
+	for index := range run.Steps {
+		run.Steps[index].Change.CISuccess = true
+		run.Steps[index].Change.DependenciesHealthy = true
+	}
+	return run
 }
 
 func mustGrantJSON(t *testing.T, value protocol.ActionGrant) []byte {

@@ -127,10 +127,20 @@ func TestTemporalAPIWorkerRestartApprovalCancelAndReplay(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&started); err != nil {
 		t.Fatal(err)
 	}
+	initialApprovalSent := false
 	eventually(t, 20*time.Second, func() error {
 		run, err := releases.Get(started.ID)
 		if err != nil {
 			return err
+		}
+		// The pinned identity Contract is high risk. The shared final-input
+		// builder now preserves that risk when the request omits it, so exercise
+		// its real approval path instead of expecting an implicit low-risk run.
+		if run.Status == domain.RunWaitingApproval && !initialApprovalSent {
+			if _, err := releases.DecideApproval(context.Background(), run.ID, run.Steps[0].Approval.ID, "initial-sre", []string{"service-owner", "sre"}, true); err != nil {
+				return err
+			}
+			initialApprovalSent = true
 		}
 		if run.Status != domain.RunSucceeded {
 			return fmt.Errorf("status=%s", run.Status)

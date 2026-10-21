@@ -338,7 +338,11 @@ func runRunnerHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	digest := testTransportDigest()
+	engine, err := policy.NewMandatoryEngine(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := engine.PolicyHash()
 	verifier := &grant.Verifier{Issuer: "https://control.example", RunnerGroup: "prod-jp", TenantID: "tenant-1", Keys: grant.StaticKeys{"https://control.example\x00transport-key": ed25519.PublicKey(publicKeyBytes)}, ClockSkew: time.Minute}
 	manifestKey, err := base64.RawURLEncoding.DecodeString(os.Getenv("THEMISY_TEST_MANIFEST_KEY"))
 	if err != nil {
@@ -397,11 +401,16 @@ func (a helperAdapter) Execute(_ context.Context, _ runnercore.AdapterRequest, _
 }
 
 func approvedTransportRun(now time.Time) *domain.ReleaseRun {
+	engine, err := policy.NewMandatoryEngine(context.Background())
+	if err != nil {
+		panic(err)
+	}
 	digest := testTransportDigest()
 	run := &domain.ReleaseRun{ID: "run-transport", RequestID: "request-transport", WorkflowID: "run-transport", TenantID: "tenant-1", Environment: domain.EnvironmentProduction, RequestedBy: "user-1", SubjectType: "user", SubjectIssuer: "https://idp.example", UserIdentityProof: "signed-oidc", DelegationRef: "delegation-1", Agent: domain.AgentIdentity{ID: "agent-1"}, Status: domain.RunRunning, StateVersion: 1, CreatedAt: now, UpdatedAt: now,
 		Plan:  domain.ReleasePlan{Hash: digest, PlanHash: digest, PolicyHash: digest, EvidenceHash: digest, ExpiresAt: now.Add(time.Hour), Phases: []domain.PlanPhase{{Steps: []domain.PlanStep{{Service: "payment-api", ContractHash: digest, ProfileHash: digest, Scheduling: domain.SchedulingContext{RunnerGroup: "prod-jp", RiskTier: "medium"}}}}}},
 		Steps: []domain.ReleaseStep{{Service: "payment-api", Status: domain.StepExecuting, Change: domain.Change{Service: "payment-api", DesiredVersion: digest, Risk: "medium", CISuccess: true, DependenciesHealthy: true}}},
 	}
+	run.Plan.PolicyHash = engine.PolicyHash()
 	inputHash, _ := policy.InputHash(policy.InputForRelease(*run, run.Steps[0]))
 	run.Steps[0].Policy = &domain.PolicyDecision{Decision: domain.DecisionAllow, InputHash: inputHash}
 	return run
