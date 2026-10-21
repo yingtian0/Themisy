@@ -25,6 +25,11 @@ closed if they cannot read or update that shared state. Configuration changes
 require a coordinated migration/operations procedure; workers reject a policy
 that differs from the one already stored for the tenant.
 
+The PostgreSQL-backed composition uses the shared coordinator. Memory-store
+mode does not retain circuit history across restarts or share it between Workers.
+Use the [restart procedure](worker-restart.md) for that development mode and
+leave affected groups frozen when their prior state cannot be established.
+
 ## Verification
 
 The scenario suite asserts that opening the breaker produces zero new

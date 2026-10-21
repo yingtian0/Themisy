@@ -70,3 +70,8 @@ configuration, and verify an UNKNOWN reservation blocks a second Run after a
 worker restart. This coordinator is separate from the customer Runner journal:
 it controls Control Plane dispatch admission and does not grant Runner write
 authority.
+
+The memory-store development mode remains limited to one Worker and loses
+reservations on restart. A Temporal queue does not share that memory. Use the
+[restart procedure](worker-restart.md) for memory-mode inventory and reconciliation;
+never treat lost reservations as permission to repeat an unknown Write.
