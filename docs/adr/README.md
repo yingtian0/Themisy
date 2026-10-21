@@ -19,6 +19,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0012](0012-control-plane-workflow-coordinator.md) | Proposed | Coordinate Control Plane workflow reservations, write admission, and circuit state in shared PostgreSQL |
 | [0010](0010-final-operation-policy-at-grant-issuance.md) | Proposed | Evaluate and atomically commit final operation policy at Grant issuance |
 | [0011](0011-authorization-and-compensation-lifetimes.md) | Proposed | Separate review freshness, short execution Grants and bounded compensation permission |
+| [0015](0015-ci-only-context-snapshots.md) | Proposed | Collect immutable CI-only observations without trusting imported JSON as source evidence |
 
 ## Process
 

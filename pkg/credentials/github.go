@@ -74,8 +74,8 @@ func (b *GitHubBroker) Acquire(ctx context.Context, request Request) (Credential
 	if err := request.Validate(); err != nil {
 		return Credential{}, err
 	}
-	if request.Provider != GitHubProvider || (request.Purpose != PurposeDeploy && request.Purpose != PurposeRollback) {
-		return Credential{}, errors.New("github broker only serves deploy and rollback")
+	if request.Provider != GitHubProvider || (request.Purpose != PurposeDeploy && request.Purpose != PurposeRollback && request.Purpose != PurposeVerify) {
+		return Credential{}, errors.New("github broker only serves deploy, rollback, and read-only verification")
 	}
 	target := GitHubTarget{TenantID: request.TenantID, Service: request.Service, Environment: request.Environment}
 	if _, ok := b.Allowed[target]; !ok {

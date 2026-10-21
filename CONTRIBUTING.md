@@ -20,6 +20,7 @@ make test-race
 make lint
 # Requires Docker for PostgreSQL and Temporal.
 make test-integration
+make test-ci-observation-audit
 # Creates and removes its own isolated PostgreSQL fixture; ignores caller DB URLs.
 make test-identity-audit
 # Always creates its own disposable PostgreSQL and Temporal environment.
