@@ -149,6 +149,9 @@ jobs:
       - name: Verify durable OIDC identity audit admission
         run: make test-identity-audit
 
+      - name: Verify durable CI observation audit
+        run: make test-ci-observation-audit
+
       - name: Run PostgreSQL and Temporal integration tests
         run: make test-integration
 

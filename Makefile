@@ -28,6 +28,10 @@ verify-runner-journal-backup-restore:
 test-identity-audit:
 	bash scripts/test-identity-audit.sh
 
+.PHONY: test-ci-observation-audit
+test-ci-observation-audit:
+	bash scripts/test-ci-observation-audit.sh
+
 test-scenario:
 	go test -count=1 ./test/scenario/...
 

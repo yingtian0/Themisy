@@ -72,5 +72,8 @@ mismatch and requester-like import, and check immutable config/record copies.
 No live GitHub/runtime source or production Write validation is claimed.
 Audited collection tests use synthetic append sinks, including lost response and
 cancellation, preserve all four statuses and reproduce the record hash after
-JSON serialization while refusing trusted import. No real database validation
-is claimed by this audit unit.
+JSON serialization while refusing trusted import. An isolated PostgreSQL target
+also validates all four states across store reopen, source/hash reconstruction
+from JSONB and no returned snapshot on a server-refused INSERT. It requires a
+dedicated fresh fixture, never a caller database. Lost acknowledgement and
+deadline tests remain synthetic; a successful restore is not trusted import.

@@ -75,8 +75,13 @@ recreate a trusted `CISnapshot`, including after a successful database restore.
 This unit does not link an observation to a Plan, Approval or Grant, and does
 not create a new audit retrieval endpoint or change its access controls. It
 does not establish full Context persistence or production source authenticity.
-Tests use a synthetic sink for append failure, lost acknowledgement and
-cancellation; this unit has no real database or live provider test claim.
+Tests use a synthetic sink for lost acknowledgement, cancellation and append
+deadline. `make test-ci-observation-audit` creates a dedicated temporary
+PostgreSQL database, migrates only a fresh schema, persists all four states,
+reopens the real store and reproduces the snapshot hash from JSONB. A separate
+read-only client session refuses INSERT and returns no snapshot. The script
+ignores caller database settings, uses a dynamic loopback port and deletes only
+its own container and volumes. It does not contact a live CI provider.
 
 Run `go test -race ./internal/contextsnapshot ./adapters/githubactions
 ./pkg/credentials`. Tests exercise the real adapter/broker with deterministic
