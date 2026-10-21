@@ -117,7 +117,11 @@ func testTemporalSignedRecoveryOptions(t *testing.T, options signedRecoveryOptio
 	run.TenantID, run.SubjectType, run.UserIdentityProof, run.DelegationRef = "test-tenant-"+run.ID, "user", "synthetic-identity", "synthetic-delegation"
 	digest := "sha256:" + strings.Repeat("a", 64)
 	run.Steps[0].Change.DesiredVersion = digest
-	run.Plan.Hash, run.Plan.PlanHash, run.Plan.PolicyHash, run.Plan.EvidenceHash = digest, digest, digest, digest
+	executionPolicy, err := policy.NewMandatoryEngine(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Plan.Hash, run.Plan.PlanHash, run.Plan.PolicyHash, run.Plan.EvidenceHash = digest, digest, executionPolicy.PolicyHash(), digest
 	planned := &run.Plan.Phases[0].Steps[0]
 	planned.DesiredVersion, planned.ContractHash, planned.ProfileHash = digest, digest, digest
 	planned.Scheduling = domain.SchedulingContext{TenantID: run.TenantID, Environment: run.Environment, RunnerGroup: "test-group", RiskTier: "low"}
@@ -147,7 +151,7 @@ func testTemporalSignedRecoveryOptions(t *testing.T, options signedRecoveryOptio
 	}
 	initial := &shortGrantWaitExecutor{pendingRollback: rollback, ReleaseExecutor: &application.GrantExecutor{Grants: issuer, Verification: verification, PollInterval: 10 * time.Millisecond}}
 	ready := make(chan struct{}, 1)
-	firstActivities := wf.NewActivities(st, policy.New(), initial)
+	firstActivities := wf.NewActivities(st, executionPolicy, initial)
 	startWorker := func(a *wf.Activities, dropCompletion bool) recoveryTestWorker {
 		if separateProcesses {
 			return startRecoveryWorkerProcess(t, ctx, run.ID, rollback, dropCompletion, ready)
@@ -287,7 +291,7 @@ func testTemporalSignedRecoveryOptions(t *testing.T, options signedRecoveryOptio
 	}
 	defer replacement.Close()
 	forbidden := &forbidWriteExecutor{ReleaseExecutor: verification}
-	second := startWorker(wf.NewActivities(replacement, policy.New(), forbidden), false)
+	second := startWorker(wf.NewActivities(replacement, executionPolicy, forbidden), false)
 	defer second.Stop()
 	if expiringContext {
 		// The child issues a normal short-lived Grant bounded by Plan expiry.
@@ -369,7 +373,7 @@ func testTemporalSignedRecoveryOptions(t *testing.T, options signedRecoveryOptio
 		if !time.Now().After(run.Plan.ExpiresAt) || !time.Now().After(dispatch.Grant.ExpiresAt) {
 			t.Fatal("test did not cross Plan and Grant expiry")
 		}
-		activity := wf.NewActivities(replacement, policy.New(), forbidden)
+		activity := wf.NewActivities(replacement, executionPolicy, forbidden)
 		if _, err := activity.RecoverExecution(ctx, wf.RecoverExecutionInput{RunID: run.ID, Service: "identity", Environment: "staging", DesiredVersion: digest, IdempotencyKey: key}); err == nil {
 			t.Fatal("terminal cancelled Run accepted delayed recovery")
 		}
