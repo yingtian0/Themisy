@@ -85,6 +85,8 @@ Every release PR must update this table and its known limits:
 - Verify distribution checksum/SBOM/provenance and reproduce the offline guide
   from the actual package on a clean machine ([#43](https://github.com/yingtian0/Themisy/issues/43)).
 - Record external observations and continued use separately ([#47](https://github.com/yingtian0/Themisy/issues/47)).
+  Use the [trial protocol](evaluation/external-trial-protocol.md) and
+  [actual-results ledger](evaluation/results.md); prepared questions are not observations.
 
 Checks absent from this table and a small trial with zero bad writes do not prove
 safety or production support. Release publication remains a separate decision.
