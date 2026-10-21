@@ -47,6 +47,37 @@ Contract/Profile provenance, identity/Delegation, Policy or Write permission.
 
 ## Validation and remaining integration
 
+### Audited observation collection
+
+`NewAuditedCICollector(collector, sink)` adds an opt-in audit commit gate around
+the same collector. The sink must implement `AppendAuditContext` with a durable
+commit before returning nil, respecting the supplied context. The context-aware
+PostgreSQL audit store introduced by #12 provides this interface; an in-memory
+or synthetic sink is test evidence only. No new storage schema is required.
+
+Each collected observation appends `context.ci.observe`, with its original
+four-valued status, snapshot hash, capture timestamp and complete copied
+`CIRecord`. The record retains source selectors/revision, external run/artifact
+identities, source/observation times, age limit, reason and content hashes.
+The correlation ID is generated locally and cannot be chosen by the request.
+Neither a credential nor a raw provider error is added. Invalid requests or
+credential failures return no collected observation and do not append this event.
+
+An append error, ambiguous acknowledgement, cancellation or elapsed append
+deadline returns no snapshot and a stable error. There is no retry or readback
+to infer success; an ambiguous append can therefore leave an observation in the
+audit even though collection returned no data. Appends have a five-second upper
+bound and honor a shorter parent deadline. Audit latency does not renew source
+freshness: callers must still check `RequireFreshCI` with a current trusted clock.
+
+Audit JSON can reproduce the recorded content hash for inspection. It cannot
+recreate a trusted `CISnapshot`, including after a successful database restore.
+This unit does not link an observation to a Plan, Approval or Grant, and does
+not create a new audit retrieval endpoint or change its access controls. It
+does not establish full Context persistence or production source authenticity.
+Tests use a synthetic sink for append failure, lost acknowledgement and
+cancellation; this unit has no real database or live provider test claim.
+
 Run `go test -race ./internal/contextsnapshot ./adapters/githubactions
 ./pkg/credentials`. Tests exercise the real adapter/broker with deterministic
 HTTP/token fixtures, copied allowlists, exact target/commit/read-only requests,

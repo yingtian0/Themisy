@@ -29,6 +29,15 @@ collections are copied so caller mutation cannot alter the retained observation.
 Secrets and raw provider errors are absent from records. No authority is inferred
 from an archive digest about a deployment image.
 
+An optional audited collector commits the copied observation through the existing
+context-aware audit sink before returning a snapshot. A locally generated event
+correlation, the original four-valued status and complete inspectable record bind
+the audit to the snapshot hash. Error, ambiguous acknowledgement, cancellation or
+append deadline yields no returned snapshot, without retry or readback-to-allow.
+Audit latency cannot extend the source freshness window. An audit record remains
+unsigned inspection data and cannot be imported as a trusted snapshot. No new
+schema, Plan/Grant correlation or audit retrieval surface is introduced.
+
 ## Alternatives
 
 - Import records after hash verification alone: rejected because hashes do not
@@ -45,7 +54,8 @@ This is an opt-in process-local observation unit, disconnected from production
 composition. It adds no durable authority or network protocol and does not replace
 the PostgreSQL application state or customer Runner Journal. JSON records are
 inspectable evidence data only. Cross-process trust, signed transport, retention,
-audit and trusted restore require a subsequent reviewed design.
+Plan/Grant audit correlation and trusted restore require a subsequent reviewed
+design. Observation-only audit storage is opt-in and does not supply that trust.
 
 The Snapshot is CI-only. Runtime dependencies, Contract/Profile source metadata,
 artifact provenance, identity, complete Context hash pinning, approval freshness
@@ -60,3 +70,7 @@ Tests compose the actual broker/CI adapter with synthetic HTTP/token fixtures,
 verify no provider writes, preserve four-valued results, refuse stale/future/hash
 mismatch and requester-like import, and check immutable config/record copies.
 No live GitHub/runtime source or production Write validation is claimed.
+Audited collection tests use synthetic append sinks, including lost response and
+cancellation, preserve all four statuses and reproduce the record hash after
+JSON serialization while refusing trusted import. No real database validation
+is claimed by this audit unit.
