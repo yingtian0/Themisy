@@ -20,6 +20,8 @@ make test-race
 make lint
 # Requires Docker for PostgreSQL and Temporal.
 make test-integration
+# Creates and removes its own isolated PostgreSQL fixture; ignores caller DB URLs.
+make test-identity-audit
 ```
 
 Use `make fmt` to format Go files. Pull-request CI also verifies that module files are tidy,

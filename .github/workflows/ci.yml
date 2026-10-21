@@ -146,6 +146,9 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
+      - name: Verify durable OIDC identity audit admission
+        run: make test-identity-audit
+
       - name: Run PostgreSQL and Temporal integration tests
         run: make test-integration
 

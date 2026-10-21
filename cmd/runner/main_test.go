@@ -71,6 +71,33 @@ func TestGrantTrustConfigurationRequiresRefreshableProductionBundle(t *testing.T
 	}
 }
 
+func TestOIDCTrustConfigurationSeparatesProductionJWKSFromDevelopmentKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     string
+		settings identitySettings
+		wantErr  string
+	}{
+		{name: "production discovery", mode: "production", settings: identitySettings{Issuer: "https://idp.example", Audience: "themisy", DiscoveryURL: "https://idp.example/.well-known/openid-configuration"}},
+		{name: "production static refused", mode: "production", settings: identitySettings{Issuer: "https://idp.example", Audience: "themisy", TrustKeyID: "key", TrustKeyFile: "key.pub"}, wantErr: "requires trusted OIDC"},
+		{name: "development static", mode: "development", settings: identitySettings{Issuer: "https://idp.example", Audience: "themisy", TrustKeyID: "key", TrustKeyFile: "key.pub"}},
+		{name: "mixed refused", mode: "development", settings: identitySettings{Issuer: "https://idp.example", DiscoveryURL: "https://idp.example/discovery", TrustKeyID: "key", TrustKeyFile: "key.pub"}, wantErr: "not both"},
+		{name: "http discovery refused", mode: "development", settings: identitySettings{Issuer: "https://idp.example", DiscoveryURL: "http://idp.example/discovery"}, wantErr: "https"},
+		{name: "cache ttl bounded", mode: "production", settings: identitySettings{Issuer: "https://idp.example", DiscoveryURL: "https://idp.example/discovery", CacheTTL: "2h"}, wantErr: "cache TTL"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateIdentityTrust(test.settings, test.mode)
+			if test.wantErr == "" && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+				t.Fatalf("error=%v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestBuildRunnerComposesExecutableDependencies(t *testing.T) {
 	directory := t.TempDir()
 	grantPublic, _, err := ed25519.GenerateKey(rand.Reader)
@@ -107,6 +134,17 @@ func TestBuildRunnerComposesExecutableDependencies(t *testing.T) {
 	defer cleanupBundle()
 	if _, ok := bundled.Grants.(*grant.Verifier).Keys.(grant.FileKeys); !ok {
 		t.Fatalf("Grant verifier keys=%T, want refreshable file resolver", bundled.Grants.(*grant.Verifier).Keys)
+	}
+	configuration.Identity.DiscoveryURL = "https://idp.example/.well-known/openid-configuration"
+	configuration.Identity.CacheTTL = "10m"
+	configuration.Identity.TrustKeyID, configuration.Identity.TrustKeyFile = "", ""
+	discovered, _, _, cleanupDiscovery, err := buildRunner(context.Background(), configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupDiscovery()
+	if _, ok := discovered.Subjects.(*identity.OIDCVerifier).Keys.(*identity.OIDCJWKSResolver); !ok {
+		t.Fatalf("OIDC keys=%T, want OIDCJWKSResolver", discovered.Subjects.(*identity.OIDCVerifier).Keys)
 	}
 }
 
@@ -207,6 +245,8 @@ control_plane:
 identity:
   issuer: https://idp.example
   audience: themisy
+  trust_key_id: development-oidc
+  trust_key_file: oidc.pub
 policy:
   bundle_file: bundle.json
 adapters:
@@ -246,6 +286,7 @@ func TestResultSignerRejectsMissingAndProductionDevelopmentKeys(t *testing.T) {
 func TestRunnerExampleIncludesValidResultSigner(t *testing.T) {
 	t.Setenv("THEMISY_RESULT_PRIVATE_KEY_FILE", "/run/secrets/runner-result-key")
 	t.Setenv("THEMISY_GRANT_PUBLIC_KEY_FILE", "/run/config/grant.pub")
+	t.Setenv("THEMISY_OIDC_PUBLIC_KEY_FILE", "/run/config/oidc.pub")
 	if _, err := load("../../config/runner.example.yaml"); err != nil {
 		t.Fatal(err)
 	}

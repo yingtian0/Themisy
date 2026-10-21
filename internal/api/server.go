@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"themisy/internal/application"
 	"themisy/internal/domain"
@@ -17,9 +18,11 @@ import (
 )
 
 type Principal struct {
-	Subject  string
-	TenantID string
-	Roles    []string
+	Subject   string
+	TenantID  string
+	Roles     []string
+	Issuer    string
+	ExpiresAt time.Time
 }
 
 type IdentityResolver interface {

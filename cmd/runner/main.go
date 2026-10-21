@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -71,6 +70,8 @@ type controlPlaneSettings struct {
 type identitySettings struct {
 	Issuer          string `yaml:"issuer"`
 	Audience        string `yaml:"audience"`
+	DiscoveryURL    string `yaml:"discovery_url"`
+	CacheTTL        string `yaml:"jwks_cache_ttl"`
 	TrustKeyID      string `yaml:"trust_key_id"`
 	TrustKeyFile    string `yaml:"trust_key_file"`
 	DelegationsFile string `yaml:"delegations_file"`
@@ -229,8 +230,11 @@ func load(path string) (settings, error) {
 			return settings{}, fmt.Errorf("unsupported capability %q", capability)
 		}
 	}
-	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.Identity.TrustKeyID == "" || result.Identity.TrustKeyFile == "" || result.Identity.DelegationsFile == "" || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
+	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.Identity.DiscoveryURL == "" || result.Identity.TrustKeyID != "" || result.Identity.TrustKeyFile != "" || result.Identity.DelegationsFile == "" || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
 		return settings{}, fmt.Errorf("production requires durable journal and customer-managed OIDC and policy trust keys")
+	}
+	if err := validateIdentityTrust(result.Identity, result.Mode); err != nil {
+		return settings{}, err
 	}
 	if result.Mode == "production" && !strings.HasPrefix(result.ControlPlane.Address, "https://") {
 		return settings{}, fmt.Errorf("production control plane address must use https")
@@ -266,6 +270,62 @@ func validateGrantTrust(mode string, configuration controlPlaneSettings) error {
 		return errors.New("development requires a Grant trust bundle or explicit development trust key")
 	}
 	return nil
+}
+
+func validateIdentityTrust(configuration identitySettings, mode string) error {
+	staticConfigured := configuration.TrustKeyID != "" || configuration.TrustKeyFile != ""
+	if staticConfigured && (configuration.TrustKeyID == "" || configuration.TrustKeyFile == "") {
+		return errors.New("static OIDC trust key ID and file must be configured together")
+	}
+	if configuration.DiscoveryURL != "" && staticConfigured {
+		return errors.New("configure OIDC Discovery/JWKS or a static development key, not both")
+	}
+	if configuration.DiscoveryURL != "" {
+		if !strings.HasPrefix(configuration.DiscoveryURL, "https://") {
+			return errors.New("OIDC Discovery URL must use https")
+		}
+		if configuration.CacheTTL != "" {
+			ttl, err := time.ParseDuration(configuration.CacheTTL)
+			if err != nil || ttl < time.Second || ttl > time.Hour {
+				return errors.New("OIDC JWKS cache TTL must be between 1s and 1h")
+			}
+		}
+		return nil
+	}
+	if mode == "production" {
+		return errors.New("production requires trusted OIDC Discovery/JWKS configuration")
+	}
+	if !staticConfigured {
+		return errors.New("development requires OIDC Discovery/JWKS or an explicit static trust key")
+	}
+	return nil
+}
+
+func loadOIDCKeyResolver(configuration identitySettings, mode string) (identity.OIDCKeyResolver, error) {
+	if configuration.DiscoveryURL != "" {
+		ttl := time.Duration(0)
+		if configuration.CacheTTL != "" {
+			parsed, err := time.ParseDuration(configuration.CacheTTL)
+			if err != nil {
+				return nil, err
+			}
+			ttl = parsed
+		}
+		return identity.NewOIDCJWKSResolver(map[string]identity.OIDCIssuerConfig{
+			configuration.Issuer: {DiscoveryURL: configuration.DiscoveryURL, CacheTTL: ttl},
+		})
+	}
+	if mode != "development" {
+		return nil, errors.New("static OIDC trust keys are development-only")
+	}
+	if configuration.TrustKeyID == "" || configuration.TrustKeyFile == "" {
+		return nil, errors.New("development OIDC trust key ID and file are required")
+	}
+	key, err := grant.LoadEd25519PublicKey(configuration.TrustKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	return identity.StaticOIDCKeys{configuration.Issuer + "\x00" + configuration.TrustKeyID: key}, nil
 }
 
 func loadGrantTrustKeys(ctx context.Context, configuration settings) (grant.KeyResolver, error) {
@@ -346,9 +406,9 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("load Control Plane grant trust: %w", err)
 	}
-	oidcKey, err := grant.LoadEd25519PublicKey(configuration.Identity.TrustKeyFile)
+	oidcKeys, err := loadOIDCKeyResolver(configuration.Identity, configuration.Mode)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("load OIDC trust key: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("load OIDC trust: %w", err)
 	}
 	delegations, err := loadDelegations(configuration.Identity.DelegationsFile)
 	if err != nil {
@@ -393,7 +453,7 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	executionRunner := &runnercore.Runner{
 		RunnerID: configuration.RunnerID,
 		TenantID: configuration.TenantID, RunnerGroup: configuration.RunnerGroup, Grants: grantVerifier,
-		Subjects:    &identity.OIDCVerifier{Issuer: configuration.Identity.Issuer, Audience: configuration.Identity.Audience, Keys: identity.StaticOIDCKeys{configuration.Identity.Issuer + "\x00" + configuration.Identity.TrustKeyID: ed25519.PublicKey(oidcKey)}, ClockSkew: 30 * time.Second},
+		Subjects:    &identity.OIDCVerifier{Issuer: configuration.Identity.Issuer, Audience: configuration.Identity.Audience, Keys: oidcKeys, ClockSkew: 30 * time.Second},
 		Delegations: &identity.DelegationVerifier{Resolver: delegations}, Contexts: received, Approvals: received,
 		Capabilities: runnercore.NewCapabilitySet(configuration.Capabilities...), Policy: policyEngine, Journal: journal,
 		Credentials: broker, Adapter: dispatcher, Connectivity: connectivity, Admission: runtimeState,
