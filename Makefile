@@ -1,4 +1,4 @@
-.PHONY: run compose-up compose-down test test-race test-integration test-identity-audit verify-runner-journal-backup-restore test-scenario test-policy test-adapter test-planner benchmark benchmark-planner lint vet check fmt fmt-check test-agent-cycle test-workflow-recovery
+.PHONY: run compose-up compose-down test test-race test-integration test-identity-audit verify-runner-journal-backup-restore test-scenario test-policy test-adapter test-planner benchmark benchmark-planner lint vet check fmt fmt-check test-agent-cycle test-workflow-recovery test-localstack-sts
 
 run:
 	go run ./cmd/themisy
@@ -38,6 +38,10 @@ test-ci-observation-audit:
 .PHONY: test-oidc-read-api
 test-oidc-read-api:
 	bash scripts/test-oidc-read-api.sh
+
+test-localstack-sts:
+	@test -n "$${THEMISY_LOCALSTACK_STS_ENDPOINT:-}" || { echo "THEMISY_LOCALSTACK_STS_ENDPOINT is required; live STS verification was not run" >&2; exit 1; }
+	go test -race -tags=integration -count=1 -v ./pkg/credentials -run '^TestLocalStackSTSBrokerRoundTrip$$'
 
 test-scenario:
 	go test -count=1 ./test/scenario/...
