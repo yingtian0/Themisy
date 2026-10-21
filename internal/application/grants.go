@@ -15,6 +15,19 @@ import (
 
 var ErrGrantNotAuthorized = errors.New("action grant is not authorized")
 
+// GrantResultPendingError identifies the already-issued Grant whose result
+// must be observed after a read-only recovery. It never authorizes reissue.
+type GrantResultPendingError struct {
+	ID  string
+	Err error
+}
+
+func (e *GrantResultPendingError) Error() string {
+	return fmt.Sprintf("grant %s result remains pending: %v", e.ID, e.Err)
+}
+func (e *GrantResultPendingError) Unwrap() error   { return e.Err }
+func (e *GrantResultPendingError) GrantID() string { return e.ID }
+
 type GrantIssueRequest struct {
 	RunID               string
 	StepID              string
@@ -41,7 +54,7 @@ func (e *GrantExecutor) Deploy(ctx context.Context, request executor.DeployReque
 	}
 	result, err := e.Grants.WaitResult(ctx, record.Grant.GrantID, e.PollInterval)
 	if err != nil {
-		return executor.Deployment{}, err
+		return executor.Deployment{}, &GrantResultPendingError{ID: record.Grant.GrantID, Err: err}
 	}
 	if result.Status != protocol.ResultSucceeded {
 		return executor.Deployment{}, fmt.Errorf("runner result %s: %s", result.Status, result.ReasonCode)
@@ -59,7 +72,7 @@ func (e *GrantExecutor) Rollback(ctx context.Context, deployment executor.Deploy
 	}
 	result, err := e.Grants.WaitResult(ctx, record.Grant.GrantID, e.PollInterval)
 	if err != nil {
-		return executor.Deployment{}, err
+		return executor.Deployment{}, &GrantResultPendingError{ID: record.Grant.GrantID, Err: err}
 	}
 	if result.Status != protocol.ResultSucceeded {
 		return executor.Deployment{}, fmt.Errorf("runner rollback result %s: %s", result.Status, result.ReasonCode)
@@ -183,8 +196,12 @@ func (g *Grants) WaitResult(ctx context.Context, grantID string, interval time.D
 			return protocol.Result{}, err
 		}
 		switch record.Status {
-		case store.GrantDispatchSucceeded, store.GrantDispatchRejected, store.GrantDispatchUnknown:
+		case store.GrantDispatchSucceeded, store.GrantDispatchRejected:
 			return record.Result, nil
+		case store.GrantDispatchUnknown:
+			// UNKNOWN is an unresolved observation, not a terminal result. Keep
+			// this activity read-only and wait for the existing Grant's recovery
+			// report; never issue a replacement Grant or provider write here.
 		}
 		select {
 		case <-ctx.Done():

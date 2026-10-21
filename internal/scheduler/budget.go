@@ -76,6 +76,14 @@ type Blocked struct {
 	Limit     int       `json:"limit"`
 }
 
+// Constraint is one shared capacity dimension used by the durable coordinator.
+// Keys are canonicalized by the scheduler and must not come from request hints.
+type Constraint struct {
+	Dimension Dimension `json:"dimension"`
+	Key       string    `json:"key"`
+	Limit     int       `json:"limit"`
+}
+
 type Reservation struct {
 	step Step
 	keys []budgetKey
@@ -183,4 +191,34 @@ func keysFor(step Step) []budgetKey {
 		keys = append(keys, budgetKey{DimensionFailureDomain, tenant + "/" + step.Environment + "/" + failureDomain, failureDomain})
 	}
 	return keys
+}
+
+// ConstraintsFor returns the complete, deterministic capacity intersection
+// for a step. Duplicate failure-domain names collapse to one constraint.
+func ConstraintsFor(step Step, limits Limits) ([]Constraint, error) {
+	budget, err := NewBudget(limits)
+	if err != nil {
+		return nil, err
+	}
+	keys := keysFor(step)
+	seen := make(map[budgetKey]bool, len(keys))
+	constraints := make([]Constraint, 0, len(keys))
+	for _, key := range keys {
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		limit := budget.limit(key)
+		if limit < 1 {
+			return nil, fmt.Errorf("invalid concurrency limit for %s/%s", key.dimension, key.key)
+		}
+		constraints = append(constraints, Constraint{Dimension: key.dimension, Key: key.key, Limit: limit})
+	}
+	sort.Slice(constraints, func(i, j int) bool {
+		if constraints[i].Dimension == constraints[j].Dimension {
+			return constraints[i].Key < constraints[j].Key
+		}
+		return constraints[i].Dimension < constraints[j].Dimension
+	})
+	return constraints, nil
 }

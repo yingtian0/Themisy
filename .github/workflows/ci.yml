@@ -152,6 +152,9 @@ jobs:
       - name: Run PostgreSQL and Temporal integration tests
         run: make test-integration
 
+      - name: Test isolated Workflow recovery and process crashes
+        run: make test-workflow-recovery
+
       - name: Capture service logs
         if: failure()
         run: docker compose -f deploy/compose/compose.yaml logs --no-color

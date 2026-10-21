@@ -22,6 +22,8 @@ make lint
 make test-integration
 # Creates and removes its own isolated PostgreSQL fixture; ignores caller DB URLs.
 make test-identity-audit
+# Always creates its own disposable PostgreSQL and Temporal environment.
+make test-workflow-recovery
 ```
 
 Use `make fmt` to format Go files. Pull-request CI also verifies that module files are tidy,

@@ -14,6 +14,7 @@ import (
 	"themisy/internal/scheduler"
 	"themisy/internal/store"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
 )
 
@@ -58,6 +59,7 @@ func TestReleaseWorkflowDoesNotDispatchAtZeroRunnerCapacity(t *testing.T) {
 	env.RegisterActivity(activities.Rollback)
 	env.RegisterActivity(activities.AcquireSchedule)
 	env.RegisterActivity(activities.CompleteSchedule)
+	env.RegisterActivity(activities.RecoverExecution)
 	env.ExecuteWorkflow(ReleaseWorkflow, ReleaseInput{Run: run})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
@@ -151,6 +153,146 @@ func TestUnknownDeployStateNeverCreatesSecondWrite(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowWaitsForReadOnlyGrantRecovery(t *testing.T) {
+	run, memory, exec := workflowFixture(t, false, nil)
+	activities := NewActivities(memory, policy.New(), pendingGrantExecutor{ReleaseExecutor: exec, grantID: "grant-pending"})
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivity(activities.PersistRun)
+	env.RegisterActivity(activities.EvaluateStep)
+	env.RegisterActivity(activities.Deploy)
+	env.RegisterActivity(activities.Verify)
+	env.RegisterActivity(activities.Rollback)
+	env.RegisterActivity(activities.AcquireSchedule)
+	env.RegisterActivity(activities.CompleteSchedule)
+	recoveryCalls := 0
+	env.RegisterActivityWithOptions(func(context.Context, RecoverExecutionInput) (RecoverExecutionResult, error) {
+		recoveryCalls++
+		if recoveryCalls <= 3 {
+			return RecoverExecutionResult{}, errors.New("temporary recovery store outage")
+		}
+		return RecoverExecutionResult{Supported: true, Ready: true, Execution: domain.Execution{ID: "recovered-execution", Status: string(store.ExecutionSucceeded), ExternalExecutionID: "deployment-1"}, Deployment: executor.Deployment{RunID: run.ID, Service: "identity", Environment: string(run.Environment), DesiredVersion: "sha-1", IdempotencyKey: run.ID + "/" + string(run.Environment) + "/identity/sha-1", ExternalID: "deployment-1", StartedAt: run.CreatedAt, FinishedAt: run.CreatedAt.Add(time.Second)}}, nil
+	}, activity.RegisterOptions{Name: ActivityRecoverExecution})
+	env.ExecuteWorkflow(ReleaseWorkflow, ReleaseInput{Run: run})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result domain.ReleaseRun
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.RunSucceeded || recoveryCalls < 4 {
+		t.Fatalf("workflow result=%s recovery calls=%d; want recovery after exhausted Activity retries", result.Status, recoveryCalls)
+	}
+}
+
+func TestCancelDuringUnknownRecoveryKeepsStepAndReservationUnresolved(t *testing.T) {
+	run, memory, exec := workflowFixture(t, false, nil)
+	activities := NewActivities(memory, policy.New(), pendingGrantExecutor{ReleaseExecutor: exec, grantID: "grant-pending"})
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivity(activities.PersistRun)
+	env.RegisterActivity(activities.EvaluateStep)
+	env.RegisterActivity(activities.Deploy)
+	env.RegisterActivity(activities.Verify)
+	env.RegisterActivity(activities.Rollback)
+	env.RegisterActivity(activities.AcquireSchedule)
+	env.RegisterActivity(activities.CompleteSchedule)
+	env.RegisterActivityWithOptions(func(context.Context, RecoverExecutionInput) (RecoverExecutionResult, error) {
+		return RecoverExecutionResult{Supported: true}, nil
+	}, activity.RegisterOptions{Name: ActivityRecoverExecution})
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(SignalCancel, ControlSignal{Actor: "operator"}) }, time.Minute)
+	env.ExecuteWorkflow(ReleaseWorkflow, ReleaseInput{Run: run})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result domain.ReleaseRun
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != domain.RunCancelled || result.Steps[0].Status != domain.StepUnknown {
+		t.Fatalf("cancel overwrote unresolved step: run=%s step=%s", result.Status, result.Steps[0].Status)
+	}
+}
+
+func TestRecoverExecutionKeepsTerminalUnknownRunQuarantined(t *testing.T) {
+	for _, status := range []domain.RunStatus{domain.RunCancelled, domain.RunSucceeded, domain.RunFailed, domain.RunEscalated} {
+		t.Run(string(status), func(t *testing.T) {
+			run, memory, exec := workflowFixture(t, false, nil)
+			run.Status = status
+			run.Steps[0].Status = domain.StepUnknown
+			if err := memory.UpdateRun(&run, 1); err != nil {
+				t.Fatal(err)
+			}
+			activities := NewActivities(memory, policy.New(), exec)
+			_, err := activities.RecoverExecution(context.Background(), RecoverExecutionInput{
+				RunID: run.ID, Service: run.Steps[0].Service, Environment: string(run.Environment),
+				DesiredVersion: run.Steps[0].Change.DesiredVersion, IdempotencyKey: run.ID + "/" + string(run.Environment) + "/identity/sha-1",
+			})
+			if err == nil {
+				t.Fatal("terminal run must not be mutated by delayed recovery")
+			}
+			persisted, getErr := memory.GetRun(run.ID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if persisted.Status != status || persisted.Steps[0].Status != domain.StepUnknown {
+				t.Fatalf("recovery changed terminal state: run=%s step=%s", persisted.Status, persisted.Steps[0].Status)
+			}
+			if calls := exec.DeployCalls(run.ID + "/" + string(run.Environment) + "/identity/sha-1"); calls != 0 {
+				t.Fatalf("recovery issued provider write: calls=%d", calls)
+			}
+		})
+	}
+}
+
+func TestDurableCoordinatorUnavailableAndMissingLeaseFailClosed(t *testing.T) {
+	run, memory, exec := workflowFixture(t, false, nil)
+	coordinator := &coordinatorTestStore{Memory: memory, acquireErr: errors.New("database unavailable")}
+	activities := NewActivities(coordinator, policy.New(), exec)
+	input := ScheduleInput{RunID: run.ID, Step: scheduler.Step{ID: "identity", Tenant: run.TenantID, Environment: string(run.Environment), Region: run.Region, Cluster: run.Cluster}}
+	result, err := activities.AcquireSchedule(context.Background(), input)
+	if err != nil || result.Allowed || result.Reason != "SHARED_COORDINATOR_UNAVAILABLE" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if _, err := activities.Deploy(context.Background(), DeployInput{RunID: run.ID, RequestedBy: run.RequestedBy, AgentID: run.Agent.ID, Service: "identity", Environment: string(run.Environment), DesiredVersion: "sha-1", IdempotencyKey: "durable-missing-lease"}); err == nil {
+		t.Fatal("deploy without durable lease should fail closed")
+	}
+	if calls := exec.DeployCalls("durable-missing-lease"); calls != 0 {
+		t.Fatalf("provider calls=%d, want 0", calls)
+	}
+	if coordinator.quarantineCalls != 1 {
+		t.Fatalf("quarantine calls=%d, want 1", coordinator.quarantineCalls)
+	}
+}
+
+type coordinatorTestStore struct {
+	*store.Memory
+	acquireErr      error
+	quarantineCalls int
+}
+
+func (s *coordinatorTestStore) AcquireSchedule(context.Context, scheduler.AcquireRequest) (scheduler.ScheduleLease, []scheduler.Blocked, scheduler.CircuitState, error) {
+	return scheduler.ScheduleLease{}, nil, scheduler.CircuitState{}, s.acquireErr
+}
+
+func (s *coordinatorTestStore) AdmitSchedule(context.Context, scheduler.AdmissionRequest) error {
+	return errors.New("unexpected admission")
+}
+
+func (s *coordinatorTestStore) CompleteSchedule(context.Context, scheduler.CompletionRequest) (scheduler.CircuitState, error) {
+	return scheduler.CircuitState{}, nil
+}
+
+func (s *coordinatorTestStore) QuarantineSchedule(context.Context, scheduler.QuarantineRequest) error {
+	s.quarantineCalls++
+	return nil
+}
+
+func (s *coordinatorTestStore) GetCircuitState(context.Context, string) (scheduler.CircuitState, error) {
+	return scheduler.CircuitState{}, nil
+}
+
 func newWorkflowEnvironment(st store.DurableStore, exec executor.ReleaseExecutor) *testsuite.TestWorkflowEnvironment {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -162,6 +304,7 @@ func newWorkflowEnvironment(st store.DurableStore, exec executor.ReleaseExecutor
 	env.RegisterActivity(activities.Rollback)
 	env.RegisterActivity(activities.AcquireSchedule)
 	env.RegisterActivity(activities.CompleteSchedule)
+	env.RegisterActivity(activities.RecoverExecution)
 	return env
 }
 

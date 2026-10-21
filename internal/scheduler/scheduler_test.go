@@ -35,6 +35,32 @@ func TestBudgetAppliesEveryDimensionAndServiceExclusivity(t *testing.T) {
 	}
 }
 
+func TestConstraintsForReturnsEveryDimensionOnceInStableOrder(t *testing.T) {
+	limits := DefaultLimits()
+	limits.Environment = map[string]int{"production": 3}
+	step := testStep("payments")
+	step.Environment = "production"
+	step.FailureDomains = []string{"primary-db", "primary-db", "regional-api"}
+	constraints, err := ConstraintsFor(step, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(constraints) != 9 {
+		t.Fatalf("constraints=%#v", constraints)
+	}
+	for index := 1; index < len(constraints); index++ {
+		previous, current := constraints[index-1], constraints[index]
+		if previous.Dimension > current.Dimension || previous.Dimension == current.Dimension && previous.Key >= current.Key {
+			t.Fatalf("constraints are not strictly ordered: %#v", constraints)
+		}
+	}
+	for _, constraint := range constraints {
+		if constraint.Dimension == DimensionEnvironment && constraint.Key == "tenant-a/production" && constraint.Limit != 3 {
+			t.Fatalf("environment limit=%d", constraint.Limit)
+		}
+	}
+}
+
 func TestSharedFailureDomainNeverSharesAWave(t *testing.T) {
 	limits := DefaultLimits()
 	steps := []Step{testStep("a"), testStep("b"), testStep("c")}

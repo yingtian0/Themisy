@@ -49,7 +49,24 @@ make test-scenario
 make benchmark
 ```
 
-The in-process coordinator is shared by workflows handled by one worker
-process. Deployments that run multiple worker processes must provide a single
-coordinated task queue or replace this development coordinator with a durable
-distributed lease implementation before production use.
+PostgreSQL-backed scheduling reservations, capacity counters, write admissions,
+and production circuit samples are shared by Control Plane workers. Each
+reservation is bound to an owner token and monotonically increasing fencing
+value. A worker must present the current lease before it can persist a write
+admission; a stale owner is rejected. Expiry can reclaim only a reservation
+that has not been admitted for an external write.
+
+An admitted or ambiguous external write becomes `UNKNOWN` and continues to hold
+all capacity dimensions across worker restart. It cannot be cleared by a
+workflow retry or a public API. Operators must reconcile the external action
+and record its terminal outcome through the controlled recovery procedure.
+Loss of the shared PostgreSQL coordinator fails closed; workers do not fall
+back to process-local budgets. Runner capacity, Adapter rate limits, and queue
+pressure remain separate required admission signals and must also be available.
+
+Before running multiple workers, apply the Control Plane migration to the
+shared database, ensure every worker uses that database and the same scheduling
+configuration, and verify an UNKNOWN reservation blocks a second Run after a
+worker restart. This coordinator is separate from the customer Runner journal:
+it controls Control Plane dispatch admission and does not grant Runner write
+authority.
