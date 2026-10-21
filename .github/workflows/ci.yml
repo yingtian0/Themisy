@@ -152,6 +152,9 @@ jobs:
       - name: Verify durable CI observation audit
         run: make test-ci-observation-audit
 
+      - name: Verify tenant-bound OIDC read API
+        run: make test-oidc-read-api
+
       - name: Run PostgreSQL and Temporal integration tests
         run: make test-integration
 

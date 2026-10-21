@@ -35,6 +35,10 @@ test-identity-audit:
 test-ci-observation-audit:
 	bash scripts/test-ci-observation-audit.sh
 
+.PHONY: test-oidc-read-api
+test-oidc-read-api:
+	bash scripts/test-oidc-read-api.sh
+
 test-scenario:
 	go test -count=1 ./test/scenario/...
 

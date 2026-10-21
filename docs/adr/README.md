@@ -21,6 +21,8 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0011](0011-authorization-and-compensation-lifetimes.md) | Proposed | Separate review freshness, short execution Grants and bounded compensation permission |
 | [0015](0015-ci-only-context-snapshots.md) | Proposed | Collect immutable CI-only observations without trusting imported JSON as source evidence |
 
+| [0016](0016-tenant-bound-oidc-read-api.md) | Proposed | Compose an audited tenant-bound OIDC summary API with no command routes |
+
 ## Process
 
 1. Copy the structure of an existing ADR and assign the next four-digit number.
