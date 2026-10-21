@@ -25,6 +25,10 @@ type client struct {
 	http    *http.Client
 }
 
+// Set only by the source-pinned packaging build; ordinary source builds say dev.
+var version = "dev"
+var sourceCommit = "unknown"
+
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "themisyctl:", err)
@@ -44,9 +48,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	remaining := flags.Args()
 	if len(remaining) == 0 {
-		return errors.New("command is required: offline-plan, services, plan, get-plan, start, status, events, pause, resume, cancel, approvals, approve, deny, revoke, runners, freeze-runner, validate-contract")
+		return errors.New("command is required: version, offline-plan, services, plan, get-plan, start, status, events, pause, resume, cancel, approvals, approve, deny, revoke, runners, freeze-runner, validate-contract")
 	}
 	command, values := remaining[0], remaining[1:]
+	if command == "version" {
+		if len(values) != 0 {
+			return errors.New("version accepts no arguments")
+		}
+		return json.NewEncoder(stdout).Encode(struct {
+			Version string `json:"version"`
+			Commit  string `json:"source_commit"`
+		}{version, sourceCommit})
+	}
 	if command == "offline-plan" {
 		return runOfflinePlan(values, stdout, stderr)
 	}
