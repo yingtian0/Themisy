@@ -19,7 +19,7 @@ its adoption benefit over those tools has not yet been measured.
 
 | Course | Prerequisites and processes | External writes | Status |
 |---|---|---|---|
-| [15-minute offline planning](docs/guides/offline-quickstart.md) | Go 1.26.9+, local Contract/Profile/Intent files; CLI only | None; no credential acquisition, approval, or Grant | Normal/rejected examples locally verified; external timing not measured |
+| [15-minute offline planning](docs/guides/offline-quickstart.md) | Go 1.26.10+, local Contract/Profile/Intent files; CLI only | None; no credential acquisition, approval, or Grant | Normal/rejected examples locally verified; external timing not measured |
 | Local execution development | PostgreSQL, Temporal, Control Plane, Worker, configured Runner; provisioned signing/trust material and test identity/context | Can dispatch writes if a real adapter is enabled | Developer assembly only; no turnkey safe mock runtime |
 | [Dedicated ECS staging](docs/runbooks/ecs-runner-iam.md) | Above plus isolated AWS resources, fixed target mappings, STS roles, KMS/trust configuration, runtime/health sources | Real ECS updates and rollback | Not a validated onboarding course; live gate pending #6/#7/#11 |
 

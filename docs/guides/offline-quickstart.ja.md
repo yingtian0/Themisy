@@ -1,18 +1,31 @@
 # 15分で試すローカル計画
 
+[English](offline-quickstart.md) · 日本語
+
 このガイドは、ECSと既存のCI/CDを使うPlatform/SRE担当者向けです。ローカルファイルだけを使い、クラウド認証情報、Control Plane、PostgreSQL、Temporal、Runnerは必要ありません。GrantやApprovalを作らず、認証情報を取得せず、Adapterによる書き込みも行いません。
 
 入力値とContextはすべて合成データです。Planの生成で確認できるのは構造検証と計画だけです。Identity、CI、実行時の健全性、Policy承認、本番準備状況は検証しません。出力を実行権限として使わないでください。
 
 ## 準備
 
-Go 1.26.9以降をインストールし、このガイドを含むcheckoutを使います。リポジトリのルートでCLIをビルドします。
+Go 1.26.10以降をインストールし、このガイドを含むcheckoutを使います。リポジトリのルートでCLIをビルドします。
 
 ```bash
 go build -o /tmp/themisyctl ./cmd/themisyctl
 ```
 
 初回ビルドではGo moduleのダウンロードが発生するため、インターネット接続が必要な場合があります。ビルド後のコマンドはネットワークを使いません。secretファイルや環境変数は不要です。`/tmp/themisyctl`が既に使われている場合は、自分で選んだ別の出力先にしてください。
+
+## コマンドのヘルプを確認する
+
+```bash
+/tmp/themisyctl help
+/tmp/themisyctl help offline-plan
+```
+
+どちらも標準出力にヘルプを表示して終了コード **0** で終了します。入力ファイルを開かず、サーバーへ接続しません。コマンドより前の`-h`、`-help`（`--help`も可）は、一般ヘルプを標準エラーに表示します。`offline-plan -h`はオフライン用ヘルプを標準エラーに表示します。これらの終了コードも **0** です。
+
+未対応のヘルプ項目や余分な引数は終了コード **1** になります。共通オプションはコマンドより前に、オフライン用オプションは入力ファイル名より前に置きます。オフライン用ヘルプには正常例と拒否例があります。
 
 ## Planを生成する
 
@@ -37,6 +50,14 @@ themisyctl: unknown service "missing-api"
 ```
 
 `examples/offline/rejected.json`の`changes[0].service`にはService Contractがありません。`identity-api`へ変えると、この拒否理由は解消します。Contract graphのエラーも既存の理由コード（例：`UNKNOWN_DEPENDENCY`）を返し、該当dependency fieldを示します。このケースはローカルテストで確認されています。
+
+個別には有効な2つのContractが、rollout順序の循環によって拒否される例も試せます。
+
+```bash
+/tmp/themisyctl offline-plan -contracts examples/offline/cycle/contracts examples/offline/cycle/release.json
+```
+
+終了コードは **1** で、Planは出力されず、`DEPENDENCY_CYCLE`が返ります。`cycle-a`は`cycle-b`の先行rolloutを要求し、`cycle-b`も`cycle-a`の先行rolloutを要求します。通常の練習用Contractを変更せず、既存plannerの拒否を確認する例です。実行権限は与えません。
 
 自分のファイルを試す場合は、Intentファイルより前にdirectoryを指定します。
 

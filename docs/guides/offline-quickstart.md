@@ -1,5 +1,7 @@
 # Try planning locally in 15 minutes
 
+English · [日本語](offline-quickstart.ja.md)
+
 This course is for Platform/SRE developers evaluating Themisy with ECS and an
 existing CI/CD system. It uses local files only. No cloud credentials, Control
 Plane, PostgreSQL, Temporal, or Runner is needed. It creates no grants or
