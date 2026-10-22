@@ -40,12 +40,14 @@ Global options (place before the command):
   -roles LIST   Comma-separated trusted actor roles
 
 Commands:
+  help [offline-plan]  Show general or offline planning help
   version       Show source-pinned build version
   policy-shadow | policy-candidate   Validate local signed policy candidates
   offline-plan  Plan from local files only; see: themisyctl offline-plan -h
   plan FILE     Create a plan through the Control Plane
   start FILE    Start a release through the Control Plane
   services      List services
+  get-plan ID   Read a plan
   status ID     Read a release run
   events ID     Read release events
   approvals     List approvals
@@ -90,7 +92,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	command, values := remaining[0], remaining[1:]
 	if command == "help" {
-		fmt.Fprint(stdout, cliHelp)
+		switch {
+		case len(values) == 0:
+			fmt.Fprint(stdout, cliHelp)
+		case len(values) == 1 && values[0] == "offline-plan":
+			fmt.Fprint(stdout, offlinePlanHelp)
+		default:
+			return errors.New("help accepts no arguments or the topic offline-plan")
+		}
 		return nil
 	}
 	if command == "policy-shadow" {

@@ -11,7 +11,7 @@ or production readiness. Do not submit the example output as execution authority
 
 ## Prepare
 
-Install Go 1.26.9 or later and use a checkout containing this guide. From the
+Install Go 1.26.10 or later and use a checkout containing this guide. From the
 repository root, build the CLI:
 
 ```bash
@@ -22,6 +22,20 @@ The first build may download Go modules and needs internet access. After the
 build, the commands below need no network. No secret files or environment
 variables are required. The `/tmp/themisyctl` path is a disposable output; choose
 another path if it already belongs to you.
+
+## Find command help
+
+```bash
+/tmp/themisyctl help
+/tmp/themisyctl help offline-plan
+```
+
+Both print help to standard output and exit **0**, without opening input files
+or contacting a server. `-h` and `-help` (also `--help`) before the command show
+general help on standard error; `offline-plan -h` shows offline help there.
+These flag forms also exit **0**. An unsupported help topic or extra arguments
+return **1**. Global options precede the command; offline options precede the
+input filename. The offline help includes normal and rejected examples.
 
 ## Generate a plan
 
