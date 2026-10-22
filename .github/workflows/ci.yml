@@ -52,6 +52,9 @@ jobs:
       - name: Test agent cycle supervisor
         run: python3 -m unittest discover -s tests/agent_cycle -v
 
+      - name: Test CI completion notifications
+        run: python3 -m unittest discover -s tests/ci_notifications -v
+
       - name: Run static analysis
         run: go vet ./...
 
