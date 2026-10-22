@@ -1,0 +1,39 @@
+name: CI completion signal
+run-name: CI completed ${{ github.event.workflow_run.id }} attempt ${{ github.event.workflow_run.run_attempt }}
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+# This observer never checks out source, downloads artifacts, executes PR code,
+# accesses secrets, or writes to the repository. The run title is the receipt;
+# the local consumer verifies the original run/attempt through the Actions API.
+permissions: {}
+
+jobs:
+  receipt:
+    name: Record CI completion
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Summarize the source run
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          run = event["workflow_run"]
+          run_id, attempt = run["id"], run["run_attempt"]
+          assert type(run_id) is int and run_id > 0
+          assert type(attempt) is int and attempt > 0
+          assert run["status"] == "completed"
+          assert run["conclusion"] in {
+              "success", "failure", "cancelled", "timed_out", "action_required",
+              "neutral", "skipped", "stale", "startup_failure",
+          }
+          url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}/attempts/{attempt}"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"CI **{run['conclusion']}** — [run {run_id}, attempt {attempt}]({url})\n")
