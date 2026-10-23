@@ -33,6 +33,16 @@ func (s *Signer) Sign(ctx context.Context, identity Identity, hash string, resul
 	if s == nil || s.Signer == nil {
 		return protocol.ResultReport{}, fmt.Errorf("result signer unavailable")
 	}
+	if ctx.Err() != nil {
+		return protocol.ResultReport{}, fmt.Errorf("result signing cancelled")
+	}
+	if result.Evidence != nil {
+		evidence := *result.Evidence
+		evidence.Window.From = evidence.Window.From.UTC()
+		evidence.Window.To = evidence.Window.To.UTC()
+		evidence.ObservedAt = evidence.ObservedAt.UTC()
+		result.Evidence = &evidence
+	}
 	result.CompletedAt = result.CompletedAt.UTC()
 	report := protocol.ResultReport{Version: protocol.ResultReportVersion, RunnerID: identity.RunnerID, TenantID: identity.TenantID, RunnerGroup: identity.RunnerGroup, RequestHash: hash, Result: result, Signature: protocol.Signature{KeyID: s.KeyID, Algorithm: grant.AlgorithmEd25519}}
 	payload, err := protocol.CanonicalResultReportPayload(report)
@@ -42,6 +52,9 @@ func (s *Signer) Sign(ctx context.Context, identity Identity, hash string, resul
 	signature, err := s.Signer.Sign(ctx, payload)
 	if err != nil {
 		return protocol.ResultReport{}, err
+	}
+	if ctx.Err() != nil {
+		return protocol.ResultReport{}, fmt.Errorf("result signing cancelled")
 	}
 	if signature.KeyID != report.Signature.KeyID || signature.Algorithm != report.Signature.Algorithm || signature.Value == "" {
 		return protocol.ResultReport{}, fmt.Errorf("result signer metadata mismatch")

@@ -3,6 +3,7 @@ package resultreport
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -210,5 +211,82 @@ func TestResultTrustRejectsMalformedExpiredAndCrossPurposeBundles(t *testing.T) 
 				t.Fatal("invalid trust accepted")
 			}
 		})
+	}
+}
+
+// The signing boundary must own the evidence it attests, even if its caller
+// reuses the observation while an external signer is running.
+type hookedResultSigner struct {
+	grant.Signer
+	hook func()
+}
+
+func (s hookedResultSigner) Sign(ctx context.Context, p []byte) (protocol.Signature, error) {
+	signature, err := s.Signer.Sign(ctx, p)
+	s.hook()
+	return signature, err
+}
+func TestResultSignerOwnsEvidenceAndRejectsCancellation(t *testing.T) {
+	for _, mode := range []string{"mutate-source", "cancel-before", "cancel-during"} {
+		t.Run(mode, func(t *testing.T) {
+			identity, g, r := fixture(t)
+			hash, _ := protocol.GrantHash(g)
+			base, pub, err := grant.NewDevelopmentSigner("result-key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			hook := func() { r.Evidence.ReasonCode = "caller-reused-observation" }
+			if mode == "cancel-during" {
+				hook = cancel
+			}
+			if mode == "cancel-before" {
+				cancel()
+			}
+			signer := Signer{Signer: hookedResultSigner{Signer: base, hook: hook}, KeyID: "result-key"}
+			report, err := signer.Sign(ctx, identity, hash, r)
+			if mode != "mutate-source" {
+				if err == nil || report.Signature.Value != "" {
+					t.Fatal("cancelled signing returned report")
+				}
+				return
+			}
+			if err != nil || report.Result.Evidence.ReasonCode == r.Evidence.ReasonCode {
+				t.Fatal("signed report aliases caller evidence", err)
+			}
+			payload, err := protocol.CanonicalResultReportPayload(report)
+			signature, decodeErr := base64.RawURLEncoding.DecodeString(report.Signature.Value)
+			if err != nil || decodeErr != nil || !ed25519.Verify(pub, payload, signature) {
+				t.Fatal("source mutation invalidated signed snapshot")
+			}
+		})
+	}
+}
+func TestResultReportRefusesImpossibleEvidenceChronology(t *testing.T) {
+	identity, g, r := fixture(t)
+	hash, _ := protocol.GrantHash(g)
+	base, _, _ := grant.NewDevelopmentSigner("result-key")
+	signer := Signer{Signer: base, KeyID: "result-key"}
+	for _, mode := range []string{"future-window", "after-completion"} {
+		t.Run(mode, func(t *testing.T) {
+			result := r
+			evidence := *r.Evidence
+			if mode == "future-window" {
+				evidence.Window.To = evidence.ObservedAt.Add(time.Second)
+			} else {
+				evidence.ObservedAt = r.CompletedAt.Add(time.Second)
+			}
+			evidence.EvidenceHash, _ = adapter.EvidenceHash(evidence)
+			result.Evidence = &evidence
+			result.EvidenceHash = evidence.EvidenceHash
+			if report, err := signer.Sign(context.Background(), identity, hash, result); err == nil || report.Signature.Value != "" {
+				t.Fatal("impossible observation signed")
+			}
+		})
+	}
+	// Delayed read-only recovery is valid even after the Grant's execution expiry.
+	if _, err := signer.Sign(context.Background(), identity, hash, r); err != nil {
+		t.Fatal("valid historical observation refused", err)
 	}
 }
