@@ -52,6 +52,7 @@ func TestGrantTrustConfigurationRequiresRefreshableProductionBundle(t *testing.T
 		{"production missing bundle", "production", controlPlaneSettings{}, "refreshable"},
 		{"production legacy key", "production", controlPlaneSettings{TrustKeyID: "old", TrustKeyFile: "old.pub"}, "refreshable"},
 		{"production bundle and legacy key", "production", controlPlaneSettings{TrustBundleFile: "bundle.json", TrustKeyID: "old", TrustKeyFile: "old.pub"}, "both"},
+		{"pin without bundle", "production", controlPlaneSettings{TrustBundleHash: "sha256:invalid"}, "requires"},
 		{"production bundle", "production", controlPlaneSettings{TrustBundleFile: "bundle.json"}, ""},
 		{"development bundle", "development", controlPlaneSettings{TrustBundleFile: "bundle.json"}, ""},
 		{"development legacy key", "development", controlPlaneSettings{TrustKeyID: "local", TrustKeyFile: "local.pub"}, ""},

@@ -113,7 +113,7 @@ func TestGrantMutationIsRejectedBeforeCredentialsAndAdapter(t *testing.T) {
 }
 
 func TestRevokedOrUnavailableGrantTrustBundleRejectsBeforeWrite(t *testing.T) {
-	for _, mode := range []string{"revoked", "malformed", "missing"} {
+	for _, mode := range []string{"revoked", "malformed", "missing", "pin-mismatch"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newRunnerFixture(t)
 			path := filepath.Join(t.TempDir(), "grant-trust.json")
@@ -135,7 +135,11 @@ func TestRevokedOrUnavailableGrantTrustBundleRejectsBeforeWrite(t *testing.T) {
 				}
 			}
 			verifier := f.runner.Grants.(*grant.Verifier)
-			verifier.Keys = grant.FileKeys{Path: path, Issuer: f.grant.Issuer, Tenant: f.grant.TenantID, Now: func() time.Time { return f.now }}
+			keys := grant.FileKeys{Path: path, Issuer: f.grant.Issuer, Tenant: f.grant.TenantID, Now: func() time.Time { return f.now }}
+			if mode == "pin-mismatch" {
+				keys.ExpectedHash = "sha256:" + strings.Repeat("0", 64)
+			}
+			verifier.Keys = keys
 			if _, err := f.runner.Execute(context.Background(), f.grant); err == nil {
 				t.Fatal("invalid or revoked trust bundle accepted")
 			}
