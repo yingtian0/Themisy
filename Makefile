@@ -85,3 +85,7 @@ fmt-check:
 
 test-agent-cycle:
 	python3 -m unittest discover -s tests/agent_cycle -v
+
+.PHONY: test-policy-shadow-audit
+test-policy-shadow-audit:
+	bash scripts/test-policy-shadow-audit.sh
