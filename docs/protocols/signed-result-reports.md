@@ -107,3 +107,12 @@ new signers emit v2, so deploy Control Plane and Runner changes together.
 Runner-side evidence collection, separate runtime/evidence storage,
 verification workflow integration, and the remaining #9 acceptance conditions
 are still incomplete; this change does not make those paths operational.
+
+The signing helper owns an independent Evidence value and normalizes its times
+to UTC before signing. Reusing the caller's original observation cannot mutate
+the returned signed report. Cancellation before or during signing returns no
+report. Evidence chronology must satisfy `window.to <= observed_at <= completed_at`;
+a well-formed hash or signature does not make impossible observation times valid.
+This does not require a recovered report to finish within the Grant's execution
+lifetime and does not authorize any new write after Grant expiry. Existing v1
+reports without Evidence and valid v2 canonical bytes remain compatible.

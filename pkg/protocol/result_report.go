@@ -53,6 +53,9 @@ func CanonicalResultReportPayload(report ResultReport) ([]byte, error) {
 		if err := adapter.ValidateEvidence(evidence); err != nil {
 			return nil, fmt.Errorf("invalid result evidence: %w", err)
 		}
+		if evidence.Window.To.After(evidence.ObservedAt) || evidence.ObservedAt.After(r.CompletedAt) {
+			return nil, fmt.Errorf("invalid result evidence chronology")
+		}
 		hash, err := adapter.EvidenceHash(evidence)
 		if err != nil || hash != r.EvidenceHash || hash != evidence.EvidenceHash {
 			return nil, fmt.Errorf("result evidence hash mismatch")
