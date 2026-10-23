@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -43,7 +44,21 @@ func New(config Config, clients ClientFactory) (*Adapter, error) {
 	if clients == nil {
 		return nil, errors.New("ECS client factory is required")
 	}
-	return &Adapter{config: config, clients: clients, now: time.Now}, nil
+	// Own every mutable level of the operator allowlist. Later edits to the
+	// constructor input must not change a live adapter's resource selection.
+	owned := Config{Targets: make(map[TargetKey]Target, len(config.Targets))}
+	for key, target := range config.Targets {
+		definitions := make(map[string]TaskDefinition, len(target.TaskDefinitions))
+		for digest, definition := range target.TaskDefinitions {
+			definition.ExpectedContainerDigests = maps.Clone(definition.ExpectedContainerDigests)
+			definition.ExpectedTaskDefinitions = slices.Clone(definition.ExpectedTaskDefinitions)
+			definitions[digest] = definition
+		}
+		target.TaskDefinitions = definitions
+		target.RollbackContainerDigests = maps.Clone(target.RollbackContainerDigests)
+		owned.Targets[key] = target
+	}
+	return &Adapter{config: owned, clients: clients, now: time.Now}, nil
 }
 
 func AWSClientFactory(base aws.Config) ClientFactory {

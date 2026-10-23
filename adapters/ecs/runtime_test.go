@@ -302,6 +302,12 @@ func TestConfiguredSidecarAndDuplicateContainerNames(t *testing.T) {
 			f := newFixture(t)
 			f.client.current = f.definition.ARN
 			f.definition.ExpectedContainerDigests["sidecar"] = "sha256:" + strings.Repeat("b", 64)
+			// Apply the changed operator configuration by constructing a new adapter.
+			configured, err := New(Config{Targets: map[TargetKey]Target{{Service: f.request.Target.Service, Environment: f.request.Target.Environment}: f.target}}, func(context.Context, string, credentials.Credential) (API, error) { return f.client, nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.adapter = configured
 			f.client.taskHook = func(o *awsecs.DescribeTasksOutput) {
 				c := o.Tasks[0].Containers[0]
 				c.Name = aws.String("sidecar")
@@ -311,7 +317,7 @@ func TestConfiguredSidecarAndDuplicateContainerNames(t *testing.T) {
 				}
 				o.Tasks[0].Containers = append(o.Tasks[0].Containers, c)
 			}
-			_, err := f.adapter.Deploy(context.Background(), f.request, credentials.Credential{})
+			_, err = f.adapter.Deploy(context.Background(), f.request, credentials.Credential{})
 			if duplicate {
 				if !adapter.IsClass(err, adapter.ErrorUnknown) {
 					t.Fatalf("err=%v", err)

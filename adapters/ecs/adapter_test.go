@@ -196,3 +196,39 @@ func (f *fakeECS) DescribeTasks(_ context.Context, input *awsecs.DescribeTasksIn
 	}
 	return output, nil
 }
+
+func TestAdapterOwnsNestedOperatorConfiguration(t *testing.T) {
+	f := newFixture(t)
+	key := TargetKey{Service: f.request.Target.Service, Environment: f.request.Target.Environment}
+	config := Config{Targets: map[TargetKey]Target{key: f.target}}
+	instance, err := New(config, func(context.Context, string, credentials.Credential) (API, error) { return f.client, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalDefinition := f.definition.ARN
+	// Change every externally owned map/slice after construction.
+	definition := config.Targets[key].TaskDefinitions[f.request.ArtifactDigest]
+	definition.ExpectedTaskDefinitions[0] = "untrusted-predecessor"
+	definition.ExpectedContainerDigests["app"] = "sha256:" + strings.Repeat("b", 64)
+	config.Targets[key].TaskDefinitions[f.request.ArtifactDigest] = TaskDefinition{ARN: "untrusted-definition"}
+	config.Targets[key].RollbackContainerDigests["app"] = "sha256:" + strings.Repeat("b", 64)
+	delete(config.Targets, key)
+	if _, err := instance.Deploy(context.Background(), f.request, credentials.Credential{}); err != nil {
+		t.Fatal("caller changed live deployment mapping", err)
+	}
+	if f.client.updateCalls != 1 || aws.ToString(f.client.updateInput.TaskDefinition) != originalDefinition {
+		t.Fatal("caller redirected deployment")
+	}
+	rollback := adapter.RollbackRequest{Target: f.request.Target, IdempotencyKey: "rollback-key", OriginalDeployment: adapter.Deployment{ExternalExecutionID: "previous"}}
+	if _, err := instance.Rollback(context.Background(), rollback, credentials.Credential{}); err != nil {
+		t.Fatal("caller changed rollback container expectations", err)
+	}
+	if f.client.updateCalls != 2 || aws.ToString(f.client.updateInput.TaskDefinition) != f.target.RollbackTaskDefinition {
+		t.Fatal("caller redirected rollback")
+	}
+	request := f.request
+	request.ArtifactDigest = "sha256:" + strings.Repeat("c", 64)
+	if _, err := instance.Deploy(context.Background(), request, credentials.Credential{}); err == nil || f.client.updateCalls != 2 {
+		t.Fatal("unmapped digest reached provider write")
+	}
+}
