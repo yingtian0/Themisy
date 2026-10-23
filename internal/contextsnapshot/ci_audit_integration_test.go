@@ -77,6 +77,20 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 			t.Fatalf("collect %s: %v", status, err)
 		}
 	}
+	// Dependency collections use the same durable sink but retain their own schema.
+	dependencyEvents := []domain.AuditEvent{}
+	for _, mode := range []string{"", "fail", "missing", "partial"} {
+		collector, _, transport, _, _, key := dependencyFixture(t)
+		transport.mode = mode
+		collector.audit = sink
+		snapshot, err := collector.Collect(ctx, key)
+		if err != nil || snapshot.Hash() == "" {
+			t.Fatalf("dependency collection: %v", err)
+		}
+		dependencyEvents = append(dependencyEvents, sink.events[len(sink.events)-1])
+	}
+	// Keep the existing CI assertions scoped to their schema.
+	sink.events = sink.events[:len(sink.events)-len(dependencyEvents)]
 	pg.Close()
 	pg, err = postgres.New(ctx, databaseURL)
 	if err != nil {
@@ -105,6 +119,34 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 			t.Fatal("database record became a trusted snapshot")
 		}
 	}
+	for _, event := range dependencyEvents {
+		events, err := pg.AuditEvents(event.CorrelationID)
+		if err != nil || len(events) != 1 {
+			t.Fatalf("dependency audit reopen: %v", err)
+		}
+		raw, err := json.Marshal(events[0].Details["record"])
+		if err != nil || strings.Contains(string(raw), "secret-canary") || strings.Contains(string(raw), "private-query") {
+			t.Fatal("invalid dependency audit")
+		}
+		var record DependencyRecord
+		if json.Unmarshal(raw, &record) != nil {
+			t.Fatal("dependency record decode")
+		}
+		hash, err := dependencyHash(record)
+		if err != nil || hash != event.ResourceID || hash != record.Hash || len(record.Evidence) != 2 {
+			t.Fatal("dependency hash/status binding lost")
+		}
+		original := event.Details["record"].(DependencyRecord)
+		for i := range original.Evidence {
+			if original.Evidence[i].Status != record.Evidence[i].Status {
+				t.Fatal("dependency status changed")
+			}
+		}
+		var restored DependencySnapshot
+		if json.Unmarshal(raw, &restored) == nil || restored.Hash() != "" {
+			t.Fatal("database minted dependency trust")
+		}
+	}
 	q := u.Query()
 	q.Set("default_transaction_read_only", "on")
 	u.RawQuery = q.Encode()
@@ -122,6 +164,15 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 	stored, err := pg.AuditEvents(failedSink.events[0].CorrelationID)
 	if err != nil || len(stored) != 0 {
 		t.Fatal("refused transaction persisted an audit")
+	}
+	dependencyCollector, _, _, _, _, dependencyKey := dependencyFixture(t)
+	dependencyCollector.audit = failedSink
+	before := len(failedSink.events)
+	if snapshot, err := dependencyCollector.Collect(ctx, dependencyKey); err == nil || snapshot.Hash() != "" || len(failedSink.events) != before+1 {
+		t.Fatal("refused dependency INSERT returned a snapshot or retried")
+	}
+	if events, err := pg.AuditEvents(failedSink.events[before].CorrelationID); err != nil || len(events) != 0 {
+		t.Fatal("refused dependency INSERT persisted")
 	}
 	t.Log("PostgreSQL retained four-valued CI records across reopen with reproducible hashes; refused INSERT returned no snapshot")
 }
