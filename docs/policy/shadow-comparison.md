@@ -97,3 +97,30 @@ analysis completed. Invalid input/signature/key/expiry, restricted builtins,
 evaluation failure or cancellation exits 1 with no JSON report. `policy-shadow
 -h` exits 0 and explains the same limits. Preserve Bundle/input hashes with any
 review record; the CLI does not write a durable policy deployment audit.
+
+## Opt-in durable observation audit
+
+`NewAuditedShadowComparator` adds a host-clock, trusted issuer/key resolver and
+context-aware durable sink around the same comparison. `Compare` revalidates
+both signed Bundles, then commits one `policy.shadow.observe` event before
+returning the report and its SHA-256 hash. The event includes the full comparison
+report (input hashes, decisions, reasons, roles and differences), but no raw
+Policy inputs, tokens or Rego modules. Use sanitized case IDs and reason labels;
+the report remains operationally sensitive. Independent copies separate caller
+and audit storage ownership. The result is `OBSERVED`, never a promotion approval.
+
+Signature/evaluation failure, cancellation, append failure/response loss, clock
+reversal or either Bundle expiring before return yields no report. Ambiguous
+appends are not retried, and may leave an audit event even when the caller gets
+an error. The host clock is not a request parameter; the original offline helper
+still supports explicit historical analysis time. An old report or stored record
+cannot skip a new comparison's trust checks. This adds no registration,
+distribution, activation, rollback or command listener, and changes no Engine,
+Plan, Grant or Runner enforcement defaults.
+
+`make test-policy-shadow-audit` creates a fresh dedicated PostgreSQL fixture,
+verifies report/difference/hash retention across reopen and rejects a server-side
+read-only INSERT without returning data. It ignores caller database settings and
+cleans only its own container/volumes. Normal tests cover failure and expiry,
+independent nested copies and unchanged-policy observations. Operational rollout
+and live source acceptance remain #10 work. See [proposed ADR-0020](../adr/0020-policy-shadow-observation-audit.md).
