@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -176,4 +178,40 @@ func mustTrustJSON(t *testing.T, bundle GrantTrustBundle) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestFileKeysPinnedBundleRefusesOldActiveKeyAfterRevocationAndRestart(t *testing.T) {
+	now := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
+	oldKey, _, _ := ed25519.GenerateKey(rand.Reader)
+	newKey, _, _ := ed25519.GenerateKey(rand.Reader)
+	old := testTrustBundle(now, "tenant-1", trustEntry("old", oldKey, "active", now), trustEntry("new", newKey, "active", now))
+	resolver := writeTrustBundle(t, old, func() time.Time { return now })
+	updated := old
+	updated.Keys = append([]GrantTrustKey(nil), old.Keys...)
+	updated.Keys[0].Status = "revoked"
+	rewriteTrustBundle(t, resolver.Path, updated)
+	raw, err := os.ReadFile(resolver.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(raw)
+	resolver.ExpectedHash = "sha256:" + hex.EncodeToString(hash[:])
+	if _, err := resolver.ResolveGrantKey(context.Background(), old.Issuer, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveGrantKey(context.Background(), old.Issuer, "old"); err == nil {
+		t.Fatal("revoked key accepted")
+	}
+	rewriteTrustBundle(t, resolver.Path, old)
+	restarted := FileKeys{Path: resolver.Path, Issuer: resolver.Issuer, Tenant: resolver.Tenant, ExpectedHash: resolver.ExpectedHash, Now: resolver.Now}
+	if restarted.Validate(context.Background()) == nil {
+		t.Fatal("old bundle passed startup validation")
+	}
+	if _, err := restarted.ResolveGrantKey(context.Background(), old.Issuer, "old"); err == nil {
+		t.Fatal("old active key restored")
+	}
+	rewriteTrustBundle(t, resolver.Path, updated)
+	if _, err := restarted.ResolveGrantKey(context.Background(), old.Issuer, "new"); err != nil {
+		t.Fatal(err)
+	}
 }

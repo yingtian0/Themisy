@@ -64,6 +64,7 @@ type controlPlaneSettings struct {
 	ClientKeyFile   string `yaml:"client_key_file"`
 	CAFile          string `yaml:"ca_file"`
 	TrustBundleFile string `yaml:"trust_bundle_file"`
+	TrustBundleHash string `yaml:"trust_bundle_hash"`
 	TrustKeyID      string `yaml:"trust_key_id"`
 	TrustKeyFile    string `yaml:"trust_key_file"`
 }
@@ -256,6 +257,9 @@ func load(path string) (settings, error) {
 
 func validateGrantTrust(mode string, configuration controlPlaneSettings) error {
 	hasBundle := configuration.TrustBundleFile != ""
+	if configuration.TrustBundleHash != "" && !hasBundle {
+		return errors.New("Grant trust bundle hash requires a bundle file")
+	}
 	hasLegacy := configuration.TrustKeyID != "" || configuration.TrustKeyFile != ""
 	if hasBundle && hasLegacy {
 		return errors.New("configure either the Grant trust bundle or the legacy development key, not both")
@@ -330,7 +334,7 @@ func loadOIDCKeyResolver(configuration identitySettings, mode string) (identity.
 
 func loadGrantTrustKeys(ctx context.Context, configuration settings) (grant.KeyResolver, error) {
 	if configuration.ControlPlane.TrustBundleFile != "" {
-		keys := grant.FileKeys{Path: configuration.ControlPlane.TrustBundleFile, Issuer: configuration.ControlPlane.Issuer, Tenant: configuration.TenantID}
+		keys := grant.FileKeys{ExpectedHash: configuration.ControlPlane.TrustBundleHash, Path: configuration.ControlPlane.TrustBundleFile, Issuer: configuration.ControlPlane.Issuer, Tenant: configuration.TenantID}
 		if err := keys.Validate(ctx); err != nil {
 			return nil, err
 		}

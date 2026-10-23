@@ -24,6 +24,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0016](0016-tenant-bound-oidc-read-api.md) | Proposed | Compose an audited tenant-bound OIDC summary API with no command routes |
 | [0017](0017-dependency-health-observations.md) | Proposed | Collect typed read-only dependency health observations without granting execution authority |
 | [0018](0018-pinned-metadata-source-observations.md) | Proposed | Collect pinned Contract/Profile source provenance with immutable audited snapshots |
+| [0019](0019-operator-pinned-grant-trust-bundle.md) | Proposed | Optionally pin exact Grant trust bundle bytes in operator configuration |
 | [0020](0020-policy-shadow-observation-audit.md) | Proposed | Durably audit read-only Policy shadow comparisons without activation authority |
 
 ## Process
