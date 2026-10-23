@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,10 +21,11 @@ const maxGrantTrustBundleBytes = 64 << 10
 // FileKeys resolves only keys from a fresh, Runner-local trust bundle. It does
 // not cache keys, fetch trust over the network, or fall back to a prior bundle.
 type FileKeys struct {
-	Path   string
-	Issuer string
-	Tenant string
-	Now    func() time.Time
+	ExpectedHash string
+	Path         string
+	Issuer       string
+	Tenant       string
+	Now          func() time.Time
 }
 
 type GrantTrustBundle struct {
@@ -79,6 +82,12 @@ func (f FileKeys) ResolveGrantKey(ctx context.Context, issuer, keyID string) (ed
 	}
 	if len(raw) > maxGrantTrustBundleBytes {
 		return nil, errors.New("grant trust bundle exceeds size limit")
+	}
+	if f.ExpectedHash != "" {
+		sum := sha256.Sum256(raw)
+		if f.ExpectedHash != "sha256:"+hex.EncodeToString(sum[:]) {
+			return nil, errors.New("grant trust bundle does not match the operator-pinned hash")
+		}
 	}
 	if err := rejectDuplicateJSONKeys(raw); err != nil {
 		return nil, err

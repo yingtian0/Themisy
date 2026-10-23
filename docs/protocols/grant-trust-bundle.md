@@ -42,3 +42,20 @@ administrator restoring an older copy. Use deployment access controls and
 audit history for the provisioning path. This protocol does not define KMS/HSM
 signing operations, OIDC/JWKS trust, Policy Bundle verification, or cross-host
 distribution.
+
+## Optional operator hash pin
+
+Set `control_plane.trust_bundle_hash` to `sha256:` followed by the lowercase
+SHA-256 of the exact bundle file bytes. The Runner checks it on startup and on
+every key lookup, before resolving any key. Wrong, malformed or old replacement
+files are refused without a previous-file cache. A pin without a bundle file is
+invalid. Omitting this additive setting preserves the existing refresh behavior.
+
+For rotation, deploy the new bundle bytes and matching pin using protected
+operator configuration; temporary mismatch fails closed. Keep the pin in a
+separately controlled deployment configuration. Pinning detects restoration of
+an old active-key bundle even if its timestamps equal the newer revocation
+bundle, including after Runner restart. It is not automatic distribution or
+monotonic storage: an operator who reverts both configuration and file can
+restore old trust. Exact-byte formatting changes also require a new pin. Live
+KMS and operational distribution drills remain external acceptance gates.
