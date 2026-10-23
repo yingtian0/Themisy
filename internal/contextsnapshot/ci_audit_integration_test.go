@@ -91,6 +91,14 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 	}
 	// Keep the existing CI assertions scoped to their schema.
 	sink.events = sink.events[:len(sink.events)-len(dependencyEvents)]
+	metadataCollector, _, _, _, _, metadataKey, _ := metadataFixture(t)
+	metadataCollector.audit = sink
+	metadataSnapshot, err := metadataCollector.Collect(ctx, metadataKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataEvent := sink.events[len(sink.events)-1]
+	sink.events = sink.events[:len(sink.events)-1]
 	pg.Close()
 	pg, err = postgres.New(ctx, databaseURL)
 	if err != nil {
@@ -147,6 +155,26 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 			t.Fatal("database minted dependency trust")
 		}
 	}
+	metadataEvents, err := pg.AuditEvents(metadataEvent.CorrelationID)
+	if err != nil || len(metadataEvents) != 1 {
+		t.Fatal("metadata audit reopen", err)
+	}
+	metadataJSON, err := json.Marshal(metadataEvents[0].Details["record"])
+	if err != nil || strings.Contains(string(metadataJSON), "credential-canary") {
+		t.Fatal("metadata audit serialization")
+	}
+	var metadataRecord MetadataRecord
+	if json.Unmarshal(metadataJSON, &metadataRecord) != nil {
+		t.Fatal("metadata audit decode")
+	}
+	metadataRecordHash, err := metadataHash(metadataRecord)
+	if err != nil || metadataRecordHash != metadataSnapshot.Hash() || metadataRecordHash != metadataEvent.ResourceID || metadataRecord.Contract.Revision != metadataSnapshot.Record().Contract.Revision || metadataRecord.Contract.RawHash == "" || metadataRecord.Profile.ContentHash == "" {
+		t.Fatal("metadata provenance/hash lost")
+	}
+	var importedMetadata MetadataSnapshot
+	if json.Unmarshal(metadataJSON, &importedMetadata) == nil || importedMetadata.Hash() != "" {
+		t.Fatal("database minted metadata trust")
+	}
 	q := u.Query()
 	q.Set("default_transaction_read_only", "on")
 	u.RawQuery = q.Encode()
@@ -173,6 +201,14 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 	}
 	if events, err := pg.AuditEvents(failedSink.events[before].CorrelationID); err != nil || len(events) != 0 {
 		t.Fatal("refused dependency INSERT persisted")
+	}
+	metadataCollector.audit = failedSink
+	before = len(failedSink.events)
+	if snapshot, err := metadataCollector.Collect(ctx, metadataKey); err == nil || snapshot.Hash() != "" || len(failedSink.events) != before+1 {
+		t.Fatal("refused metadata INSERT returned snapshot or retried")
+	}
+	if events, err := pg.AuditEvents(failedSink.events[before].CorrelationID); err != nil || len(events) != 0 {
+		t.Fatal("refused metadata INSERT persisted")
 	}
 	t.Log("PostgreSQL retained four-valued CI records across reopen with reproducible hashes; refused INSERT returned no snapshot")
 }
