@@ -23,6 +23,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0015](0015-ci-only-context-snapshots.md) | Proposed | Collect immutable CI-only observations without trusting imported JSON as source evidence |
 | [0016](0016-tenant-bound-oidc-read-api.md) | Proposed | Compose an audited tenant-bound OIDC summary API with no command routes |
 | [0017](0017-dependency-health-observations.md) | Proposed | Collect typed read-only dependency health observations without granting execution authority |
+| [0018](0018-pinned-metadata-source-observations.md) | Proposed | Collect pinned Contract/Profile source provenance with immutable audited snapshots |
 
 ## Process
 
