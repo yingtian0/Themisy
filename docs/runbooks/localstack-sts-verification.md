@@ -82,3 +82,13 @@ Even a successful emulator run does not establish actual IAM trust enforcement,
 workload identity isolation, CloudTrail attribution, real STS availability or ECS
 behavior. Those dedicated AWS/operational gates remain #11; this test can supply
 only #6's explicitly allowed LocalStack AssumeRole evidence once actually run.
+
+## STS response admission
+
+The broker now rejects blank credential fields, credentials expired at receipt,
+expiry beyond the requested session duration, and cancellation before or during
+AssumeRole. Durations must be whole seconds within 15 minutes to 12 hours.
+Provider errors are returned as fixed diagnostics without response text. Keep
+Runner clocks synchronized; a clock mismatch can cause a valid provider response
+to be refused safely. The test clock hook is host configuration, not request data.
+These response checks do not establish actual IAM trust or live LocalStack acceptance.
