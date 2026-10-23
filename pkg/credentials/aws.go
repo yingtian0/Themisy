@@ -3,7 +3,6 @@ package credentials
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -46,9 +45,13 @@ type STSAPI interface {
 type AWSBroker struct {
 	Client STSAPI
 	Roles  map[AWSRoleKey]AWSRole
+	Now    func() time.Time
 }
 
 func (b *AWSBroker) Acquire(ctx context.Context, request Request) (Credential, error) {
+	if err := ctx.Err(); err != nil {
+		return Credential{}, errors.New("AWS credential request cancelled")
+	}
 	if err := request.Validate(); err != nil {
 		return Credential{}, err
 	}
@@ -63,7 +66,7 @@ func (b *AWSBroker) Acquire(ctx context.Context, request Request) (Credential, e
 	if duration <= 0 {
 		duration = 15 * time.Minute
 	}
-	if duration < 15*time.Minute || duration > 12*time.Hour {
+	if duration < 15*time.Minute || duration > 12*time.Hour || duration%time.Second != 0 {
 		return Credential{}, errors.New("AWS role duration must be between 15m and 12h")
 	}
 	seconds := int32(duration / time.Second)
@@ -83,10 +86,17 @@ func (b *AWSBroker) Acquire(ctx context.Context, request Request) (Credential, e
 	}
 	output, err := b.Client.AssumeRole(ctx, input)
 	if err != nil {
-		return Credential{}, fmt.Errorf("assume allow-listed AWS role: %w", err)
+		return Credential{}, errors.New("assume allow-listed AWS role failed")
 	}
 	if output == nil || output.Credentials == nil || output.Credentials.AccessKeyId == nil || output.Credentials.SecretAccessKey == nil || output.Credentials.SessionToken == nil || output.Credentials.Expiration == nil {
 		return Credential{}, errors.New("STS returned incomplete temporary credentials")
+	}
+	now := time.Now().UTC()
+	if b.Now != nil {
+		now = b.Now().UTC()
+	}
+	if ctx.Err() != nil || now.IsZero() || strings.TrimSpace(aws.ToString(output.Credentials.AccessKeyId)) == "" || strings.TrimSpace(aws.ToString(output.Credentials.SecretAccessKey)) == "" || strings.TrimSpace(aws.ToString(output.Credentials.SessionToken)) == "" || !output.Credentials.Expiration.After(now) || output.Credentials.Expiration.After(now.Add(duration)) {
+		return Credential{}, errors.New("STS returned invalid temporary credentials")
 	}
 	return New(map[string][]byte{
 		AWSAccessKeyID:     []byte(aws.ToString(output.Credentials.AccessKeyId)),

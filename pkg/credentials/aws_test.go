@@ -2,6 +2,8 @@ package credentials
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,9 +14,9 @@ import (
 
 func TestAWSBrokerUsesTrustedRoleAndRecordsGrantInSession(t *testing.T) {
 	now := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
-	client := &fakeSTS{output: &sts.AssumeRoleOutput{Credentials: &types.Credentials{AccessKeyId: aws.String("access"), SecretAccessKey: aws.String("secret"), SessionToken: aws.String("session"), Expiration: aws.Time(now.Add(time.Hour))}}}
+	client := &fakeSTS{output: &sts.AssumeRoleOutput{Credentials: &types.Credentials{AccessKeyId: aws.String("access"), SecretAccessKey: aws.String("secret"), SessionToken: aws.String("session"), Expiration: aws.Time(now.Add(20 * time.Minute))}}}
 	key := AWSRoleKey{TenantID: "tenant-1", Service: "payment-api", Environment: "production", Purpose: PurposeDeploy}
-	broker := &AWSBroker{Client: client, Roles: map[AWSRoleKey]AWSRole{key: {RoleARN: "arn:aws:iam::111122223333:role/themisy-payment", ExternalID: "customer-external-id", Duration: 20 * time.Minute}}}
+	broker := &AWSBroker{Now: func() time.Time { return now }, Client: client, Roles: map[AWSRoleKey]AWSRole{key: {RoleARN: "arn:aws:iam::111122223333:role/themisy-payment", ExternalID: "customer-external-id", Duration: 20 * time.Minute}}}
 	credential, err := broker.Acquire(context.Background(), Request{Provider: ProviderAWS, TenantID: key.TenantID, RunID: "run-42", Service: key.Service, Environment: key.Environment, Purpose: key.Purpose, GrantID: "grant_01/test"})
 	if err != nil {
 		t.Fatal(err)
@@ -66,9 +68,54 @@ func TestAWSBrokerRejectsMissingRunIDBeforeSTS(t *testing.T) {
 type fakeSTS struct {
 	input  *sts.AssumeRoleInput
 	output *sts.AssumeRoleOutput
+	err    error
+	hook   func()
 }
 
 func (f *fakeSTS) AssumeRole(_ context.Context, input *sts.AssumeRoleInput, _ ...func(*sts.Options)) (*sts.AssumeRoleOutput, error) {
 	f.input = input
-	return f.output, nil
+	if f.hook != nil {
+		f.hook()
+	}
+	return f.output, f.err
+}
+
+func TestAWSBrokerRejectsInvalidResponsesWithoutReturningCredentialBytes(t *testing.T) {
+	for _, mode := range []string{"empty-access", "empty-secret", "empty-session", "expired", "too-long", "cancelled", "provider-error", "fractional-duration"} {
+		t.Run(mode, func(t *testing.T) {
+			now := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
+			out := &sts.AssumeRoleOutput{Credentials: &types.Credentials{AccessKeyId: aws.String("secret-access"), SecretAccessKey: aws.String("secret-value"), SessionToken: aws.String("secret-token"), Expiration: aws.Time(now.Add(15 * time.Minute))}}
+			client := &fakeSTS{output: out}
+			key := AWSRoleKey{TenantID: "tenant", Service: "service", Environment: "staging", Purpose: PurposeDeploy}
+			role := AWSRole{RoleARN: "arn:aws:iam::111122223333:role/test", Duration: 15 * time.Minute}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch mode {
+			case "empty-access":
+				out.Credentials.AccessKeyId = aws.String(" ")
+			case "empty-secret":
+				out.Credentials.SecretAccessKey = aws.String("")
+			case "empty-session":
+				out.Credentials.SessionToken = aws.String("")
+			case "expired":
+				out.Credentials.Expiration = aws.Time(now)
+			case "too-long":
+				out.Credentials.Expiration = aws.Time(now.Add(time.Hour))
+			case "cancelled":
+				client.hook = cancel
+			case "provider-error":
+				client.err = errors.New("secret-value provider body")
+			case "fractional-duration":
+				role.Duration += time.Nanosecond
+			}
+			b := AWSBroker{Client: client, Roles: map[AWSRoleKey]AWSRole{key: role}, Now: func() time.Time { return now }}
+			credential, err := b.Acquire(ctx, Request{Provider: ProviderAWS, TenantID: key.TenantID, Service: key.Service, Environment: key.Environment, Purpose: key.Purpose, RunID: "run", GrantID: "grant"})
+			if err == nil || len(credential.Value(AWSAccessKeyID)) != 0 || credential.ValidAt(now) || strings.Contains(err.Error(), "secret-value") {
+				t.Fatal("invalid response exposed credentials or diagnostics")
+			}
+			if mode == "fractional-duration" && client.input != nil {
+				t.Fatal("fractional duration reached STS")
+			}
+		})
+	}
 }
