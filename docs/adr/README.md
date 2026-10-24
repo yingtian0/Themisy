@@ -26,6 +26,7 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0018](0018-pinned-metadata-source-observations.md) | Proposed | Collect pinned Contract/Profile source provenance with immutable audited snapshots |
 | [0019](0019-operator-pinned-grant-trust-bundle.md) | Proposed | Optionally pin exact Grant trust bundle bytes in operator configuration |
 | [0020](0020-policy-shadow-observation-audit.md) | Proposed | Durably audit read-only Policy shadow comparisons without activation authority |
+| [0021](0021-ecs-task-definition-preflight.md) | Proposed | Verify registered task-definition image content before ECS writes |
 
 ## Process
 

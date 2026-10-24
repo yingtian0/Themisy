@@ -133,11 +133,14 @@ func newFixture(t *testing.T) ecsFixture {
 }
 
 type fakeECS struct {
-	serviceHook func(*awsecs.DescribeServicesOutput)
-	listHook    func(*awsecs.ListTasksInput) (*awsecs.ListTasksOutput, error)
-	taskHook    func(*awsecs.DescribeTasksOutput)
-	listCalls   int
-	taskCalls   int
+	definitionHook  func(*awsecs.DescribeTaskDefinitionOutput)
+	definitionErr   error
+	definitionCalls int
+	serviceHook     func(*awsecs.DescribeServicesOutput)
+	listHook        func(*awsecs.ListTasksInput) (*awsecs.ListTasksOutput, error)
+	taskHook        func(*awsecs.DescribeTasksOutput)
+	listCalls       int
+	taskCalls       int
 
 	current          string
 	status           string
@@ -230,5 +233,55 @@ func TestAdapterOwnsNestedOperatorConfiguration(t *testing.T) {
 	request.ArtifactDigest = "sha256:" + strings.Repeat("c", 64)
 	if _, err := instance.Deploy(context.Background(), request, credentials.Credential{}); err == nil || f.client.updateCalls != 2 {
 		t.Fatal("unmapped digest reached provider write")
+	}
+}
+
+func (f *fakeECS) DescribeTaskDefinition(_ context.Context, input *awsecs.DescribeTaskDefinitionInput, _ ...func(*awsecs.Options)) (*awsecs.DescribeTaskDefinitionOutput, error) {
+	f.definitionCalls++
+	output := &awsecs.DescribeTaskDefinitionOutput{TaskDefinition: &types.TaskDefinition{TaskDefinitionArn: input.TaskDefinition, Status: types.TaskDefinitionStatusActive, ContainerDefinitions: []types.ContainerDefinition{{Name: aws.String("app"), Image: aws.String("example/app@sha256:" + strings.Repeat("a", 64))}}}}
+	if f.definitionHook != nil {
+		f.definitionHook(output)
+	}
+	return output, f.definitionErr
+}
+func TestTaskDefinitionContentMustMatchBeforeDeployAndRollback(t *testing.T) {
+	for _, operation := range []string{"deploy", "rollback"} {
+		for _, mode := range []string{"wrong-arn", "inactive", "mutable-image", "wrong-digest", "missing", "extra", "duplicate", "provider-error"} {
+			t.Run(operation+"/"+mode, func(t *testing.T) {
+				f := newFixture(t)
+				f.client.definitionHook = func(o *awsecs.DescribeTaskDefinitionOutput) {
+					d := o.TaskDefinition
+					switch mode {
+					case "wrong-arn":
+						d.TaskDefinitionArn = aws.String("foreign")
+					case "inactive":
+						d.Status = types.TaskDefinitionStatusInactive
+					case "mutable-image":
+						d.ContainerDefinitions[0].Image = aws.String("example/app:latest")
+					case "wrong-digest":
+						d.ContainerDefinitions[0].Image = aws.String("example/app@sha256:" + strings.Repeat("b", 64))
+					case "missing":
+						d.ContainerDefinitions = nil
+					case "extra":
+						d.ContainerDefinitions = append(d.ContainerDefinitions, types.ContainerDefinition{Name: aws.String("sidecar"), Image: aws.String("extra")})
+					case "duplicate":
+						d.ContainerDefinitions = append(d.ContainerDefinitions, d.ContainerDefinitions[0])
+					}
+				}
+				if mode == "provider-error" {
+					f.client.definitionErr = errors.New("raw provider secret")
+				}
+				var err error
+				if operation == "deploy" {
+					_, err = f.adapter.Deploy(context.Background(), f.request, credentials.Credential{})
+				} else {
+					f.client.current = f.definition.ARN
+					_, err = f.adapter.Rollback(context.Background(), adapter.RollbackRequest{Target: f.request.Target, IdempotencyKey: "rollback", OriginalDeployment: adapter.Deployment{ExternalExecutionID: "prior"}}, credentials.Credential{})
+				}
+				if err == nil || f.client.updateCalls != 0 || f.client.definitionCalls != 1 {
+					t.Fatal("unverified definition reached write")
+				}
+			})
+		}
 	}
 }
