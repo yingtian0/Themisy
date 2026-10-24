@@ -23,6 +23,7 @@ const (
 )
 
 type API interface {
+	DescribeTaskDefinition(context.Context, *awsecs.DescribeTaskDefinitionInput, ...func(*awsecs.Options)) (*awsecs.DescribeTaskDefinitionOutput, error)
 	ListTasks(context.Context, *awsecs.ListTasksInput, ...func(*awsecs.Options)) (*awsecs.ListTasksOutput, error)
 	DescribeTasks(context.Context, *awsecs.DescribeTasksInput, ...func(*awsecs.Options)) (*awsecs.DescribeTasksOutput, error)
 	DescribeServices(context.Context, *awsecs.DescribeServicesInput, ...func(*awsecs.Options)) (*awsecs.DescribeServicesOutput, error)
@@ -133,6 +134,9 @@ func (a *Adapter) Deploy(ctx context.Context, request adapter.DeployRequest, cre
 	if err != nil {
 		return adapter.Deployment{}, retryable("deploy", request.IdempotencyKey, err)
 	}
+	if err := verifyTaskDefinition(ctx, client, definition.ARN, definition.ExpectedContainerDigests, request.IdempotencyKey); err != nil {
+		return adapter.Deployment{}, err
+	}
 	current, err := describe(ctx, client, target)
 	if err != nil {
 		return adapter.Deployment{}, retryable("describe-services", request.IdempotencyKey, err)
@@ -166,6 +170,9 @@ func (a *Adapter) Rollback(ctx context.Context, request adapter.RollbackRequest,
 	client, err := a.clients(ctx, target.Region, credential)
 	if err != nil {
 		return adapter.Deployment{}, retryable("rollback", request.IdempotencyKey, err)
+	}
+	if err := verifyTaskDefinition(ctx, client, target.RollbackTaskDefinition, target.RollbackContainerDigests, request.IdempotencyKey); err != nil {
+		return adapter.Deployment{}, err
 	}
 	current, err := describe(ctx, client, target)
 	if err != nil {

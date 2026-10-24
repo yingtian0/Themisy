@@ -302,6 +302,9 @@ func TestConfiguredSidecarAndDuplicateContainerNames(t *testing.T) {
 			f := newFixture(t)
 			f.client.current = f.definition.ARN
 			f.definition.ExpectedContainerDigests["sidecar"] = "sha256:" + strings.Repeat("b", 64)
+			f.client.definitionHook = func(o *awsecs.DescribeTaskDefinitionOutput) {
+				o.TaskDefinition.ContainerDefinitions = append(o.TaskDefinition.ContainerDefinitions, types.ContainerDefinition{Name: aws.String("sidecar"), Image: aws.String("example/sidecar@sha256:" + strings.Repeat("b", 64))})
+			}
 			// Apply the changed operator configuration by constructing a new adapter.
 			configured, err := New(Config{Targets: map[TargetKey]Target{{Service: f.request.Target.Service, Environment: f.request.Target.Environment}: f.target}}, func(context.Context, string, credentials.Credential) (API, error) { return f.client, nil })
 			if err != nil {

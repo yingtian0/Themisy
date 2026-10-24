@@ -27,6 +27,12 @@ permissions to both roles.
       }
     },
     {
+      "Sid": "ReadTaskDefinitionContent",
+      "Effect": "Allow",
+      "Action": "ecs:DescribeTaskDefinition",
+      "Resource": "*"
+    },
+    {
       "Sid": "ListClusterTasks",
       "Effect": "Allow",
       "Action": "ecs:ListTasks",
@@ -118,3 +124,26 @@ These checks are covered with simulated ECS responses only, not live AWS/IAM
 validation. This is one Issue #9 unit: workflow waiting currently stops on
 UNKNOWN and the later runtime Verification/Evidence integration remains
 unconnected. Passing this adapter gate does not claim all of Issue #9 complete.
+
+
+## Task definition preflight
+
+Deploy and rollback now require `DescribeTaskDefinition` before any
+`UpdateService`. The configured exact ARN must resolve to an ACTIVE definition
+with exactly the configured container names and immutable `repository@sha256:...`
+images. A family name, mutable image tag, missing/extra container, wrong revision
+or digest cannot pass. Provider read failure makes no write; the existing runtime
+health check is still required after dispatch. No task-definition registration
+or service-setting edits are added.
+
+Existing role policies must add the read action before adopting this adapter.
+The AWS authorization table lists no resource type for this read action, so the
+example grants only `ecs:DescribeTaskDefinition` on `*`; this is broader read
+visibility, not a write permission. Confirm its acceptability for the customer
+account and validate IAM in staging. The application still requests only its
+locally configured revision. Custom implementations of the internal `ecs.API`
+interface must implement the narrow DescribeTaskDefinition method. Grant and
+public Adapter SDK request formats are unchanged.
+
+Sources: [AWS ECS authorization table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.html),
+[DescribeTaskDefinition API](https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DescribeTaskDefinition.html).
