@@ -89,3 +89,7 @@ test-agent-cycle:
 .PHONY: test-policy-shadow-audit
 test-policy-shadow-audit:
 	bash scripts/test-policy-shadow-audit.sh
+
+.PHONY: test-runtime-observation-audit
+test-runtime-observation-audit:
+	bash scripts/test-runtime-observation-audit.sh

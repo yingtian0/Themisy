@@ -167,6 +167,8 @@ jobs:
 
       - name: Verify durable Policy shadow audit
         run: make test-policy-shadow-audit
+      - name: Verify durable runtime observation audit
+        run: make test-runtime-observation-audit
       - name: Verify tenant-bound OIDC read API
         run: make test-oidc-read-api
 
