@@ -99,6 +99,17 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 	}
 	metadataEvent := sink.events[len(sink.events)-1]
 	sink.events = sink.events[:len(sink.events)-1]
+	ciPart, dependencyPart, metadataPart := sourceContextParts(t, false)
+	assembler, err := NewSourceContextAssembler(sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assembled, err := assembler.Assemble(ctx, ciPart, dependencyPart, metadataPart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceContextEvent := sink.events[len(sink.events)-1]
+	sink.events = sink.events[:len(sink.events)-1]
 	pg.Close()
 	pg, err = postgres.New(ctx, databaseURL)
 	if err != nil {
@@ -175,6 +186,26 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 	if json.Unmarshal(metadataJSON, &importedMetadata) == nil || importedMetadata.Hash() != "" {
 		t.Fatal("database minted metadata trust")
 	}
+	contextEvents, err := pg.AuditEvents(sourceContextEvent.CorrelationID)
+	if err != nil || len(contextEvents) != 1 {
+		t.Fatal("assembled source audit reopen", err)
+	}
+	contextJSON, err := json.Marshal(contextEvents[0].Details["record"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourceRecord SourceContextRecord
+	if json.Unmarshal(contextJSON, &sourceRecord) != nil {
+		t.Fatal("assembled source record decode")
+	}
+	sourceHash, err := sourceContextHash(sourceRecord)
+	if err != nil || sourceHash != assembled.Hash() || sourceHash != sourceContextEvent.ResourceID || sourceRecord.Dependencies == nil || len(sourceRecord.DependencyServices) != 1 || sourceRecord.Metadata.Contract.Revision == sourceRecord.CommitSHA {
+		t.Fatal("assembled source bindings lost")
+	}
+	var restoredContext SourceContextSnapshot
+	if json.Unmarshal(contextJSON, &restoredContext) == nil || restoredContext.Hash() != "" {
+		t.Fatal("database minted source context trust")
+	}
 	q := u.Query()
 	q.Set("default_transaction_read_only", "on")
 	u.RawQuery = q.Encode()
@@ -209,6 +240,14 @@ func TestPostgresCIObservationAudit(t *testing.T) {
 	}
 	if events, err := pg.AuditEvents(failedSink.events[before].CorrelationID); err != nil || len(events) != 0 {
 		t.Fatal("refused metadata INSERT persisted")
+	}
+	assembler.sink = failedSink
+	before = len(failedSink.events)
+	if snapshot, err := assembler.Assemble(ctx, ciPart, dependencyPart, metadataPart); err == nil || snapshot.Hash() != "" || len(failedSink.events) != before+1 {
+		t.Fatal("refused context INSERT returned snapshot or retried")
+	}
+	if events, err := pg.AuditEvents(failedSink.events[before].CorrelationID); err != nil || len(events) != 0 {
+		t.Fatal("refused context INSERT persisted")
 	}
 	t.Log("PostgreSQL retained four-valued CI records across reopen with reproducible hashes; refused INSERT returned no snapshot")
 }
