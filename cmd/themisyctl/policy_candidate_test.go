@@ -176,3 +176,30 @@ func TestPolicyCandidateCLIHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyCandidateStatusCLIIsReadOnlyAndDoesNotContactServer(t *testing.T) {
+	common, directory, bundle := candidateCLIInputs(t, false)
+	var out, stderr bytes.Buffer
+	register := append(append([]string{"policy-candidate", "register"}, common...), "-bundle", filepath.Join(directory, "bundle.json"))
+	if err := run(context.Background(), register, &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); w.WriteHeader(500) }))
+	defer server.Close()
+	args := append([]string{"-server", server.URL, "policy-candidate", "status"}, common...)
+	out.Reset()
+	if err := run(context.Background(), args, &out, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var inventory policy.CandidateInventory
+	if json.Unmarshal(out.Bytes(), &inventory) != nil || len(inventory.Entries) != 1 || inventory.Entries[0].Hash != bundle.Hash || inventory.Entries[0].State != "VERIFIED_CANDIDATE" || requests.Load() != 0 {
+		t.Fatal("status contacted server or lost metadata")
+	}
+	for _, extra := range [][]string{{"-hash", bundle.Hash}, {"-bundle", filepath.Join(directory, "bundle.json")}, {"-at", "2026-10-19T00:00:00Z"}} {
+		out.Reset()
+		if err := run(context.Background(), append(append([]string(nil), args...), extra...), &out, &stderr); err == nil || out.Len() != 0 {
+			t.Fatal("invalid selector/clock returned status")
+		}
+	}
+}
