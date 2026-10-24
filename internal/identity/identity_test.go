@@ -51,7 +51,7 @@ func TestDelegationUsesTrustedRecordAndEnforcesScope(t *testing.T) {
 	now := time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)
 	record := Delegation{ID: "delegation-1", Issuer: "issuer", UserSubject: "user-1", AgentID: "agent-1", Actions: []protocol.Capability{protocol.CapabilityDeploy}, ServiceSelectors: []string{"identity-*"}, Environments: []string{"staging"}, MaximumRisk: "medium", ExpiresAt: now.Add(time.Hour)}
 	verifier := &DelegationVerifier{Resolver: StaticDelegations{record.ID: record}, Now: func() time.Time { return now }}
-	request := DelegationRequest{Reference: record.ID, Subject: Subject{Issuer: "issuer", ID: "user-1"}, AgentID: "agent-1", Capability: protocol.CapabilityDeploy, Service: "identity-api", Environment: "staging", Risk: "medium"}
+	request := DelegationRequest{Reference: record.ID, Subject: Subject{Issuer: "issuer", ID: "user-1", ExpiresAt: now.Add(time.Hour)}, AgentID: "agent-1", Capability: protocol.CapabilityDeploy, Service: "identity-api", Environment: "staging", Risk: "medium"}
 	if _, err := verifier.Verify(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}

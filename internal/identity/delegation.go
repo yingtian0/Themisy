@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"time"
 
 	"themisy/pkg/protocol"
@@ -30,12 +31,15 @@ type DelegationResolver interface {
 
 type StaticDelegations map[string]Delegation
 
-func (s StaticDelegations) ResolveDelegation(_ context.Context, reference string) (Delegation, error) {
+func (s StaticDelegations) ResolveDelegation(ctx context.Context, reference string) (Delegation, error) {
+	if ctx.Err() != nil {
+		return Delegation{}, ErrDelegationDenied
+	}
 	delegation, ok := s[reference]
 	if !ok {
 		return Delegation{}, fmt.Errorf("delegation not found")
 	}
-	return delegation, nil
+	return copyDelegation(delegation), nil
 }
 
 type DelegationRequest struct {
@@ -54,16 +58,19 @@ type DelegationVerifier struct {
 }
 
 func (v *DelegationVerifier) Verify(ctx context.Context, request DelegationRequest) (Delegation, error) {
-	if v.Resolver == nil || request.Reference == "" {
+	if v == nil || v.Resolver == nil || request.Reference == "" || ctx.Err() != nil || request.Subject.Issuer == "" || request.Subject.ID == "" {
 		return Delegation{}, ErrDelegationDenied
 	}
 	delegation, err := v.Resolver.ResolveDelegation(ctx, request.Reference)
 	if err != nil {
-		return Delegation{}, fmt.Errorf("%w: %v", ErrDelegationDenied, err)
+		return Delegation{}, ErrDelegationDenied
 	}
 	now := time.Now().UTC()
 	if v.Now != nil {
 		now = v.Now().UTC()
+	}
+	if ctx.Err() != nil || now.IsZero() || !request.Subject.ExpiresAt.After(now) || (!request.Subject.IssuedAt.IsZero() && request.Subject.IssuedAt.After(now)) {
+		return Delegation{}, ErrDelegationDenied
 	}
 	if delegation.ID != request.Reference || delegation.UserSubject != request.Subject.ID || delegation.Issuer != request.Subject.Issuer || delegation.AgentID != request.AgentID || !delegation.ExpiresAt.After(now) {
 		return Delegation{}, ErrDelegationDenied
@@ -72,7 +79,14 @@ func (v *DelegationVerifier) Verify(ctx context.Context, request DelegationReque
 	if requestedRisk == 0 || maximumRisk == 0 || !capabilityAllowed(delegation.Actions, request.Capability) || !stringAllowed(delegation.Environments, request.Environment) || !serviceAllowed(delegation.ServiceSelectors, request.Service) || requestedRisk > maximumRisk {
 		return Delegation{}, ErrDelegationDenied
 	}
-	return delegation, nil
+	return copyDelegation(delegation), nil
+}
+
+func copyDelegation(d Delegation) Delegation {
+	d.Actions = slices.Clone(d.Actions)
+	d.ServiceSelectors = slices.Clone(d.ServiceSelectors)
+	d.Environments = slices.Clone(d.Environments)
+	return d
 }
 
 func capabilityAllowed(values []protocol.Capability, expected protocol.Capability) bool {

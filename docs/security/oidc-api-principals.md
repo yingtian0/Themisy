@@ -99,3 +99,21 @@ secret canaries, cancellation and expiry during append. The PostgreSQL persisten
 is real; the IdP JWTs are synthetic and application/workflow fixtures are still
 memory/fakes. This unit does not complete identity-decision correlation to
 Plan/Grant/Delegation or the whole Issue #12 audit/production acceptance gate.
+
+## Delegation lookup lifetime
+
+Delegation verification now checks the already-verified Subject again after
+resolving the trusted delegation record. A missing/expired Subject expiry, future
+Subject issuance, cancellation before/during lookup or an expired delegation
+returns the stable AGENT_DELEGATION_DENIED result without a usable record.
+Raw resolver diagnostics are not propagated. Both the static resolver and final
+verifier return independently owned action, service-selector and environment
+slices, so modifying returned scopes cannot change later authorization.
+
+Callers constructing Subjects directly must provide the real verified expiry;
+a zero expiry is no longer accepted as an indefinitely valid proof. This does
+not verify an arbitrary caller-created Subject or replace the OIDC verifier.
+Existing Runner composition supplies the verified Subject. No signed Delegation,
+Directory revocation protocol, tenant model or command default is introduced;
+those remaining production trust-chain requirements stay open under Issue #12.
+Tests cover expiry during lookup, cancellation, diagnostics and scope-copy isolation.
