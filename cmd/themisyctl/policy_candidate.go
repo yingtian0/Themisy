@@ -13,7 +13,7 @@ import (
 )
 
 func runPolicyCandidate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	usage := "Usage: themisyctl policy-candidate register|get -directory DIR -issuer ISSUER -key-id KEY_ID -public-key KEY [-bundle FILE | -hash sha256:...]"
+	usage := "Usage: themisyctl policy-candidate register|get|status -directory DIR -issuer ISSUER -key-id KEY_ID -public-key KEY [-bundle FILE | -hash sha256:...]"
 	if len(args) == 0 {
 		return fmt.Errorf("%s", usage)
 	}
@@ -23,7 +23,7 @@ func runPolicyCandidate(ctx context.Context, args []string, stdout, stderr io.Wr
 		return nil
 	}
 	action := args[0]
-	if action != "register" && action != "get" {
+	if action != "register" && action != "get" && action != "status" {
 		return fmt.Errorf("%s", usage)
 	}
 	flags := flag.NewFlagSet("policy-candidate "+action, flag.ContinueOnError)
@@ -47,7 +47,8 @@ func runPolicyCandidate(ctx context.Context, args []string, stdout, stderr io.Wr
 	}
 	if flags.NArg() != 0 || *directory == "" || *issuer == "" || *keyID == "" || *keyPath == "" ||
 		(action == "register" && (*bundlePath == "" || *hash != "")) ||
-		(action == "get" && (*hash == "" || *bundlePath != "")) {
+		(action == "get" && (*hash == "" || *bundlePath != "")) ||
+		(action == "status" && (*hash != "" || *bundlePath != "")) {
 		return fmt.Errorf("%s", usage)
 	}
 	key, err := grant.LoadEd25519PublicKey(*keyPath)
@@ -63,6 +64,13 @@ func runPolicyCandidate(ctx context.Context, args []string, stdout, stderr io.Wr
 	catalog, err := policy.OpenCandidateCatalog(*directory, *issuer, policy.StaticBundleKeys{*issuer + "\x00" + *keyID: key})
 	if err != nil {
 		return err
+	}
+	if action == "status" {
+		inventory, err := catalog.Status(ctx)
+		if err := errors.Join(err, catalog.Close()); err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(inventory)
 	}
 	var object *policy.Bundle
 	resultHash := *hash

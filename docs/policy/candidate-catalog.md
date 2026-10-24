@@ -68,3 +68,39 @@ directories, fetch candidates, sign them, repair corrupted objects or activate
 policies. CLI tests sign fresh synthetic Bundles in temporary directories, verify
 register/get/idempotency and HTTP request count zero, and reject stale/tampered
 inputs, wrong trust, path-like hashes and clock overrides without success JSON.
+
+## Current candidate status
+
+`CandidateCatalog.Status(ctx)` and `themisyctl policy-candidate status` inspect
+an operator-owned local directory without activation, distribution or server
+requests. The same required directory/issuer/key-id/public-key options apply;
+`-hash`, `-bundle` and historical `-at` overrides are rejected for status.
+
+Each hash-named object is freshly verified through the existing Get path,
+including signature, hash, issuer, compatibility, expiry and offline compilation.
+Final signature/trust/expiry checks use the inventory's observation time. Rows
+are hash-sorted. VERIFIED_CANDIDATE means only that local artifact passed checks
+at `inspected_at`, not that a Runner applied it or it is approved for use. A
+missing, malformed, expired, revoked or symlink object is UNAVAILABLE and exposes
+only its requested hash, without untrusted metadata or raw diagnostics. The
+command exits zero for a complete inspection even if rows are UNAVAILABLE.
+
+Work is bounded to 256 directory entries, including temporary/unrelated files.
+Too many entries, directory failure, cancellation or clock reversal returns an
+error with no inventory, rather than a partial positive list. Temporary catalog
+publication files are not shown as candidates. There is no active pointer,
+mutable version alias, cached positive trust or network endpoint. Use Get for a
+new verified read; a status result cannot bypass subsequent trust checks.
+
+Example (current-time validation, no `-at`):
+
+```bash
+themisyctl policy-candidate status -directory ./candidate-store \
+  -issuer https://policy.example -key-id policy-key -public-key ./policy.pub
+```
+
+The directory and public key must already be operator provisioned. This command
+does not create them and the example is not a live deployment acceptance claim.
+Tests cover register/status without HTTP calls, invalid flag refusal, sorted
+verified/unavailable rows, expiry, key revocation, bounded work and cancellation.
+Policy distribution, Runner-applied hashes and rollout/rollback remain #10 work.
