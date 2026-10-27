@@ -1,6 +1,6 @@
 # Readiness and supported evaluation scope
 
-Reviewed 2026-10-18 (Asia/Tokyo). This is a development snapshot, not a release
+Reviewed 2026-10-27 (Asia/Tokyo). This is a development snapshot, not a release
 or a production support commitment. Task order: [#52](https://github.com/yingtian0/Themisy/issues/52).
 
 ## Versions and evidence
@@ -9,6 +9,8 @@ or a production support commitment. Task order: [#52](https://github.com/yingtia
 |---|---|
 | main `8eb8a400d4df468036e101927c177cbd66a5d723` | [CI run 38865188601](https://github.com/yingtian0/Themisy/actions/runs/38865188601), all five jobs succeeded; includes real PostgreSQL/Temporal recovery with simulated provider boundaries |
 | offline course `671fe6953a09b2156ec1542cce877e798f18e8c7` | [PR #53](https://github.com/yingtian0/Themisy/pull/53), [local verification](guides/offline-verification.md); [CI run 39090979789](https://github.com/yingtian0/Themisy/actions/runs/39090979789), all five jobs succeeded on this commit |
+| main `8808bf733cb57e75d9c600f2f33ad1b2c0fcde82` | [CI run 40090297722](https://github.com/yingtian0/Themisy/actions/runs/40090297722), all five jobs succeeded; current integration and source-observation baseline |
+| coordinator acceptance `1d9fbfbd2a65d821c625278f228698eb108cd5aa` | Dedicated PostgreSQL independent-store and independent-OS-process tests passed locally with race detection; [reproduction target](runbooks/workflow-coordinator.md#reproduce-the-acceptance-gate) is now required in CI |
 | This documentation revision | Git commit adding this table; document/link checks recorded in the associated PR. No execution changes |
 
 “Implemented” means code exists. “Simulated” includes mocks, fake SDKs, memory
@@ -28,28 +30,34 @@ Skipped, missing and inconclusive checks are not passes.
 
 This table documents restrictions; it does not add feature flags to disable the
 execution binaries. Only `offline-plan` is the credential-free evaluation path.
-One Worker process is a development limitation: service reservations and circuit
-state are process-local and do not survive restart as global controls. A single
-task queue alone does not enforce cross-worker exclusion. Do not scale Workers
-or treat restart as permission to dispatch unresolved operations ([#50](https://github.com/yingtian0/Themisy/issues/50)).
+The standard persistent Store now supplies a shared PostgreSQL coordinator.
+Multiple workers must use the same database and identical scheduling limits;
+follow the [migration/restart procedure](runbooks/workflow-coordinator.md) and
+pass `make test-workflow-coordinator` before evaluating that configuration.
+That target verifies two OS processes, independent pools, UNKNOWN retention,
+expired ownership fencing and circuit persistence. In-memory/custom stores do
+not gain these guarantees. A single task queue alone provides no exclusion.
+Unresolved operations keep capacity reserved; restarting does not authorize a
+new Write. [ADR-0012](adr/0012-control-plane-workflow-coordinator.md) remains
+Proposed; local acceptance is not production approval.
 
 ## Execution status and failure paths
 
 Paths below are repository-relative evidence references at the main snapshot
-above, browsable in the [pinned source tree](https://github.com/yingtian0/Themisy/tree/8eb8a400d4df468036e101927c177cbd66a5d723).
+above, browsable in the [pinned source tree](https://github.com/yingtian0/Themisy/tree/8808bf733cb57e75d9c600f2f33ad1b2c0fcde82).
 Later implementations must provide new commit-specific evidence.
 
 | Capability / scenario | Implementation / simulated evidence | Real DB / Temporal evidence | Real AWS / remaining gate |
 |---|---|---|---|
 | Contract/Profile validation, Plan/hash/expiry | `internal/contract`, `internal/profile`, `internal/planner`; offline tests compare full Plan | Not needed for offline planning | No cloud claim; [#41](https://github.com/yingtian0/Themisy/issues/41), [#51](https://github.com/yingtian0/Themisy/issues/51) |
-| Signed Grant, approval refusal and tamper rejection | `internal/application/grants_test.go`, `internal/runner/runner_test.go`; rejects before credentials/Write | CI integration covers persisted application/Runner paths, not complete approval lifecycle | [#4](https://github.com/yingtian0/Themisy/issues/4), final approved/rollback Policy input [#48](https://github.com/yingtian0/Themisy/issues/48) |
+| Signed Grant, approval refusal and tamper rejection | `internal/application/grants_test.go`, `internal/runner/runner_test.go`; rejects before credentials/Write. `internal/runner/final_policy_grant_test.go` connects approved deploy, simulated failed observation and separately evaluated rollback | Real PostgreSQL `TestPostgresFinalPolicyIssuanceAtomicity` verifies atomic Grant/audit and concurrent revocation refusal | [#4](https://github.com/yingtian0/Themisy/issues/4), final-input evidence [#48](https://github.com/yingtian0/Themisy/issues/48) / [migration](runbooks/final-operation-policy.md); production lifetime redesign remains #51 |
 | Production verification cannot be omitted | [PR #36](https://github.com/yingtian0/Themisy/pull/36), `internal/workflow/release_test.go`; [migration](runbooks/production-verification.md) | Main CI includes integration suite; guard tests are simulated | Completed [#35](https://github.com/yingtian0/Themisy/issues/35) unit, distinct from parent #9 |
-| ECS runtime health required before success | [PR #37](https://github.com/yingtian0/Themisy/pull/37), `adapters/ecs`, `internal/runner/dispatch_reconcile_test.go` | Shared journal tests preserve dispatch/reconcile state | Runtime gate unit implemented. Full Evidence body/storage/API/UI and end-to-end verification remain [#9](https://github.com/yingtian0/Themisy/issues/9); default Control Plane verification executor unavailable |
+| ECS runtime health required before success | [PR #37](https://github.com/yingtian0/Themisy/pull/37), `adapters/ecs`, `internal/runner/dispatch_reconcile_test.go` | Shared journal tests preserve dispatch/reconcile state | Runtime gate unit implemented. Full Evidence body/storage/API/UI and end-to-end verification remain [#9](https://github.com/yingtian0/Themisy/issues/9); [Opt-in read-only runtime snapshots](verification/runtime-observations.md) are audited and freshness checked; default Control Plane verification executor remains unavailable |
 | Missing/inconclusive Evidence | `internal/verification`, `adapters/datadog` four-value tests; unavailable workflow verifier blocks | No complete real-backend evidence course recorded | Never mapped to PASS; parent #9 |
-| Rollback and subsequent verification | Typed separate operation and simulated executor tests exist | No full success-response-loss → restored Deployment → rollback Grant proof recorded | [#49](https://github.com/yingtian0/Themisy/issues/49), #48, #51; live rollback unverified |
-| UNKNOWN and restart, no blind retry | `internal/runner/recovery_integration_test.go`, journal ownership and read-only reconciliation | Main CI real PostgreSQL shared-journal/process recovery plus Temporal integration | Runner recovery unit exists; Run/workflow convergence remains [#38](https://github.com/yingtian0/Themisy/issues/38); backup/retention [#30](https://github.com/yingtian0/Themisy/issues/30) remains open |
-| STS credentials and fixed ECS targets | SDK fakes in `pkg/credentials`, `adapters/ecs`; Runner-local allowlists | Not a cloud credential test | [#6](https://github.com/yingtian0/Themisy/issues/6), [#7](https://github.com/yingtian0/Themisy/issues/7), [#11](https://github.com/yingtian0/Themisy/issues/11) live KMS/STS/ECS/CloudTrail and direct Write denial pending |
-| Policy, identity and pre-dispatch Context | Signed bundle/OIDC/delegation primitives exist; local examples are synthetic | No production trust-chain deployment evidence | [#10](https://github.com/yingtian0/Themisy/issues/10), [#12](https://github.com/yingtian0/Themisy/issues/12), [#13](https://github.com/yingtian0/Themisy/issues/13); do not infer production readiness |
+| Rollback and subsequent verification | Typed separate operation and simulated executor tests exist | `internal/workflow/deployment_result_integration_test.go` and signed recovery tests cover complete restored Deployment and one Write; `internal/application/deployment_restore_test.go` binds rollback Grant to restored source execution. Dedicated PostgreSQL/Temporal recovery target includes Worker process crashes | [#49](https://github.com/yingtian0/Themisy/issues/49), #48, #51; live rollback unverified |
+| UNKNOWN and restart, no blind retry | `internal/runner/recovery_integration_test.go`, journal ownership and read-only reconciliation | Main CI real PostgreSQL shared-journal/process recovery plus Temporal integration | Workflow/Run convergence [#38](https://github.com/yingtian0/Themisy/issues/38) and backup/retention [#30](https://github.com/yingtian0/Themisy/issues/30) completed. `make test-workflow-recovery` and `make verify-runner-journal-backup-restore` reproduce positive/negative gates; live AWS remains unverified |
+| STS credentials and fixed ECS targets | SDK fakes in `pkg/credentials`, `adapters/ecs`; Runner-local allowlists plus active registered task-definition and exact digest preflight ([PR #86](https://github.com/yingtian0/Themisy/pull/86)) | Not a cloud credential test | [#6](https://github.com/yingtian0/Themisy/issues/6), [#7](https://github.com/yingtian0/Themisy/issues/7), [#11](https://github.com/yingtian0/Themisy/issues/11) live KMS/STS/ECS/CloudTrail and direct Write denial pending |
+| Policy, identity and pre-dispatch Context | Signed bundle/OIDC/delegation primitives, reverified local candidate inventory and audited shadow observations; delegation expiry rechecked after resolution. [Typed source assembly](context/source-context.md) combines collector-minted CI/dependency/metadata observations; local examples remain synthetic | Dedicated PostgreSQL audit tests cover source assembly, shadow and runtime observations. No production trust-chain deployment evidence | [#10](https://github.com/yingtian0/Themisy/issues/10), [#12](https://github.com/yingtian0/Themisy/issues/12), [#13](https://github.com/yingtian0/Themisy/issues/13); do not infer production readiness |
 
 Private security triage is tracked through [SECURITY.md](../SECURITY.md), with
 channel availability in [#39](https://github.com/yingtian0/Themisy/issues/39).
@@ -90,3 +98,24 @@ Every release PR must update this table and its known limits:
 
 Checks absent from this table and a small trial with zero bad writes do not prove
 safety or production support. Release publication remains a separate decision.
+
+## 2026-10-27 acceptance review
+
+The [offline verification record](guides/offline-verification.md#revalidation-on-2026-10-27)
+records the English/Japanese normal and refused examples, CLI help, isolated
+cycle, field mapping and artifact exercise on the pinned main above. Full
+repository race/shuffle tests, integration-tag vet and build passed on macOS
+arm64, Go 1.26.10. The independent 15-minute participant trial is unmeasured.
+
+Dedicated local PostgreSQL reproduced final-policy atomicity; the coordinator
+acceptance revision separately reproduced contention, UNKNOWN retention after
+lease expiry, persistent open circuit and two independent OS processes. These
+are synthetic local provider boundaries, not live AWS. CI includes the
+coordinator target explicitly so its opt-in tests cannot silently disappear
+from the normal gate. Failed/skipped or externally unavailable checks are not
+completion evidence. No distribution was published and no live AWS operation
+was performed by this review.
+
+The [Issue acceptance ledger](verification/issue-acceptance-2026-10-27.md) maps
+the ten bounded completion scopes to their checks and lists the older gates
+that remain open.

@@ -10,7 +10,7 @@ and values remain synthetic.
 
 From the repository root, create a temporary directory and copy the checked-in
 sample. The commands below leave the tracked file unchanged. They require Go
-1.26.9 or later and `sed`; `jq` is optional for displaying selected fields.
+1.26.10 or later and `sed`; `jq` is optional for displaying selected fields.
 
 ```bash
 tmpdir="$(mktemp -d)"

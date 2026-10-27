@@ -93,3 +93,7 @@ test-policy-shadow-audit:
 .PHONY: test-runtime-observation-audit
 test-runtime-observation-audit:
 	bash scripts/test-runtime-observation-audit.sh
+
+.PHONY: test-workflow-coordinator
+test-workflow-coordinator:
+	bash scripts/test-workflow-coordinator.sh
