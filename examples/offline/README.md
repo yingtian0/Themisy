@@ -1,6 +1,6 @@
 # Offline planning example fields
 
-Run from the repository root with Go 1.26.9 or later:
+Run from the repository root with Go 1.26.10 or later:
 
 ```bash
 go run ./cmd/themisyctl offline-plan -at 2026-10-18T00:00:00Z examples/offline/release.json
