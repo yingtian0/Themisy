@@ -147,3 +147,14 @@ public Adapter SDK request formats are unchanged.
 
 Sources: [AWS ECS authorization table](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.html),
 [DescribeTaskDefinition API](https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_DescribeTaskDefinition.html).
+
+## Verification role
+
+The connected verification path requires a separate `verify_role_arn` for each
+ECS target and the `release.verify` Runner capability. Keep its IAM policy limited
+to the read operations used by `ReadRuntime`: DescribeTaskDefinition,
+DescribeServices, ListTasks and DescribeTasks. Do not grant UpdateService to
+this role. Use the resource-scoping notes above, and retain the independent
+Datadog read credentials/query catalog in the Runner. Startup checks require
+distinct configured Role ARNs; they do not inspect or prove the attached IAM
+policies. Actual IAM denial and staging acceptance remain #7/#11.

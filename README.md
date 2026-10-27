@@ -41,9 +41,10 @@ No versioned alpha binary/image has been published by this work (#43).
   read-only reconciliation of ambiguous external writes.
 - Typed ECS and GitHub Actions adapters with Runner-local target mappings and
   credential brokers. These paths can perform external writes.
-- ECS runtime checks and Datadog four-value evidence foundations. The default
-  Control Plane GrantExecutor still has no verification executor connected;
-  verification-required runs block after dispatch rather than substitute PASS.
+- ECS runtime checks and Datadog four-value evidence foundations. The standard
+  ECS verification path now uses [source-bound read-only Runner observations](docs/verification/runner-observation-flow.md),
+  with signed runtime/health results. Missing configuration or observations
+  refuse success; this has not been validated against live AWS/Datadog.
 - Opt-in, audited CI/dependency/metadata and runtime snapshots. These source
   observations are not yet the default production authorization Context.
 - REST, CLI, structured MCP, and a minimal status/approval UI using the same

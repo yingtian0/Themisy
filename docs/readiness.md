@@ -119,3 +119,14 @@ was performed by this review.
 The [Issue acceptance ledger](verification/issue-acceptance-2026-10-27.md) maps
 the ten bounded completion scopes to their checks and lists the older gates
 that remain open.
+
+## Source-bound verification connection
+
+The implementation accompanying [ADR-0024](adr/0024-source-bound-runtime-verification.md)
+connects the standard GrantExecutor to read-only Runner verification for ECS,
+including signed runtime/health bodies and tenant-scoped API/UI projection.
+The earlier pinned snapshot's unavailable-executor statement is historical.
+See [reproduction and migration](verification/runner-observation-flow.md) for
+required read roles, queries, credentials and fail-closed behavior. This does not
+complete live AWS/Datadog staging, production identity/Context or compensation
+lifecycle gates. Updated exact-head CI evidence is recorded in the change PR.
