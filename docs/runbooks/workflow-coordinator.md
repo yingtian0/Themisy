@@ -44,3 +44,13 @@ scope/admission/outcome rows read-only; do not repair counters with ad hoc SQL.
 Use a dedicated disposable PostgreSQL database for the multi-store acceptance
 test. The repository's general integration migration test applies down
 migrations and must never be pointed at a shared or valuable database.
+
+## Reproduce the acceptance gate
+
+Run `make test-workflow-coordinator` with Go and Docker available. CI runs the
+same target. It creates a disposable PostgreSQL container on loopback port
+56432, enables both integration opt-ins, and runs the independent-store and
+independent-OS-process tests with the race detector. The database is reset by
+the tests. The script never accepts a caller database URL or reuses an existing
+container; an occupied port fails the target. Cleanup removes only its own
+container and volumes. Keep this gate separate from live AWS verification (#11).

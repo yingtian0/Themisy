@@ -107,6 +107,11 @@ func TestPostgresWorkflowCoordinatorAcrossIndependentStores(t *testing.T) {
 		t.Fatalf("UNKNOWN must retain shared capacity: blocked=%v err=%v", held, err)
 	}
 
+	expiredUnknownRetry := acquireRequest("expired-unknown-retry", "new-run-after-expiry", step, constraints, firstLease.ExpiresAt.Add(time.Second), firstLease.ExpiresAt.Add(time.Minute))
+	if _, held, _, err := second.AcquireSchedule(ctx, expiredUnknownRetry); err != nil || len(held) == 0 {
+		t.Fatalf("expired UNKNOWN must retain shared capacity: blocked=%v err=%v", held, err)
+	}
+
 	resolved := scheduler.CompletionRequest{Lease: firstLease, Outcome: scheduler.ScheduleOutcomeFailed, Circuit: unknown.Circuit, Now: firstLease.ExpiresAt.Add(time.Second), Audit: coordinatorAudit("resolve-unknown", firstLease.RunID, firstLease.ExpiresAt.Add(time.Second))}
 	state, err := first.CompleteSchedule(ctx, resolved)
 	if err != nil {
@@ -180,6 +185,21 @@ func TestPostgresWorkflowCoordinatorAcrossIndependentStores(t *testing.T) {
 	blockedRequest.Circuit = productionPolicy
 	if _, held, state, err := restarted.AcquireSchedule(ctx, blockedRequest); err != nil || !state.Open || len(held) == 0 {
 		t.Fatalf("open production circuit should block: blocked=%v state=%#v err=%v", held, state, err)
+	}
+
+	afterRestart, err := postgresstore.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer afterRestart.Close()
+	persistedOpen, err := afterRestart.GetCircuitState(ctx, "integration-tenant")
+	if err != nil || !persistedOpen.Open || persistedOpen.Samples != 2 || persistedOpen.Failures != 2 {
+		t.Fatalf("open breaker lost after restart: state=%#v err=%v", persistedOpen, err)
+	}
+	blockedAfterRestart := acquireRequest("breaker-block-after-restart", "production-blocked-after-restart", productionStep, productionConstraints, now.Add(8*time.Second), now.Add(10*time.Minute))
+	blockedAfterRestart.Circuit = productionPolicy
+	if _, held, state, err := afterRestart.AcquireSchedule(ctx, blockedAfterRestart); err != nil || !state.Open || len(held) == 0 {
+		t.Fatalf("restarted Store must preserve open breaker refusal: blocked=%v state=%#v err=%v", held, state, err)
 	}
 
 	// A stale owner token/fence cannot admit a provider write.
