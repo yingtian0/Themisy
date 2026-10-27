@@ -91,13 +91,13 @@ func (s observationFlowContext) ResolveForGrant(_ context.Context, g protocol.Ac
 		action.Capability = protocol.CapabilityRollback
 		action.ExternalExecutionID = r.Steps[1].Execution.ExternalExecutionID
 	}
-	return runnercore.PinnedContext{PlanHash: r.Plan.Hash, ContractHash: p.ContractHash, ProfileHash: p.ProfileHash, PolicyHash: r.Plan.PolicyHash, EvidenceHash: r.Plan.EvidenceHash, Target: protocol.Target{Service: "payment-api", Environment: string(r.Environment)}, Action: action, ApprovalRequired: true}, nil
+	return runnercore.PinnedContext{PlanHash: r.Plan.Hash, ContractHash: p.ContractHash, ProfileHash: p.ProfileHash, PolicyHash: r.Plan.PolicyHash, EvidenceHash: r.Plan.EvidenceHash, Target: protocol.Target{Service: "payment-api", Environment: string(r.Environment)}, Action: action, ApprovalRequired: r.Steps[1].Approval != nil}, nil
 }
 
 func TestSignedObservationFlowDeployFailureRollbackAndVerification(t *testing.T) {
 	testObservationFlow(t, store.NewMemory(), store.NewMemory())
 }
-func testObservationFlow(t *testing.T, control store.DurableStore, journal store.RunnerJournal) observationFlowReceipt {
+func testObservationFlow(t *testing.T, control store.DurableStore, journal store.RunnerJournal, options ...observationFlowOptions) observationFlowReceipt {
 	t.Helper()
 	now := time.Now().UTC()
 	run := grantRun(now)
@@ -105,6 +105,13 @@ func testObservationFlow(t *testing.T, control store.DurableStore, journal store
 	run.RequestID = run.ID
 	run.WorkflowID = run.ID
 	run.Plan.Phases[0].Steps[1].ObservationWindow = "2s"
+	var option observationFlowOptions
+	if len(options) > 0 {
+		option = options[0]
+	}
+	if option.Prepare != nil {
+		option.Prepare(run)
+	}
 	if _, _, err := control.CreateRun(run); err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +141,15 @@ func testObservationFlow(t *testing.T, control store.DurableStore, journal store
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &runnercore.Runner{RunnerID: id.RunnerID, TenantID: id.TenantID, RunnerGroup: id.RunnerGroup, Grants: &grant.Verifier{Issuer: issuer.Issuer, TenantID: id.TenantID, RunnerGroup: id.RunnerGroup, Keys: grant.StaticKeys{issuer.Issuer + "\x00grant-key": key}, Now: func() time.Time { return time.Now().UTC() }}, Subjects: observationFlowSubject{now}, Delegations: &identity.DelegationVerifier{Resolver: identity.StaticDelegations{"delegation-1": {ID: "delegation-1", Issuer: "https://idp.example", UserSubject: "user-1", AgentID: "agent-1", Actions: []protocol.Capability{protocol.CapabilityDeploy, protocol.CapabilityRollback}, ServiceSelectors: []string{"payment-api"}, Environments: []string{"production"}, MaximumRisk: "high", ExpiresAt: now.Add(time.Hour)}}, Now: func() time.Time { return time.Now().UTC() }}, Contexts: observationFlowContext{control}, Approvals: runnercore.ProofReferences{"approval-1": {}}, Capabilities: runnercore.NewCapabilitySet(protocol.CapabilityDeploy, protocol.CapabilityRollback, protocol.CapabilityVerify), Policy: engine, Journal: journal, Credentials: source, Adapter: source, Connectivity: runnercore.ConnectionState(true), Now: func() time.Time { return time.Now().UTC() }, Observations: &runnercore.ObservationVerifier{Runtime: source, RuntimeBroker: source, Health: healthAdapter, HealthBroker: source}}
+	var healthSource adapter.VerificationAdapter = healthAdapter
+	if option.FixtureHealth {
+		healthSource = source
+	}
+	runner := &runnercore.Runner{RunnerID: id.RunnerID, TenantID: id.TenantID, RunnerGroup: id.RunnerGroup, Grants: &grant.Verifier{Issuer: issuer.Issuer, TenantID: id.TenantID, RunnerGroup: id.RunnerGroup, Keys: grant.StaticKeys{issuer.Issuer + "\x00grant-key": key}, Now: func() time.Time { return time.Now().UTC() }}, Subjects: observationFlowSubject{now}, Delegations: &identity.DelegationVerifier{Resolver: identity.StaticDelegations{"delegation-1": {ID: "delegation-1", Issuer: "https://idp.example", UserSubject: "user-1", AgentID: "agent-1", Actions: []protocol.Capability{protocol.CapabilityDeploy, protocol.CapabilityRollback}, ServiceSelectors: []string{"payment-api"}, Environments: []string{"production"}, MaximumRisk: "high", ExpiresAt: now.Add(time.Hour)}}, Now: func() time.Time { return time.Now().UTC() }}, Contexts: observationFlowContext{control}, Approvals: runnercore.ProofReferences{"approval-1": {}}, Capabilities: runnercore.NewCapabilitySet(protocol.CapabilityDeploy, protocol.CapabilityRollback, protocol.CapabilityVerify), Policy: engine, Journal: journal, Credentials: source, Adapter: source, Connectivity: runnercore.ConnectionState(true), Now: func() time.Time { return time.Now().UTC() }, Observations: &runnercore.ObservationVerifier{Runtime: source, RuntimeBroker: source, Health: healthSource, HealthBroker: source}}
 	client := &transport.RunnerClient{BaseURL: httpServer.URL, RunnerID: id.RunnerID, TenantID: id.TenantID, RunnerGroup: id.RunnerGroup, Token: "fixture", HTTP: httpServer.Client(), Wait: time.Millisecond, ResultSigner: &resultreport.Signer{Signer: resultSigner, KeyID: "result-key"}}
+	if option.Tamper {
+		client.ResultSigner.Signer = observationTamperSigner{Signer: resultSigner}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	finished := make(chan error, 1)
@@ -146,7 +160,7 @@ func testObservationFlow(t *testing.T, control store.DurableStore, journal store
 				return
 			}
 			_, err := client.RunOnce(ctx, runner)
-			if err != nil && ctx.Err() == nil {
+			if err != nil && ctx.Err() == nil && !option.Tamper {
 				finished <- err
 				return
 			}
@@ -160,6 +174,10 @@ func testObservationFlow(t *testing.T, control store.DurableStore, journal store
 		}
 	}()
 	exec := &GrantExecutor{Grants: issuer, PollInterval: time.Millisecond}
+	if option.Drive != nil {
+		option.Drive(run, exec, source)
+		return observationFlowReceipt{RunID: run.ID, Key: resultKey}
+	}
 	deployed, err := exec.Deploy(ctx, executor.DeployRequest{RunID: run.ID, Service: "payment-api", Environment: "production", DesiredVersion: run.Steps[1].Change.DesiredVersion, IdempotencyKey: run.ID + "/deploy"})
 	if err != nil {
 		t.Fatal(err)
@@ -240,4 +258,11 @@ func (h *observationMetricsHTTP) Do(r *http.Request) (*http.Response, error) {
 type observationFlowReceipt struct {
 	RunID string
 	Key   ed25519.PublicKey
+}
+
+type observationFlowOptions struct {
+	Prepare       func(*domain.ReleaseRun)
+	FixtureHealth bool
+	Tamper        bool
+	Drive         func(*domain.ReleaseRun, *GrantExecutor, *observationFlowSource)
 }

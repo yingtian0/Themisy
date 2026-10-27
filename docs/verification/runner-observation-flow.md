@@ -38,6 +38,11 @@ production startup refuses that configuration.
   tampering and the signed HTTP deploy → metrics FAIL → rollback → PASS flow.
   This flow uses the actual Datadog adapter with an HTTP fixture; its runtime
   Provider and identity source are synthetic.
+- `TestWorkflowConsumesOnlyAuthenticatedObservationAndReverifiesRollback` runs
+  the real Workflow/Activities in Temporal's test environment with signed HTTP
+  delivery. Valid FAIL triggers rollback and authenticated re-verification;
+  a deliberately corrupted observation signature leaves the Workflow BLOCKED,
+  with one source Write and no successful verification projection.
 - `make test-signed-observation` creates and removes only its owned temporary
   PostgreSQL container. It runs the same signed flow with separate Control Plane
   and Runner schemas, closes/reopens pools and revalidates stored signatures,
