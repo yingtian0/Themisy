@@ -8,37 +8,14 @@ import (
 	"errors"
 	"themisy/pkg/adapter"
 	"themisy/pkg/credentials"
-	"time"
 )
 
 const RuntimeObservationSchema = "themisy.ecs-runtime/v1alpha1"
 
 var ErrRuntimeObservation = errors.New("ECS_RUNTIME_OBSERVATION_UNAVAILABLE")
 
-type RuntimeSummary struct {
-	DesiredCount int32  `json:"desired_count"`
-	RunningCount int32  `json:"running_count"`
-	PendingCount int32  `json:"pending_count"`
-	TaskCount    int    `json:"task_count"`
-	RolloutState string `json:"rollout_state"`
-}
-
-// RuntimeObservation is inspectable source data, not an execution authorization.
-// Failed observations carry no invented partial runtime counts.
-type RuntimeObservation struct {
-	SchemaVersion    string                     `json:"schema_version"`
-	Target           adapter.Target             `json:"target"`
-	Operation        adapter.ReconcileOperation `json:"operation"`
-	RequestHash      string                     `json:"request_hash"`
-	DefinitionHash   string                     `json:"definition_hash"`
-	ContainerSetHash string                     `json:"container_set_hash"`
-	Status           adapter.VerificationStatus `json:"status"`
-	ReasonCode       string                     `json:"reason_code"`
-	Summary          RuntimeSummary             `json:"summary"`
-	ObservedAt       time.Time                  `json:"observed_at"`
-	AdapterVersion   string                     `json:"adapter_version"`
-	Hash             string                     `json:"hash"`
-}
+type RuntimeSummary = adapter.RuntimeSummary
+type RuntimeObservation = adapter.RuntimeObservation
 
 func runtimeHash(v any) (string, error) {
 	raw, err := json.Marshal(v)
@@ -106,6 +83,10 @@ func (a *Adapter) ReadRuntime(ctx context.Context, r adapter.ReconcileRequest, c
 			observation.Status = adapter.VerificationPass
 			observation.ReasonCode = "RUNTIME_CONFIRMED"
 			observation.Summary = summary
+			observation.ContainerDigests = make(map[string]string, len(containers))
+			for name, digest := range containers {
+				observation.ContainerDigests[name] = digest
+			}
 		}
 	}
 	observation.ObservedAt = a.now().UTC()

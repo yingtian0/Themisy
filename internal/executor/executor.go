@@ -21,6 +21,7 @@ type DeployRequest struct {
 }
 
 type Deployment struct {
+	GrantID        string `json:"grant_id,omitempty"`
 	ExternalID     string
 	StartedAt      time.Time
 	FinishedAt     time.Time
@@ -32,12 +33,15 @@ type Deployment struct {
 }
 
 type VerificationResult struct {
-	Status        adapter.VerificationStatus
-	Healthy       bool
-	Reason        string
-	ObservedValue float64
-	Threshold     float64
-	Evidence      adapter.Evidence
+	ObservationGrantID string
+	SourceGrantID      string
+	Runtime            *adapter.RuntimeObservation
+	Status             adapter.VerificationStatus
+	Healthy            bool
+	Reason             string
+	ObservedValue      float64
+	Threshold          float64
+	Evidence           adapter.Evidence
 }
 
 func (r VerificationResult) Outcome() adapter.VerificationStatus {

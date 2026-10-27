@@ -14,6 +14,18 @@
   <thead><tr><th>Wave</th><th>Service</th><th>Status</th><th>Failure</th></tr></thead>
   <tbody>{{range .Run.Steps}}<tr><td>{{.Wave}}</td><td>{{.Service}}</td><td>{{.Status}}</td><td>{{.Failure}}</td></tr>{{end}}</tbody>
 </table>
+<h2>Verification evidence</h2>
+{{range .Run.Steps}}
+<section><h3>{{.Service}}</h3>
+{{with .Verification}}
+<p>Deploy verification: {{.Status}} — {{.Reason}}</p>
+<p>Source: {{.Evidence.Source}}; sampled {{.Evidence.SampledAt}}; observed {{.Evidence.ObservedAt}}; window {{.Evidence.WindowFrom}} to {{.Evidence.WindowTo}}. Value {{.ObservedValue}}, threshold {{.Threshold}}. Query: <code>{{.Evidence.Query}}</code>. Evidence hash: <code>{{.Evidence.EvidenceHash}}</code>.</p>
+<p>Observation request: <code>{{.ObservationGrantID}}</code>; source operation: <code>{{.SourceGrantID}}</code>. The Run audit retains the signed report and signing key ID.</p>
+{{with .Runtime}}<p>Runtime: {{.Status}} — {{.ReasonCode}}; observed {{.ObservedAt}}. {{if eq .Status "PASS"}}Running {{.Summary.RunningCount}} of {{.Summary.DesiredCount}}; pending {{.Summary.PendingCount}}; tasks {{.Summary.TaskCount}}; rollout {{.Summary.RolloutState}}.{{else}}Runtime counts are not confirmed.{{end}} Definition hash: <code>{{.DefinitionHash}}</code>; container set hash: <code>{{.ContainerSetHash}}</code>.</p>{{end}}
+{{else}}<p>MISSING — no deploy verification recorded.</p>{{end}}
+{{with .RollbackVerification}}<p>Rollback verification: {{.Status}} — {{.Reason}}; source {{.Evidence.Source}}; observed {{.Evidence.ObservedAt}}; value {{.ObservedValue}}, threshold {{.Threshold}}. Observation request: <code>{{.ObservationGrantID}}</code>; source operation: <code>{{.SourceGrantID}}</code>. Evidence hash: <code>{{.Evidence.EvidenceHash}}</code>.</p>{{end}}
+</section>
+{{end}}
 <h2>Audit events</h2>
 <table>
   <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Result</th></tr></thead>

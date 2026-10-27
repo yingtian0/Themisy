@@ -43,6 +43,8 @@ type VerificationRequest struct {
 }
 
 type Evidence struct {
+	SampledAt      string             `json:"sampled_at,omitempty"`
+	Query          string             `json:"query,omitempty"`
 	Status         VerificationStatus `json:"status"`
 	ReasonCode     string             `json:"reason_code"`
 	Source         string             `json:"source"`
@@ -64,6 +66,12 @@ type VerificationAdapter interface {
 func ValidateEvidence(evidence Evidence) error {
 	if !evidence.Status.Valid() || strings.TrimSpace(evidence.ReasonCode) == "" || strings.TrimSpace(evidence.Source) == "" || strings.TrimSpace(evidence.QueryHash) == "" || evidence.Window.From.IsZero() || evidence.Window.To.IsZero() || !evidence.Window.To.After(evidence.Window.From) || evidence.ObservedAt.IsZero() || strings.TrimSpace(evidence.AdapterVersion) == "" || strings.TrimSpace(evidence.EvidenceHash) == "" {
 		return errors.New("evidence is incomplete")
+	}
+	if evidence.SampledAt != "" {
+		sampled, err := time.Parse(time.RFC3339Nano, evidence.SampledAt)
+		if err != nil || sampled.After(evidence.ObservedAt) {
+			return errors.New("invalid sample timestamp")
+		}
 	}
 	if math.IsNaN(evidence.ObservedValue) || math.IsInf(evidence.ObservedValue, 0) || math.IsNaN(evidence.Threshold) || math.IsInf(evidence.Threshold, 0) {
 		return errors.New("evidence contains non-finite values")

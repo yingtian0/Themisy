@@ -97,3 +97,7 @@ test-runtime-observation-audit:
 .PHONY: test-workflow-coordinator
 test-workflow-coordinator:
 	bash scripts/test-workflow-coordinator.sh
+
+.PHONY: test-signed-observation
+test-signed-observation:
+	bash scripts/test-signed-observation.sh

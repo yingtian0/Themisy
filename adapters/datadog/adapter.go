@@ -93,8 +93,8 @@ func (a *Adapter) Verify(ctx context.Context, request adapter.VerificationReques
 		return a.evidence(request, adapter.VerificationInconclusive, "INSUFFICIENT_POINTS", query, aggregate(points, query.Aggregation), a.now()), nil
 	}
 	latest := points[len(points)-1].at
-	if request.Window.To.Sub(latest) > query.MaximumAge || latest.Before(request.Window.From) || latest.After(request.Window.To.Add(time.Minute)) {
-		return a.evidence(request, adapter.VerificationInconclusive, "STALE_SERIES", query, aggregate(points, query.Aggregation), latest), nil
+	if request.Window.To.Sub(latest) > query.MaximumAge || latest.Before(request.Window.From) || latest.After(request.Window.To) || latest.After(a.now()) {
+		return a.sampleEvidence(request, adapter.VerificationInconclusive, "STALE_SERIES", query, aggregate(points, query.Aggregation), latest), nil
 	}
 	value := aggregate(points, query.Aggregation)
 	status := compare(value, query)
@@ -102,7 +102,7 @@ func (a *Adapter) Verify(ctx context.Context, request adapter.VerificationReques
 	if status == adapter.VerificationFail {
 		reason = "THRESHOLD_BREACHED"
 	}
-	return a.evidence(request, status, reason, query, value, latest), nil
+	return a.sampleEvidence(request, status, reason, query, value, latest), nil
 }
 
 type point struct {
@@ -152,7 +152,16 @@ func aggregate(points []point, mode string) float64 {
 
 func (a *Adapter) evidence(request adapter.VerificationRequest, status adapter.VerificationStatus, reason string, query Query, value float64, observedAt time.Time) adapter.Evidence {
 	queryDigest := sha256.Sum256([]byte(query.Expression))
-	evidence := adapter.Evidence{Status: status, ReasonCode: reason, Source: AdapterName, QueryHash: "sha256:" + hex.EncodeToString(queryDigest[:]), Window: request.Window, ObservedAt: observedAt.UTC(), ObservedValue: value, Threshold: query.Threshold, AdapterVersion: AdapterVersion}
+	evidence := adapter.Evidence{Query: query.Expression, Status: status, ReasonCode: reason, Source: AdapterName, QueryHash: "sha256:" + hex.EncodeToString(queryDigest[:]), Window: request.Window, ObservedAt: observedAt.UTC(), ObservedValue: value, Threshold: query.Threshold, AdapterVersion: AdapterVersion}
 	evidence.EvidenceHash, _ = adapter.EvidenceHash(evidence)
 	return evidence
+}
+
+// Collection time and metric sample time are distinct. A recent historical
+// datapoint is not evidence that collection occurred before the window ended.
+func (a *Adapter) sampleEvidence(request adapter.VerificationRequest, status adapter.VerificationStatus, reason string, query Query, value float64, sampled time.Time) adapter.Evidence {
+	e := a.evidence(request, status, reason, query, value, a.now())
+	e.SampledAt = sampled.UTC().Format(time.RFC3339Nano)
+	e.EvidenceHash, _ = adapter.EvidenceHash(e)
+	return e
 }

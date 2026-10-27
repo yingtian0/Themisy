@@ -116,3 +116,21 @@ a well-formed hash or signature does not make impossible observation times valid
 This does not require a recovered report to finish within the Grant's execution
 lifetime and does not authorize any new write after Grant expiry. Existing v1
 reports without Evidence and valid v2 canonical bytes remain compatible.
+
+## Source-bound read-only observations
+
+`release.verify` uses the same authenticated outbound transport but cannot enter
+the write dispatcher. Its optional Action fields bind the source Grant ID, nonce,
+request hash, idempotency key, operation and original execution, plus an exact
+UTC verification window. The source must already be SUCCEEDED in the Runner
+journal; see [ADR-0024](../adr/0024-source-bound-runtime-verification.md).
+
+Result-report/v2 now optionally includes `runtime` (including confirmed container
+digests) and raw metric `health`, alongside combined `evidence`. The signature
+binds every body. The verifier checks the requested source/window and recomputed
+hashes/decision before persistence. Old reports omit these fields and retain
+their previous canonical encoding. V1 cannot carry the new bodies. Upgrade both
+ends before enabling the capability; do not reinterpret old deploy reports as
+verified observation receipts. `sampled_at` is the metric timestamp; `observed_at`
+is collection time, after the observation window. Query expressions come only
+from trusted Runner configuration and are signed with thresholds and values.

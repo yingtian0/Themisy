@@ -417,7 +417,7 @@ func assignWaves(run *domain.ReleaseRun) error {
 
 func verificationProjection(result executor.VerificationResult, checkedAt time.Time) *domain.Verification {
 	outcome := result.Outcome()
-	return &domain.Verification{Status: domain.VerificationStatus(outcome), Healthy: outcome == adapter.VerificationPass, Reason: result.Reason, ObservedValue: result.ObservedValue, Threshold: result.Threshold, CheckedAt: checkedAt, Evidence: domain.Evidence{Source: result.Evidence.Source, QueryHash: result.Evidence.QueryHash, WindowFrom: result.Evidence.Window.From, WindowTo: result.Evidence.Window.To, ObservedAt: result.Evidence.ObservedAt, ObservedValue: result.Evidence.ObservedValue, Threshold: result.Evidence.Threshold, AdapterVersion: result.Evidence.AdapterVersion, EvidenceHash: result.Evidence.EvidenceHash}}
+	return &domain.Verification{ObservationGrantID: result.ObservationGrantID, SourceGrantID: result.SourceGrantID, Runtime: result.Runtime, Status: domain.VerificationStatus(outcome), Healthy: outcome == adapter.VerificationPass, Reason: result.Reason, ObservedValue: result.ObservedValue, Threshold: result.Threshold, CheckedAt: checkedAt, Evidence: domain.Evidence{SampledAt: result.Evidence.SampledAt, Query: result.Evidence.Query, Source: result.Evidence.Source, QueryHash: result.Evidence.QueryHash, WindowFrom: result.Evidence.Window.From, WindowTo: result.Evidence.Window.To, ObservedAt: result.Evidence.ObservedAt, ObservedValue: result.Evidence.ObservedValue, Threshold: result.Evidence.Threshold, AdapterVersion: result.Evidence.AdapterVersion, EvidenceHash: result.Evidence.EvidenceHash}}
 }
 
 func observationDuration(value string) time.Duration {

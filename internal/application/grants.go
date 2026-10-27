@@ -60,7 +60,7 @@ func (e *GrantExecutor) Deploy(ctx context.Context, request executor.DeployReque
 	if result.Status != protocol.ResultSucceeded {
 		return executor.Deployment{}, fmt.Errorf("runner result %s: %s", result.Status, result.ReasonCode)
 	}
-	return executor.Deployment{ExternalID: result.ExternalExecutionID, StartedAt: record.Grant.IssuedAt, FinishedAt: result.CompletedAt, RunID: request.RunID, Service: request.Service, Environment: request.Environment, DesiredVersion: request.DesiredVersion, IdempotencyKey: request.IdempotencyKey}, nil
+	return executor.Deployment{GrantID: record.Grant.GrantID, ExternalID: result.ExternalExecutionID, StartedAt: record.Grant.IssuedAt, FinishedAt: result.CompletedAt, RunID: request.RunID, Service: request.Service, Environment: request.Environment, DesiredVersion: request.DesiredVersion, IdempotencyKey: request.IdempotencyKey}, nil
 }
 
 func (e *GrantExecutor) Rollback(ctx context.Context, deployment executor.Deployment) (executor.Deployment, error) {
@@ -78,11 +78,14 @@ func (e *GrantExecutor) Rollback(ctx context.Context, deployment executor.Deploy
 	if result.Status != protocol.ResultSucceeded {
 		return executor.Deployment{}, fmt.Errorf("runner rollback result %s: %s", result.Status, result.ReasonCode)
 	}
-	return executor.Deployment{ExternalID: result.ExternalExecutionID, StartedAt: record.Grant.IssuedAt, FinishedAt: result.CompletedAt, RunID: deployment.RunID, Service: deployment.Service, Environment: deployment.Environment, DesiredVersion: deployment.DesiredVersion, IdempotencyKey: deployment.IdempotencyKey + "/rollback"}, nil
+	return executor.Deployment{GrantID: record.Grant.GrantID, ExternalID: result.ExternalExecutionID, StartedAt: record.Grant.IssuedAt, FinishedAt: result.CompletedAt, RunID: deployment.RunID, Service: deployment.Service, Environment: deployment.Environment, DesiredVersion: deployment.DesiredVersion, IdempotencyKey: deployment.IdempotencyKey + "/rollback"}, nil
 }
 
 func (e *GrantExecutor) Verify(ctx context.Context, deployment executor.Deployment) (executor.VerificationResult, error) {
 	if e.Verification == nil {
+		if e.Grants != nil {
+			return e.Grants.VerifyDeployment(ctx, deployment, e.PollInterval)
+		}
 		return executor.VerificationResult{}, errors.New("verification executor is unavailable")
 	}
 	return e.Verification.Verify(ctx, deployment)

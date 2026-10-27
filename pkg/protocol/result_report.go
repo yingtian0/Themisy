@@ -48,6 +48,26 @@ func CanonicalResultReportPayload(report ResultReport) ([]byte, error) {
 	if report.Version == ResultReportVersionV1 && r.Evidence != nil {
 		return nil, fmt.Errorf("result-report/v1 does not support an Evidence body")
 	}
+	if r.Health != nil {
+		e := *r.Health
+		hash, err := adapter.EvidenceHash(e)
+		if report.Version == ResultReportVersionV1 || err != nil || adapter.ValidateEvidence(e) != nil || hash != e.EvidenceHash || e.ObservedAt.After(r.CompletedAt) || e.Window.To.After(e.ObservedAt) {
+			return nil, fmt.Errorf("invalid health observation")
+		}
+		e.Window.From = e.Window.From.UTC()
+		e.Window.To = e.Window.To.UTC()
+		e.ObservedAt = e.ObservedAt.UTC()
+		r.Health = &e
+	}
+	if r.Runtime != nil {
+		runtime := r.Runtime.Clone()
+		runtime.ObservedAt = runtime.ObservedAt.UTC()
+		hash, err := adapter.RuntimeObservationHash(runtime)
+		if report.Version == ResultReportVersionV1 || err != nil || hash != runtime.Hash || !runtime.Status.Valid() || runtime.ObservedAt.IsZero() || runtime.ObservedAt.After(r.CompletedAt) {
+			return nil, fmt.Errorf("invalid runtime observation")
+		}
+		r.Runtime = &runtime
+	}
 	if r.Evidence != nil {
 		evidence := *r.Evidence
 		if err := adapter.ValidateEvidence(evidence); err != nil {
