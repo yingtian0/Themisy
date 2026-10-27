@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"themisy/pkg/adapter"
+	"time"
+)
 
 type Environment string
 
@@ -229,6 +232,8 @@ const (
 )
 
 type Evidence struct {
+	SampledAt      string    `json:"sampled_at,omitempty"`
+	Query          string    `json:"query,omitempty"`
 	Source         string    `json:"source"`
 	QueryHash      string    `json:"query_hash"`
 	WindowFrom     time.Time `json:"window_from"`
@@ -241,13 +246,16 @@ type Evidence struct {
 }
 
 type Verification struct {
-	Status        VerificationStatus `json:"status"`
-	Healthy       bool               `json:"healthy"` // compatibility projection; Status is authoritative.
-	Reason        string             `json:"reason"`
-	ObservedValue float64            `json:"observed_value,omitempty"`
-	Threshold     float64            `json:"threshold,omitempty"`
-	CheckedAt     time.Time          `json:"checked_at"`
-	Evidence      Evidence           `json:"evidence"`
+	ObservationGrantID string                      `json:"observation_grant_id,omitempty"`
+	SourceGrantID      string                      `json:"source_grant_id,omitempty"`
+	Runtime            *adapter.RuntimeObservation `json:"runtime,omitempty"`
+	Status             VerificationStatus          `json:"status"`
+	Healthy            bool                        `json:"healthy"` // compatibility projection; Status is authoritative.
+	Reason             string                      `json:"reason"`
+	ObservedValue      float64                     `json:"observed_value,omitempty"`
+	Threshold          float64                     `json:"threshold,omitempty"`
+	CheckedAt          time.Time                   `json:"checked_at"`
+	Evidence           Evidence                    `json:"evidence"`
 }
 
 type RollbackMode string

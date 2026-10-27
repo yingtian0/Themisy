@@ -484,7 +484,7 @@ func (m *Memory) GetRunnerAction(_ context.Context, tenantID, runnerGroup, nonce
 	if !ok {
 		return RunnerActionRecord{}, ErrNotFound
 	}
-	return record, nil
+	return cloneRunnerAction(record), nil
 }
 
 func (m *Memory) ReserveRunnerAction(_ context.Context, record RunnerActionRecord, audit domain.AuditEvent) (RunnerActionRecord, bool, error) {
@@ -495,17 +495,17 @@ func (m *Memory) ReserveRunnerAction(_ context.Context, record RunnerActionRecor
 	}
 	nonceKey := runnerNonceKey(record.TenantID, record.RunnerGroup, record.Nonce)
 	if existing, ok := m.runnerActions[nonceKey]; ok {
-		return existing, false, nil
+		return cloneRunnerAction(existing), false, nil
 	}
 	idempotencyKey := runnerIdempotencyKey(record.TenantID, record.RunnerGroup, record.IdempotencyKey)
 	if existingNonce, ok := m.runnerByKey[idempotencyKey]; ok {
-		return m.runnerActions[existingNonce], false, nil
+		return cloneRunnerAction(m.runnerActions[existingNonce]), false, nil
 	}
 	record.Status, record.StateVersion = RunnerActionReserved, 1
-	m.runnerActions[nonceKey] = record
+	m.runnerActions[nonceKey] = cloneRunnerAction(record)
 	m.runnerByKey[idempotencyKey] = nonceKey
 	m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
-	return record, true, nil
+	return cloneRunnerAction(record), true, nil
 }
 
 func (m *Memory) CompleteRunnerAction(_ context.Context, record RunnerActionRecord, expected int64, audit domain.AuditEvent) error {
@@ -530,7 +530,7 @@ func (m *Memory) CompleteRunnerAction(_ context.Context, record RunnerActionReco
 		}
 	}
 	record.StateVersion = expected + 1
-	m.runnerActions[key] = record
+	m.runnerActions[key] = cloneRunnerAction(record)
 	m.audit[audit.CorrelationID] = append(m.audit[audit.CorrelationID], audit)
 	return nil
 }
@@ -544,7 +544,7 @@ func (m *Memory) PendingRunnerActions(_ context.Context, tenantID, runnerGroup s
 	result := []RunnerActionRecord{}
 	for _, record := range m.runnerActions {
 		if record.TenantID == tenantID && record.RunnerGroup == runnerGroup && (record.Status == RunnerActionReserved || record.Status == RunnerActionDispatched || record.Status == RunnerActionUnknown) {
-			result = append(result, record)
+			result = append(result, cloneRunnerAction(record))
 			if limit > 0 && len(result) >= limit {
 				break
 			}
@@ -612,4 +612,16 @@ func clonePlan(plan domain.ReleasePlan) domain.ReleasePlan {
 		panic(err)
 	}
 	return cloned
+}
+
+func cloneRunnerAction(record RunnerActionRecord) RunnerActionRecord {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		panic(err)
+	}
+	var owned RunnerActionRecord
+	if err := json.Unmarshal(raw, &owned); err != nil {
+		panic(err)
+	}
+	return owned
 }

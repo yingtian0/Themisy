@@ -293,8 +293,8 @@ func loadPlanningInputs(contractPath, profilePath, catalogPath string) ([]contra
 	return contracts, profiles, nil
 }
 
-// Runtime verification stays unavailable until the Runner observation path is
-// connected. Dispatch acceptance alone cannot supply passing health evidence.
+// Verification uses source-bound read-only Runner requests. Dispatch acceptance
+// alone cannot supply passing runtime or health evidence.
 func newGrantExecutor(grants *application.Grants) *application.GrantExecutor {
 	return &application.GrantExecutor{Grants: grants, PollInterval: 100 * time.Millisecond}
 }

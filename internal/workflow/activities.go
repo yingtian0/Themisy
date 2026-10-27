@@ -519,7 +519,7 @@ func (a *Activities) RecoverExecution(ctx context.Context, input RecoverExecutio
 	if dispatch.Status == store.GrantDispatchSucceeded && dispatch.Result.Status != protocol.ResultSucceeded {
 		return RecoverExecutionResult{}, resultUnknown(errors.New("successful Grant result has an invalid status"))
 	}
-	deployment := executor.Deployment{ExternalID: dispatch.Result.ExternalExecutionID, StartedAt: grant.IssuedAt, FinishedAt: dispatch.Result.CompletedAt, RunID: input.RunID, Service: input.Service, Environment: input.Environment, DesiredVersion: input.DesiredVersion, IdempotencyKey: key}
+	deployment := executor.Deployment{GrantID: grantID, ExternalID: dispatch.Result.ExternalExecutionID, StartedAt: grant.IssuedAt, FinishedAt: dispatch.Result.CompletedAt, RunID: input.RunID, Service: input.Service, Environment: input.Environment, DesiredVersion: input.DesiredVersion, IdempotencyKey: key}
 	record.Status = store.ExecutionSucceeded
 	record.ExternalExecutionID = deployment.ExternalID
 	record.Payload, err = encodeDeploymentResult(*run, record, deployment)

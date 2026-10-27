@@ -172,6 +172,9 @@ jobs:
       - name: Verify tenant-bound OIDC read API
         run: make test-oidc-read-api
 
+      - name: Verify signed source-bound runtime observations
+        run: make test-signed-observation
+
       - name: Verify shared workflow coordinator across processes
         run: make test-workflow-coordinator
 

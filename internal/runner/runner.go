@@ -92,6 +92,7 @@ type Runner struct {
 	Approvals    ApprovalVerifier
 	Capabilities CapabilitySet
 	Policy       PolicyEvaluator
+	Observations *ObservationVerifier
 	Journal      store.RunnerJournal
 	Credentials  CredentialBroker
 	Adapter      TypedAdapter
@@ -113,6 +114,9 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	}
 	if r.RunnerGroup == "" || actionGrant.RunnerGroup != r.RunnerGroup {
 		return r.reject(actionGrant, Reason("WRONG_RUNNER_AUDIENCE"), nil)
+	}
+	if actionGrant.Action.Capability == protocol.CapabilityVerify {
+		return r.observe(ctx, actionGrant)
 	}
 	authorizer, ok := r.Adapter.(TargetAuthorizer)
 	if !ok {

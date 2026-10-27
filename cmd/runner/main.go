@@ -105,6 +105,7 @@ type ecsTargetSettings struct {
 	Region                   string                      `yaml:"region"`
 	ClusterARN               string                      `yaml:"cluster_arn"`
 	ServiceARN               string                      `yaml:"service_arn"`
+	VerifyRoleARN            string                      `yaml:"verify_role_arn"`
 	DeployRoleARN            string                      `yaml:"deploy_role_arn"`
 	RollbackRoleARN          string                      `yaml:"rollback_role_arn"`
 	ExternalID               string                      `yaml:"external_id"`
@@ -227,7 +228,7 @@ func load(path string) (settings, error) {
 		return settings{}, fmt.Errorf("capacity must be at least one")
 	}
 	for _, capability := range result.Capabilities {
-		if capability != protocol.CapabilityDeploy && capability != protocol.CapabilityRollback {
+		if capability != protocol.CapabilityVerify && capability != protocol.CapabilityDeploy && capability != protocol.CapabilityRollback {
 			return settings{}, fmt.Errorf("unsupported capability %q", capability)
 		}
 	}
@@ -434,6 +435,10 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	if err != nil {
 		return fail(err)
 	}
+	observations, err := buildObservations(ctx, configuration, deployAdapter, broker)
+	if err != nil {
+		return fail(err)
+	}
 	dispatcher := &runnercore.SDKDispatcher{Adapter: deployAdapter}
 	grantVerifier := &grant.Verifier{Issuer: configuration.ControlPlane.Issuer, RunnerGroup: configuration.RunnerGroup, TenantID: configuration.TenantID, Keys: grantKeys, ClockSkew: 30 * time.Second}
 	manifestStore, ok := journal.(runnercore.ManifestStore)
@@ -460,7 +465,7 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 		Subjects:    &identity.OIDCVerifier{Issuer: configuration.Identity.Issuer, Audience: configuration.Identity.Audience, Keys: oidcKeys, ClockSkew: 30 * time.Second},
 		Delegations: &identity.DelegationVerifier{Resolver: delegations}, Contexts: received, Approvals: received,
 		Capabilities: runnercore.NewCapabilitySet(configuration.Capabilities...), Policy: policyEngine, Journal: journal,
-		Credentials: broker, Adapter: dispatcher, Connectivity: connectivity, Admission: runtimeState,
+		Observations: observations, Credentials: broker, Adapter: dispatcher, Connectivity: connectivity, Admission: runtimeState,
 	}
 	httpClient, token, err := buildRunnerTransportClient(configuration)
 	if err != nil {
@@ -473,6 +478,9 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 		BeforeExecute: func(ctx context.Context, actionGrant protocol.ActionGrant) error {
 			if err := grantVerifier.Verify(ctx, actionGrant); err != nil {
 				return err
+			}
+			if actionGrant.Action.Capability == protocol.CapabilityVerify {
+				return nil
 			}
 			return received.LoadFile(ctx, configuration.Manifests.File)
 		},
@@ -592,6 +600,12 @@ func buildECSTargets(configuration settings) (map[ecsadapter.TargetKey]ecsadapte
 		}
 		targets[key] = ecsadapter.Target{Region: configured.Region, ClusterARN: configured.ClusterARN, ServiceARN: configured.ServiceARN, TaskDefinitions: definitions, RollbackTaskDefinition: configured.RollbackTaskDefinition, RollbackContainerDigests: configured.RollbackContainerDigests}
 		roles[credentials.AWSRoleKey{TenantID: configuration.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeDeploy}] = credentials.AWSRole{RoleARN: configured.DeployRoleARN, ExternalID: configured.ExternalID, Duration: duration}
+		if configured.VerifyRoleARN != "" {
+			if configured.VerifyRoleARN == configured.DeployRoleARN || configured.VerifyRoleARN == configured.RollbackRoleARN {
+				return nil, nil, fmt.Errorf("ECS verify role must be distinct from write roles")
+			}
+			roles[credentials.AWSRoleKey{TenantID: configuration.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeVerify}] = credentials.AWSRole{RoleARN: configured.VerifyRoleARN, ExternalID: configured.ExternalID, Duration: duration}
+		}
 		if configured.RollbackRoleARN != "" {
 			roles[credentials.AWSRoleKey{TenantID: configuration.TenantID, Service: key.Service, Environment: key.Environment, Purpose: credentials.PurposeRollback}] = credentials.AWSRole{RoleARN: configured.RollbackRoleARN, ExternalID: configured.ExternalID, Duration: duration}
 		}
