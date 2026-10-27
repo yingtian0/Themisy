@@ -36,6 +36,15 @@ func (s *Signer) Sign(ctx context.Context, identity Identity, hash string, resul
 	if ctx.Err() != nil {
 		return protocol.ResultReport{}, fmt.Errorf("result signing cancelled")
 	}
+	if result.Health != nil {
+		health := *result.Health
+		result.Health = &health
+	}
+	if result.Runtime != nil {
+		runtime := result.Runtime.Clone()
+		runtime.ObservedAt = runtime.ObservedAt.UTC()
+		result.Runtime = &runtime
+	}
 	if result.Evidence != nil {
 		evidence := *result.Evidence
 		evidence.Window.From = evidence.Window.From.UTC()
@@ -71,6 +80,9 @@ func (v *Verifier) Verify(ctx context.Context, identity Identity, g protocol.Act
 	}
 	if identity != (Identity{report.RunnerID, report.TenantID, report.RunnerGroup}) || g.TenantID != identity.TenantID || g.RunnerGroup != identity.RunnerGroup || g.GrantID != report.Result.GrantID || g.RunID != report.Result.RunID || g.StepID != report.Result.StepID {
 		return fmt.Errorf("result identity or grant binding mismatch")
+	}
+	if g.Action.Capability == protocol.CapabilityVerify && report.Result.Status == protocol.ResultSucceeded && protocol.ValidateObservationResult(g, report.Result) != nil {
+		return fmt.Errorf("invalid source-bound observation report")
 	}
 	hash, err := protocol.GrantHash(g)
 	if err != nil || hash != report.RequestHash {

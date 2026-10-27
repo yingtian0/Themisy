@@ -30,6 +30,8 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 | [0022](0022-separate-runtime-observation-audit.md) | Proposed | Record read-only ECS runtime observations separately from metric Evidence |
 | [0023](0023-audited-source-context-composition.md) | Proposed | Compose covered trusted source observations with scope and expiry binding |
 
+| [0024](0024-source-bound-runtime-verification.md) | Proposed | Connect source-bound read-only Runner verification and signed runtime/health receipts |
+
 ## Process
 
 1. Copy the structure of an existing ADR and assign the next four-digit number.

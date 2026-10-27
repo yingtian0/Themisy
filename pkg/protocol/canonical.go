@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 func CanonicalGrantPayload(grant ActionGrant) ([]byte, error) {
@@ -97,7 +98,16 @@ func validateGrantShape(grant ActionGrant) error {
 			return fmt.Errorf("INVALID_ACTION_GRANT: %s must be a sha256 digest", field.name)
 		}
 	}
+	if grant.Action.Capability != CapabilityVerify && (grant.Action.SourceExternalExecutionID != "" || grant.Action.SourceNonce != "" || grant.Action.SourceRequestHash != "" || grant.Action.SourceIdempotencyKey != "" || grant.Action.SourceCapability != "" || grant.Action.SourceGrantID != "" || grant.Action.VerificationFrom != "" || grant.Action.VerificationTo != "") {
+		return fmt.Errorf("INVALID_ACTION_GRANT: write action cannot contain verification selectors")
+	}
 	switch grant.Action.Capability {
+	case CapabilityVerify:
+		from, first := time.Parse(time.RFC3339Nano, grant.Action.VerificationFrom)
+		to, second := time.Parse(time.RFC3339Nano, grant.Action.VerificationTo)
+		if first != nil || second != nil || from.IsZero() || !to.After(from) || to.Sub(from) > 24*time.Hour || to.After(grant.IssuedAt) || grant.Action.SourceGrantID == "" || grant.Action.SourceNonce == "" || grant.Action.SourceRequestHash == "" || grant.Action.SourceIdempotencyKey == "" || (grant.Action.SourceCapability != CapabilityDeploy && grant.Action.SourceCapability != CapabilityRollback) || grant.Action.ExternalExecutionID == "" {
+			return fmt.Errorf("INVALID_ACTION_GRANT: invalid source-bound verification request")
+		}
 	case CapabilityDeploy:
 		if grant.Action.ExternalExecutionID != "" {
 			return fmt.Errorf("INVALID_ACTION_GRANT: deploy cannot name an external execution")

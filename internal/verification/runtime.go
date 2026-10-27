@@ -38,8 +38,12 @@ type RuntimeRecord struct {
 }
 type RuntimeSnapshot struct{ record RuntimeRecord }
 
-func (s RuntimeSnapshot) Record() RuntimeRecord { return s.record }
-func (s RuntimeSnapshot) Hash() string          { return s.record.Hash }
+func (s RuntimeSnapshot) Record() RuntimeRecord {
+	r := s.record
+	r.Observation = r.Observation.Clone()
+	return r
+}
+func (s RuntimeSnapshot) Hash() string { return s.record.Hash }
 func (s *RuntimeSnapshot) UnmarshalJSON([]byte) error {
 	if s != nil {
 		*s = RuntimeSnapshot{}
@@ -108,7 +112,7 @@ func (c *RuntimeCollector) Collect(ctx context.Context, r RuntimeAuditRequest) (
 		return RuntimeSnapshot{}, ErrRuntimeAudit
 	}
 	id := "runtime_observation_" + rand.Text()
-	event := domain.AuditEvent{ID: id, CorrelationID: "runtime/" + c.tenant + "/" + r.RunID + "/" + id, ActorType: "system", ActorID: "runtime-collector", Action: "runtime.observe", ResourceType: "runtime_snapshot", ResourceID: record.Hash, Result: string(observation.Status), Timestamp: record.CapturedAt, Details: map[string]any{"record": record}}
+	event := domain.AuditEvent{ID: id, CorrelationID: "runtime/" + c.tenant + "/" + r.RunID + "/" + id, ActorType: "system", ActorID: "runtime-collector", Action: "runtime.observe", ResourceType: "runtime_snapshot", ResourceID: record.Hash, Result: string(observation.Status), Timestamp: record.CapturedAt, Details: map[string]any{"record": func() RuntimeRecord { owned := record; owned.Observation = owned.Observation.Clone(); return owned }()}}
 	appendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if c.sink.AppendAuditContext(appendCtx, event) != nil || appendCtx.Err() != nil || ctx.Err() != nil {
