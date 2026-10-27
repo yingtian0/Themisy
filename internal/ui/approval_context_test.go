@@ -116,3 +116,32 @@ func TestApprovalContextDoesNotLeakAcrossTenantOrRenderHTML(t *testing.T) {
 		t.Fatal("other tenant saw approval details")
 	}
 }
+
+// A recorded PASS must not imply freshness or artifact/rollback facts that the
+// pinned view does not actually contain.
+func TestApprovalRecordedObservationDoesNotInventFreshnessOrTargets(t *testing.T) {
+	app, _, memory := uiApplicationWithStore(t)
+	run, err := memory.GetRun("approval-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := time.Date(2026, time.October, 27, 1, 0, 0, 0, time.UTC)
+	run.Steps[0].Verification = &domain.Verification{Status: domain.VerificationPass, Healthy: true, Evidence: domain.Evidence{Source: "synthetic-runtime-observer", ObservedAt: observed}}
+	if err := memory.UpdateRun(run, run.StateVersion); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(app, &fixedVerifier{identity: Identity{Subject: "reviewer", TenantID: "tenant-a", Roles: []string{"sre"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ui/approvals", nil))
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Code)
+	}
+	for _, want := range []string{"Status: PASS", "synthetic-runtime-observer", "2026-10-27 01:00:00", "Freshness is unknown", "Unknown / not fetched", "Destination and compensation deadline: unknown", "pinned-context"} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

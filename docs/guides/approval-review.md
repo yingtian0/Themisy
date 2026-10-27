@@ -31,10 +31,42 @@ Plan/step/freshness data is not silently filled from today's catalog: replan and
 review through supported application flows. API/CLI authorization is unchanged;
 these UI guards do not implement the full #51 lifecycle.
 
-Validation uses normal, missing-evidence, expired, mismatched Plan/artifact,
+Earlier validation used normal, missing-evidence, expired, mismatched Plan/artifact,
 stale-form, wrong-role and cross-tenant fixtures; legitimate submit, CSRF,
 identity revalidation and HTML escaping are checked through the HTTP handler.
 Related tests/race/vet passed locally. A synthetic HTML preview was generated,
 but browser file-URL preview was blocked by browser policy, so browser appearance
 and interactive visual QA were not completed. No alternative browser route was
 used to bypass that restriction. Real staging/production evidence was not tested.
+
+## Verification record (2026-10-27)
+
+Baseline: main `488045e217177fe630f2a7324d03f40a2e5aaa24`; the additional
+recorded-observation fixture is in the commit adding this guide.
+`go test -race -shuffle=on -count=1 -v ./internal/ui` passed on macOS arm64,
+Go 1.26.10. The tests render real templates through the UI HTTP handler and
+submit forms with in-process, synthetic identity/Memory Store/Workflow fixtures:
+
+- Normal card: pinned service, artifact, requester, delegated Agent, reason,
+  declared impact, success conditions, missing rollback target and resolution
+  team. Valid CSRF form returns 303 and uses reverified roles/subject, ignoring
+  caller-provided actor/admin fields.
+- Missing observation: MISSING, source/time unavailable and freshness unknown.
+- Recorded synthetic PASS: source/time displayed; freshness, current artifact
+  and rollback destination remain explicitly unknown.
+- Expired approval/Plan, missing step, changed Plan/artifact, stale form and
+  removed roles: invalid approval disabled or POST rejected, zero approval
+  signals sent to Workflow.
+- Cross-tenant Run/approval details rejected, HTML escaped and invalid CSRF
+  refused. No live identity provider, provider Write or deployed ingress tested.
+
+A temporary localhost server using those same synthetic fixtures was also
+viewed in the in-app browser: recorded PASS, missing observation and expired
+Plan/approval. Source/time and unknowns were visible; expired approval was
+reported and the Approve control was disabled. Its disabled styling now uses
+a muted background/opacity and a not-allowed cursor so it is visually distinct
+from an available approval. This developer browser check does not measure
+external usability or participant outcomes (#47). The earlier blocked file-URL
+preview remains a historical result, not the basis for this localhost check.
+The temporary fixture/server is not shipped. This completes the bounded #46 UI
+scope without claiming production identity or Evidence integration.

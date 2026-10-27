@@ -32,7 +32,9 @@ No versioned alpha binary/image has been published by this work (#43).
 - Versioned Service Contracts and Release Profiles, strict validation, typed
   dependencies, deterministic release phases, canonical hashes and Plan expiry.
 - PostgreSQL records/audit/outbox and Temporal workflows for approval, control
-  signals, execution and compensation.
+  signals, execution and compensation. The shared workflow coordinator persists
+  service reservations, concurrency budgets and circuit state across workers;
+  use the [coordinator acceptance and migration guide](docs/runbooks/workflow-coordinator.md).
 - Signed Action Grant dispatch over outbound Runner long-poll, acknowledgements,
   authenticated reporting, freeze/drain, and signed results.
 - Customer-side shared PostgreSQL journal, nonce/idempotency reservation, and
@@ -42,8 +44,12 @@ No versioned alpha binary/image has been published by this work (#43).
 - ECS runtime checks and Datadog four-value evidence foundations. The default
   Control Plane GrantExecutor still has no verification executor connected;
   verification-required runs block after dispatch rather than substitute PASS.
+- Opt-in, audited CI/dependency/metadata and runtime snapshots. These source
+  observations are not yet the default production authorization Context.
 - REST, CLI, structured MCP, and a minimal status/approval UI using the same
-  application boundary.
+  application boundary. [Approval cards](docs/guides/approval-review.md) display the pinned change, declared
+  impact, observation availability and explicit unknowns; they do not infer
+  current artifacts or rollback authority.
 
 Implementation and mock SDK tests do not establish a working production system.
 The ECS runtime gate added in PR #37 and production verification guard in PR #36
@@ -100,10 +106,10 @@ make test-race
 make lint
 ```
 
-These check targets are covered by CI on the recorded main; this documentation
-change does not claim a fresh local run of every target. The offline guide lists
-commands actually exercised in this session. Service integration and live AWS
-checks are separately classified in the matrix.
+These four targets were rerun on the [recorded source commit](docs/guides/readme-verification.md).
+That record also audits every README link, configuration prerequisite and
+interface reference, and lists commands not executed against live services.
+Service integration and live AWS checks are separately classified in the matrix.
 
 ## Interfaces
 
