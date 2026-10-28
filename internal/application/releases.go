@@ -23,6 +23,7 @@ import (
 var ErrInvalidRequest = errors.New("invalid release request")
 
 type Releases struct {
+	Sources       *SourceAuthority
 	Policies      *policy.Distributor
 	Authority     *IdentityAuthority
 	planner       *planner.Planner
@@ -46,7 +47,12 @@ func NewReleases(releasePlanner *planner.Planner, st store.DurableStore, workflo
 	return r
 }
 
-func (r *Releases) Services() []domain.Service { return r.planner.Services() }
+func (r *Releases) Services() []domain.Service {
+	if r.Sources != nil {
+		return r.Sources.Services()
+	}
+	return r.planner.Services()
+}
 func (r *Releases) Plan(request domain.ReleaseRequest) (domain.ReleasePlan, error) {
 	if r.Authority != nil {
 		return domain.ReleasePlan{}, ErrInvalidRequest
@@ -80,11 +86,20 @@ func (r *Releases) planIntent(ctx context.Context, intent domain.ReleaseIntent) 
 	return r.planPreparedIntent(ctx, intent)
 }
 func (r *Releases) planPreparedIntent(ctx context.Context, intent domain.ReleaseIntent) (domain.ReleasePlan, error) {
+	planningPlanner := r.planner
+	var contextBinding *domain.SourceContextBinding
+	if r.Sources != nil {
+		var err error
+		intent, planningPlanner, contextBinding, err = r.Sources.Prepare(ctx, intent, r.planner.PolicyHash())
+		if err != nil {
+			return domain.ReleasePlan{}, err
+		}
+	}
 	request := planner.LegacyRequestFromIntent(intent)
 	if err := validateRequest(request); err != nil {
 		return domain.ReleasePlan{}, err
 	}
-	plan, err := r.planner.PlanIntent(intent)
+	plan, err := planningPlanner.PlanIntent(intent)
 	if err == nil && r.Policies != nil {
 		hash := ""
 		revisions := map[string]int64{}
@@ -101,7 +116,7 @@ func (r *Releases) planPreparedIntent(ctx context.Context, intent domain.Release
 				revisions[step.Scheduling.RunnerGroup] = delivery.Assignment.Revision
 			}
 		}
-		scoped, scopedErr := r.planner.WithPolicy(hash)
+		scoped, scopedErr := planningPlanner.WithPolicy(hash)
 		if scopedErr != nil {
 			return domain.ReleasePlan{}, scopedErr
 		}
@@ -109,6 +124,9 @@ func (r *Releases) planPreparedIntent(ctx context.Context, intent domain.Release
 		if err == nil {
 			plan, err = planner.BindPolicyAssignments(plan, revisions)
 		}
+	}
+	if err == nil && contextBinding != nil {
+		plan, err = planner.BindSourceContext(plan, contextBinding)
 	}
 	if err == nil && r.Authority != nil {
 		request := planner.LegacyRequestFromIntent(intent)
@@ -179,6 +197,23 @@ func (r *Releases) StartIntent(ctx context.Context, intent domain.ReleaseIntent)
 
 func (r *Releases) start(ctx context.Context, request domain.ReleaseRequest, plan domain.ReleasePlan) (*domain.ReleaseRun, bool, error) {
 	validationPlanner := r.planner
+	if r.Sources != nil {
+		var err error
+		validationPlanner, err = r.Sources.VerifyPlan(ctx, plan, request.TenantID)
+		if err != nil {
+			return nil, false, err
+		}
+		for i, change := range request.Changes {
+			source, ok := plan.Context.Targets[change.Service]
+			if !ok {
+				return nil, false, ErrInvalidRequest
+			}
+			request.Changes[i].CommitSHA = source.CommitSHA
+			request.Changes[i].CISuccess = true
+			request.Changes[i].DependenciesHealthy = true
+			request.Changes[i].DestructiveMigration = change.DestructiveMigration || source.DestructiveMigration
+		}
+	}
 	if r.Policies != nil {
 		for _, phase := range plan.Phases {
 			for _, step := range phase.Steps {
@@ -189,7 +224,7 @@ func (r *Releases) start(ctx context.Context, request domain.ReleaseRequest, pla
 			}
 		}
 		var err error
-		validationPlanner, err = r.planner.WithPolicy(plan.PolicyHash)
+		validationPlanner, err = validationPlanner.WithPolicy(plan.PolicyHash)
 		if err != nil {
 			return nil, false, err
 		}
@@ -215,7 +250,13 @@ func (r *Releases) start(ctx context.Context, request domain.ReleaseRequest, pla
 	if err != nil {
 		return nil, false, err
 	}
+	if normalized(stored.TenantID, "default") != normalized(run.TenantID, "default") {
+		return nil, false, tenantBoundaryError()
+	}
 	if !created {
+		if stored.Plan.Hash != run.Plan.Hash {
+			return nil, false, fmt.Errorf("%w: request_id is already bound to a different Plan; use a new request_id", ErrInvalidRequest)
+		}
 		return stored, false, nil
 	}
 	if _, err := r.workflows.StartRelease(ctx, workflowcore.ReleaseInput{Run: *stored}); err != nil {

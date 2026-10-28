@@ -32,6 +32,7 @@ type AgentIdentity struct {
 }
 
 type Change struct {
+	CommitSHA            string `json:"commit_sha,omitempty"`
 	Service              string `json:"service"`
 	DesiredVersion       string `json:"desired_version"`
 	CISuccess            bool   `json:"ci_success"`
@@ -96,23 +97,36 @@ type PlanRequester struct {
 	AgentID       string `json:"agent_id"`
 	DelegationRef string `json:"delegation_ref"`
 }
+type SourceArtifactBinding struct {
+	CommitSHA            string `json:"commit_sha"`
+	ArtifactDigest       string `json:"artifact_digest"`
+	DestructiveMigration bool   `json:"destructive_migration"`
+}
+type SourceContextBinding struct {
+	Issuer    string                           `json:"issuer"`
+	Hash      string                           `json:"hash"`
+	Revision  int64                            `json:"revision"`
+	ExpiresAt time.Time                        `json:"expires_at"`
+	Targets   map[string]SourceArtifactBinding `json:"targets"`
+}
 type ReleasePlan struct {
-	PolicyAssignments  map[string]int64  `json:"policy_assignments,omitempty"`
-	Requester          *PlanRequester    `json:"requester,omitempty"`
-	APIVersion         string            `json:"api_version,omitempty"`
-	ID                 string            `json:"plan_id,omitempty"`
-	ReleaseVersion     string            `json:"release_version"`
-	Environment        Environment       `json:"environment"`
-	Phases             []PlanPhase       `json:"phases"`
-	Hash               string            `json:"hash"`
-	PlanHash           string            `json:"plan_hash,omitempty"`
-	ContractHashes     map[string]string `json:"contract_hashes,omitempty"`
-	ProfileHashes      map[string]string `json:"profile_hashes,omitempty"`
-	ContextSnapshotRef string            `json:"context_snapshot_ref,omitempty"`
-	PolicyHash         string            `json:"policy_hash,omitempty"`
-	EvidenceHash       string            `json:"evidence_hash,omitempty"`
-	CreatedAt          time.Time         `json:"created_at"`
-	ExpiresAt          time.Time         `json:"expires_at,omitempty"`
+	Context            *SourceContextBinding `json:"source_context,omitempty"`
+	PolicyAssignments  map[string]int64      `json:"policy_assignments,omitempty"`
+	Requester          *PlanRequester        `json:"requester,omitempty"`
+	APIVersion         string                `json:"api_version,omitempty"`
+	ID                 string                `json:"plan_id,omitempty"`
+	ReleaseVersion     string                `json:"release_version"`
+	Environment        Environment           `json:"environment"`
+	Phases             []PlanPhase           `json:"phases"`
+	Hash               string                `json:"hash"`
+	PlanHash           string                `json:"plan_hash,omitempty"`
+	ContractHashes     map[string]string     `json:"contract_hashes,omitempty"`
+	ProfileHashes      map[string]string     `json:"profile_hashes,omitempty"`
+	ContextSnapshotRef string                `json:"context_snapshot_ref,omitempty"`
+	PolicyHash         string                `json:"policy_hash,omitempty"`
+	EvidenceHash       string                `json:"evidence_hash,omitempty"`
+	CreatedAt          time.Time             `json:"created_at"`
+	ExpiresAt          time.Time             `json:"expires_at,omitempty"`
 }
 
 type RunStatus string

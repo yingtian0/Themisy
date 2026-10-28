@@ -8,18 +8,20 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+	"themisy/internal/contextsnapshot"
 )
 
 type Config struct {
-	Policy          Policy          `yaml:"policy"`
-	Identity        Identity        `yaml:"identity"`
-	Mode            string          `yaml:"mode"`
-	HTTP            HTTP            `yaml:"http"`
-	Database        Database        `yaml:"database"`
-	Temporal        Temporal        `yaml:"temporal"`
-	Planning        Planning        `yaml:"planning"`
-	Grants          Grants          `yaml:"grants"`
-	RunnerTransport RunnerTransport `yaml:"runner_transport"`
+	Context         contextsnapshot.AdmissionConfig `yaml:"context"`
+	Policy          Policy                          `yaml:"policy"`
+	Identity        Identity                        `yaml:"identity"`
+	Mode            string                          `yaml:"mode"`
+	HTTP            HTTP                            `yaml:"http"`
+	Database        Database                        `yaml:"database"`
+	Temporal        Temporal                        `yaml:"temporal"`
+	Planning        Planning                        `yaml:"planning"`
+	Grants          Grants                          `yaml:"grants"`
+	RunnerTransport RunnerTransport                 `yaml:"runner_transport"`
 }
 
 type Identity struct {
@@ -119,7 +121,7 @@ type RunnerRegistration struct {
 }
 
 func Load(path string) (Config, error) {
-	result := Config{Policy: Policy{Mode: "embedded"}, Identity: Identity{Mode: "development-headers"}, Mode: "all", HTTP: HTTP{Address: ":8080"}, Database: Database{AutoMigrate: true}, Temporal: Temporal{Address: "localhost:7233", Namespace: "default", TaskQueue: "themisy-releases"}, Planning: Planning{Contracts: "examples/contracts", Profiles: "examples/profiles"}}
+	result := Config{Context: contextsnapshot.AdmissionConfig{Mode: "synthetic"}, Policy: Policy{Mode: "embedded"}, Identity: Identity{Mode: "development-headers"}, Mode: "all", HTTP: HTTP{Address: ":8080"}, Database: Database{AutoMigrate: true}, Temporal: Temporal{Address: "localhost:7233", Namespace: "default", TaskQueue: "themisy-releases"}, Planning: Planning{Contracts: "examples/contracts", Profiles: "examples/profiles"}}
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -139,6 +141,13 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if err := c.Context.Validate(); err != nil {
+		return err
+	}
+	if c.Identity.Mode == "oidc" && (c.Context.Mode != "signed" || c.Context.Issuer == c.Grants.Issuer || c.Context.BuildIssuer == c.Grants.Issuer) {
+		return fmt.Errorf("OIDC execution requires independently signed source Context and build provenance")
+	}
+
 	if c.Policy.Mode != "embedded" && c.Policy.Mode != "distributed" {
 		return fmt.Errorf("policy.mode must be embedded or distributed")
 	}

@@ -127,3 +127,17 @@ func TestSignedBundleBindsVersionHashModulesAndExpiry(t *testing.T) {
 		t.Fatalf("expired bundle: %v", err)
 	}
 }
+
+func TestCriticalContractRiskCannotBeLoweredOrSkipApproval(t *testing.T) {
+	if EffectiveRisk("low", "critical") != "critical" || EffectiveRisk("critical", "high") != "critical" {
+		t.Fatal("critical risk was lowered")
+	}
+	engine, err := NewMandatoryEngine(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.EvaluateContext(context.Background(), Input{UserID: "user", AgentID: "agent", Environment: domain.EnvironmentStaging, Risk: "critical"})
+	if err != nil || result.Decision != domain.DecisionRequireApproval {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}

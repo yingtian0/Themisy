@@ -27,7 +27,7 @@ func (builtinEvaluator) Evaluate(_ context.Context, input Input) (Evaluation, er
 		decision, reasons = domain.DecisionDeny, []string{"DEPENDENCIES_UNHEALTHY"}
 	case input.DestructiveMigration:
 		decision, reasons, requiredRoles = domain.DecisionRequireApproval, []string{"DESTRUCTIVE_DB_MIGRATION"}, []string{"service-owner", "sre"}
-	case input.Risk == "high":
+	case input.Risk == "high" || input.Risk == "critical":
 		decision, reasons, requiredRoles = domain.DecisionRequireApproval, []string{"HIGH_BLAST_RADIUS"}, []string{"service-owner"}
 	default:
 		reasons = []string{"POLICY_ALLOW"}

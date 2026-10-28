@@ -12,6 +12,9 @@ type Signature struct {
 }
 
 type ActionGrant struct {
+	ContextIssuer     string    `json:"context_issuer,omitempty"`
+	ContextRevision   int64     `json:"context_revision,omitempty"`
+	ContextExpiresAt  string    `json:"context_expires_at,omitempty"`
 	PolicyRevision    int64     `json:"policy_revision,omitempty"`
 	ProtocolVersion   string    `json:"protocol_version"`
 	GrantID           string    `json:"grant_id"`

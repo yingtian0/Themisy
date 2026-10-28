@@ -14,6 +14,7 @@ import (
 )
 
 type Memory struct {
+	contextRevisions  map[string]directoryVersion
 	policyBundles     map[string]policy.Bundle
 	policyAssignments map[string]policy.Assignment
 	policyAcks        map[string]policy.Acknowledgement
@@ -131,6 +132,12 @@ func (m *Memory) SetRunnerStatus(_ context.Context, tenantID, runnerID string, s
 func (m *Memory) CreateGrantDispatch(_ context.Context, record GrantDispatchRecord, audit domain.AuditEvent, outbox domain.OutboxEvent) (GrantDispatchRecord, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if record.Grant.ContextRevision > 0 {
+		source := m.contextRevisions[record.Grant.TenantID+"\x00"+record.Grant.ContextIssuer]
+		if source.revision != record.Grant.ContextRevision || source.hash != record.Grant.EvidenceHash {
+			return GrantDispatchRecord{}, false, ErrConflict
+		}
+	}
 	if record.Grant.PolicyRevision > 0 {
 		a := m.policyAssignments[record.Grant.TenantID+"\x00"+record.Grant.RunnerGroup]
 		if a.Revision != record.Grant.PolicyRevision || a.BundleHash != record.Grant.PolicyHash {

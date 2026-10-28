@@ -120,7 +120,7 @@ func (m *ManifestContexts) ResolveForGrant(ctx context.Context, g protocol.Actio
 	if err != nil {
 		return PinnedContext{}, err
 	}
-	return PinnedContext{PolicyRevision: p.PolicyRevision, Revision: p.Revision, PlanHash: p.PlanHash, ContractHash: p.ContractHash, ProfileHash: p.ProfileHash, PolicyHash: p.PolicyHash, EvidenceHash: p.EvidenceHash, Target: p.Target, Action: p.Action, ApprovalRequired: p.ApprovalRequired}, nil
+	return PinnedContext{ContextIssuer: p.ContextIssuer, ContextRevision: p.ContextRevision, ContextExpiresAt: p.ContextExpiresAt, PolicyRevision: p.PolicyRevision, Revision: p.Revision, PlanHash: p.PlanHash, ContractHash: p.ContractHash, ProfileHash: p.ProfileHash, PolicyHash: p.PolicyHash, EvidenceHash: p.EvidenceHash, Target: p.Target, Action: p.Action, ApprovalRequired: p.ApprovalRequired}, nil
 }
 func (m *ManifestContexts) ResolveContext(context.Context, string, string) (PinnedContext, error) {
 	return PinnedContext{}, errors.New("manifest requires typed grant selector")

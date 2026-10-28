@@ -17,6 +17,7 @@ import (
 	"themisy/internal/application"
 	"themisy/internal/catalog"
 	"themisy/internal/config"
+	"themisy/internal/contextsnapshot"
 	"themisy/internal/contract"
 	"themisy/internal/grant"
 	"themisy/internal/mcp"
@@ -110,6 +111,16 @@ func main() {
 	controller := workflowcore.NewController(temporalClient, settings.Temporal.TaskQueue)
 	releases := application.NewReleases(releasePlanner, persistentStore, controller)
 	releases.Policies = policies
+	var sourceAuthority *application.SourceAuthority
+	if settings.Context.Mode == "signed" {
+		trust, err := settings.Context.Trust(settings.Identity.TenantID)
+		if err != nil {
+			logger.Error("initialize source Context", "error", err)
+			os.Exit(1)
+		}
+		sourceAuthority = &application.SourceAuthority{Source: &contextsnapshot.FileAdmissionSource{Path: settings.Context.File, Trust: trust, Ledger: persistentStore, Audit: persistentStore}}
+		releases.Sources = sourceAuthority
+	}
 	go releases.RunWorkflowRecovery(ctx, 5*time.Second, func(err error) { logger.Error("recover workflow outbox", "error", err) })
 	grantService, runnerHandler, err := buildGrantPath(ctx, settings, persistentStore, policies)
 	if err != nil {
@@ -128,6 +139,7 @@ func main() {
 			return authority.RequireRole(ctx, tenant, actor, issuer, "policy-admin")
 		}
 	}
+	grantService.Sources = sourceAuthority
 	grantExecutor := newGrantExecutor(grantService)
 	grantService.Policy = policyEngine
 	activities := workflowcore.NewActivities(persistentStore, policyEngine, grantExecutor)

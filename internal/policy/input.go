@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"time"
 
 	"themisy/internal/domain"
 	"themisy/pkg/protocol"
@@ -20,6 +21,9 @@ const InputVersionV1Alpha1 = "themisy.policy.input/v1alpha1"
 // Input is the sole canonical policy input used by both Control Plane and Runner.
 // Trusted fields are populated only after identity and delegation verification.
 type Input struct {
+	ContextIssuer        string              `json:"context_issuer,omitempty"`
+	ContextRevision      int64               `json:"context_revision,omitempty"`
+	ContextExpiresAt     string              `json:"context_expires_at,omitempty"`
 	PolicyRevision       int64               `json:"policy_revision,omitempty"`
 	Version              string              `json:"version,omitempty"`
 	TenantID             string              `json:"tenant_id,omitempty"`
@@ -75,6 +79,11 @@ func InputForRelease(run domain.ReleaseRun, step domain.ReleaseStep) Input {
 // It uses only the pinned Run/step, never retry arguments or a supplied Grant.
 func InputForOperation(run domain.ReleaseRun, step domain.ReleaseStep, capability protocol.Capability) Input {
 	result := Input{Version: InputVersionV1Alpha1, TenantID: run.TenantID, RunnerGroup: run.RunnerGroup, UserID: run.RequestedBy, UserIssuer: run.SubjectIssuer, AgentID: run.Agent.ID, DelegationRef: run.DelegationRef, AgentScopes: append([]string(nil), run.Agent.Scopes...), Environment: run.Environment, Service: step.Service, Capability: protocol.CapabilityDeploy, ArtifactDigest: step.Change.DesiredVersion, Risk: step.Change.Risk, PlanHash: run.Plan.Hash, PolicyHash: run.Plan.PolicyHash, EvidenceHash: run.Plan.EvidenceHash, CISuccess: step.Change.CISuccess, DependenciesHealthy: step.Change.DependenciesHealthy, DestructiveMigration: step.Change.DestructiveMigration}
+	if run.Plan.Context != nil {
+		result.ContextIssuer = run.Plan.Context.Issuer
+		result.ContextRevision = run.Plan.Context.Revision
+		result.ContextExpiresAt = run.Plan.Context.ExpiresAt.Format(time.RFC3339Nano)
+	}
 	result.SubjectType = run.SubjectType
 	result.Capability = capability
 	for _, phase := range run.Plan.Phases {
@@ -98,6 +107,9 @@ func InputForOperation(run domain.ReleaseRun, step domain.ReleaseStep, capabilit
 
 func InputForGrant(grant protocol.ActionGrant, userIssuer, verifiedUser, verifiedAgent, verifiedDelegation string) Input {
 	input := Input{Version: InputVersionV1Alpha1, TenantID: grant.TenantID, RunnerGroup: grant.RunnerGroup, UserID: verifiedUser, UserIssuer: userIssuer, AgentID: verifiedAgent, DelegationRef: verifiedDelegation, Environment: domain.Environment(grant.Target.Environment), Service: grant.Target.Service, Capability: grant.Action.Capability, ArtifactDigest: grant.Action.ArtifactDigest, Risk: grant.Risk, PlanHash: grant.PlanHash, ContractHash: grant.ContractHash, ProfileHash: grant.ProfileHash, PolicyHash: grant.PolicyHash, EvidenceHash: grant.EvidenceHash, ApprovalProofs: append([]string(nil), grant.ApprovalProofs...), CISuccess: true, DependenciesHealthy: true}
+	input.ContextIssuer = grant.ContextIssuer
+	input.ContextRevision = grant.ContextRevision
+	input.ContextExpiresAt = grant.ContextExpiresAt
 	input.PolicyRevision = grant.PolicyRevision
 	input.SubjectType = grant.SubjectType
 	return NormalizeInput(input)
@@ -105,7 +117,7 @@ func InputForGrant(grant protocol.ActionGrant, userIssuer, verifiedUser, verifie
 
 // EffectiveRisk never lets caller input lower the pinned contract risk.
 func EffectiveRisk(requested, pinned string) string {
-	levels := map[string]int{"low": 1, "medium": 2, "high": 3}
+	levels := map[string]int{"low": 1, "medium": 2, "high": 3, "critical": 4}
 	if pinned == "" && levels[requested] > 0 {
 		return requested
 	}

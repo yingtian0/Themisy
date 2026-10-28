@@ -36,6 +36,8 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 
 - [0026: Signed Policy distribution](0026-signed-policy-distribution.md) — Proposed
 
+- [0027: Signed source admission](0027-signed-source-admission.md) — Proposed
+
 ## Process
 
 1. Copy the structure of an existing ADR and assign the next four-digit number.

@@ -1,3 +1,5 @@
+context:
+  mode: synthetic # Development only. Production requires signed source admission.
 policy:
   mode: embedded # Development only. Production requires distributed Policy.
 identity:

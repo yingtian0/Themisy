@@ -21,6 +21,11 @@ func ApprovedManifest(ctx context.Context, st store.DurableStore, signer grant.S
 		return protocol.PlanManifest{}, err
 	}
 	p := protocol.PlanManifest{PolicyRevision: run.Plan.PolicyAssignments[planned.Scheduling.RunnerGroup], ProtocolVersion: protocol.PlanManifestVersion, Issuer: issuer, TenantID: run.TenantID, RunnerGroup: planned.Scheduling.RunnerGroup, RunID: run.ID, StepID: step.Service, Revision: revision, PlanHash: run.Plan.Hash, ContractHash: planned.ContractHash, ProfileHash: planned.ProfileHash, PolicyHash: run.Plan.PolicyHash, EvidenceHash: run.Plan.EvidenceHash, Target: protocol.Target{Service: step.Service, Environment: string(run.Environment)}, Action: protocol.Action{Capability: request.Capability, ArtifactDigest: step.Change.DesiredVersion, ExternalExecutionID: request.ExternalExecutionID}, IssuedAt: now, ExpiresAt: run.Plan.ExpiresAt}
+	if run.Plan.Context != nil {
+		p.ContextIssuer = run.Plan.Context.Issuer
+		p.ContextRevision = run.Plan.Context.Revision
+		p.ContextExpiresAt = run.Plan.Context.ExpiresAt.Format(time.RFC3339Nano)
+	}
 	if step.Approval != nil {
 		p.ApprovalRequired = true
 		p.ApprovalProofs = []string{step.Approval.ID}

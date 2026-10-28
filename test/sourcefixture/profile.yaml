@@ -1,0 +1,19 @@
+apiVersion: execution.themisy.io/v1alpha1
+kind: ReleaseProfile
+metadata:
+  name: ecs-canary-critical
+spec:
+  requiredCapabilities:
+    - deploy
+    - get_status
+    - verify_runtime
+    - verify_metric
+    - shift_traffic
+    - rollback
+  deployment:
+    strategy: ecs-canary
+  verification:
+    required: true
+    observationWindow: 10m
+  rollback:
+    mode: automatic
