@@ -131,6 +131,8 @@ func riskLevel(risk string) int {
 		return 2
 	case "high":
 		return 3
+	case "critical":
+		return 4
 	default:
 		return 0
 	}

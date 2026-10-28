@@ -71,3 +71,19 @@ func signJWT(t *testing.T, private ed25519.PrivateKey, claims map[string]any) st
 	signature := ed25519.Sign(private, []byte(input))
 	return input + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
+
+func TestCriticalRiskRequiresExplicitCriticalDelegation(t *testing.T) {
+	now := time.Now().UTC()
+	d := Delegation{ID: "d", Issuer: "idp", UserSubject: "user", AgentID: "agent", Actions: []protocol.Capability{protocol.CapabilityDeploy}, ServiceSelectors: []string{"service"}, Environments: []string{"production"}, MaximumRisk: "high", ExpiresAt: now.Add(time.Hour)}
+	records := StaticDelegations{"d": d}
+	v := &DelegationVerifier{Resolver: records}
+	request := DelegationRequest{Reference: "d", Subject: Subject{Issuer: "idp", ID: "user", ExpiresAt: now.Add(time.Hour)}, AgentID: "agent", Capability: protocol.CapabilityDeploy, Service: "service", Environment: "production", Risk: "critical"}
+	if _, err := v.Verify(context.Background(), request); err == nil {
+		t.Fatal("high delegation authorized critical")
+	}
+	d.MaximumRisk = "critical"
+	records["d"] = d
+	if _, err := v.Verify(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -46,7 +46,7 @@ deny contains "MISSING_PINNED_CONTEXT" if {
 }
 
 approval_required contains "MISSING_APPROVAL_PROOF" if {
-	input.risk == "high"
+	input.risk in {"high", "critical"}
 	count(object.get(input, "approval_proofs", [])) == 0
 }
 
