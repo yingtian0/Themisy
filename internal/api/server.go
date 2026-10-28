@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,16 +14,20 @@ import (
 
 	"themisy/internal/application"
 	"themisy/internal/domain"
+	"themisy/internal/identity"
 	"themisy/internal/planner"
 	"themisy/internal/store"
 )
 
 type Principal struct {
-	Subject   string
-	TenantID  string
-	Roles     []string
-	Issuer    string
-	ExpiresAt time.Time
+	Verified      bool
+	IdentityProof string `json:"-"`
+	SubjectType   string
+	Subject       string
+	TenantID      string
+	Roles         []string
+	Issuer        string
+	ExpiresAt     time.Time
 }
 
 type IdentityResolver interface {
@@ -92,7 +97,19 @@ func (s *Server) planRelease(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	plan, err := s.app.PlanIntentForTenant(resolveIntentTenant(r, intent), intent)
+	if err := identity.BindIntentActor(r.Context(), &intent); err != nil {
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: err.Error()})
+		return
+	}
+	var plan domain.ReleasePlan
+	var err error
+	if contextual, ok := s.app.(interface {
+		PlanIntentContext(context.Context, string, domain.ReleaseIntent) (domain.ReleasePlan, error)
+	}); ok {
+		plan, err = contextual.PlanIntentContext(r.Context(), resolveIntentTenant(r, intent), intent)
+	} else {
+		plan, err = s.app.PlanIntentForTenant(resolveIntentTenant(r, intent), intent)
+	}
 	if err != nil {
 		writeError(w, err)
 		return
@@ -112,6 +129,10 @@ func (s *Server) getPlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startRelease(w http.ResponseWriter, r *http.Request) {
 	intent, ok := decodeIntent(w, r)
 	if !ok {
+		return
+	}
+	if err := identity.BindIntentActor(r.Context(), &intent); err != nil {
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: err.Error()})
 		return
 	}
 	run, created, err := s.app.StartIntentForTenant(r.Context(), resolveIntentTenant(r, intent), intent)
@@ -167,6 +188,10 @@ func (s *Server) controlRelease(w http.ResponseWriter, r *http.Request, id, acti
 	principal, err := s.identity.Resolve(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: err.Error()})
+		return
+	}
+	if !operatorAllowed(principal) {
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: "operator role required"})
 		return
 	}
 	run, err := s.app.ControlForTenant(r.Context(), principal.TenantID, id, principal.Subject, action)
@@ -271,6 +296,10 @@ func (s *Server) runnerColonRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: err.Error()})
 		return
 	}
+	if !operatorAllowed(principal) {
+		writeJSON(w, http.StatusForbidden, errorResponse{Error: "operator role required"})
+		return
+	}
 	var runner domain.RunnerInfo
 	switch action {
 	case "freeze":
@@ -313,6 +342,9 @@ func splitOperation(value string, allowed ...string) (string, string, bool) {
 }
 
 func tenantFromRequest(r *http.Request) string {
+	if actor, ok := identity.RequestActorFromContext(r.Context()); ok {
+		return actor.TenantID
+	}
 	if tenant := strings.TrimSpace(r.Header.Get("X-Tenant-ID")); tenant != "" {
 		return tenant
 	}
@@ -320,6 +352,9 @@ func tenantFromRequest(r *http.Request) string {
 }
 
 func resolveIntentTenant(r *http.Request, intent domain.ReleaseIntent) string {
+	if actor, ok := identity.RequestActorFromContext(r.Context()); ok {
+		return actor.TenantID
+	}
 	if tenant := strings.TrimSpace(r.Header.Get("X-Tenant-ID")); tenant != "" {
 		return tenant
 	}
@@ -419,6 +454,11 @@ func writeError(w http.ResponseWriter, err error) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	if run, ok := value.(*domain.ReleaseRun); ok && run != nil {
+		owned := *run
+		owned.UserIdentityProof = ""
+		value = &owned
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)

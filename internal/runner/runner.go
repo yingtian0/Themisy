@@ -149,6 +149,12 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	if err != nil || subject.ID != actionGrant.UserSubject {
 		return r.reject(actionGrant, ReasonIdentity, err)
 	}
+	if _, strict := subject.Claims["attestation_version"]; strict {
+		tenant := subject.Claims["tenant_id"]
+		if tenant != actionGrant.TenantID || subject.Claims["subject_type"] != actionGrant.SubjectType || subject.Claims["agent_id"] != actionGrant.AgentID || subject.Claims["delegation_ref"] != actionGrant.DelegationRef {
+			return r.reject(actionGrant, ReasonIdentity, nil)
+		}
+	}
 	if r.Delegations == nil {
 		return r.reject(actionGrant, ReasonDelegation, nil)
 	}
@@ -239,6 +245,15 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 		if err != nil || !matchingHashes(actionGrant, latest) || latest.Revision != pinned.Revision {
 			return r.failReserved(ctx, record, actionGrant, ReasonHashMismatch, err)
 		}
+	}
+	// Credentials may have taken time to acquire. Re-read current identity and
+	// delegation before the first provider write; never reuse a stale decision.
+	latestSubject, identityErr := r.Subjects.Verify(ctx, actionGrant.UserIdentityProof)
+	if identityErr != nil || latestSubject.ID != subject.ID || latestSubject.Issuer != subject.Issuer {
+		return r.failReserved(ctx, record, actionGrant, ReasonIdentity, identityErr)
+	}
+	if _, err := r.Delegations.Verify(ctx, identity.DelegationRequest{Reference: actionGrant.DelegationRef, Subject: latestSubject, AgentID: actionGrant.AgentID, Capability: actionGrant.Action.Capability, Service: actionGrant.Target.Service, Environment: actionGrant.Target.Environment, Risk: actionGrant.Risk}); err != nil {
+		return r.failReserved(ctx, record, actionGrant, ReasonDelegation, err)
 	}
 	record.Status, record.UpdatedAt = store.RunnerActionDispatched, r.now()
 	if err := r.Journal.CompleteRunnerAction(ctx, record, record.StateVersion, journalAudit(auditID(actionGrant.GrantID, "dispatch", record.StateVersion+1), actionGrant.GrantID, "runner.action.dispatch", "DISPATCHED", record.UpdatedAt, nil)); err != nil {

@@ -32,6 +32,8 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 
 | [0024](0024-source-bound-runtime-verification.md) | Proposed | Connect source-bound read-only Runner verification and signed runtime/health receipts |
 
+- [0025: Production identity Directory](0025-production-identity-directory.md) — Proposed
+
 ## Process
 
 1. Copy the structure of an existing ADR and assign the next four-digit number.

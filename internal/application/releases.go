@@ -16,11 +16,13 @@ import (
 	"themisy/internal/planner"
 	"themisy/internal/store"
 	workflowcore "themisy/internal/workflow"
+	"themisy/pkg/protocol"
 )
 
 var ErrInvalidRequest = errors.New("invalid release request")
 
 type Releases struct {
+	Authority     *IdentityAuthority
 	planner       *planner.Planner
 	store         store.DurableStore
 	workflows     WorkflowController
@@ -44,6 +46,9 @@ func NewReleases(releasePlanner *planner.Planner, st store.DurableStore, workflo
 
 func (r *Releases) Services() []domain.Service { return r.planner.Services() }
 func (r *Releases) Plan(request domain.ReleaseRequest) (domain.ReleasePlan, error) {
+	if r.Authority != nil {
+		return domain.ReleasePlan{}, ErrInvalidRequest
+	}
 	if err := validateRequest(request); err != nil {
 		return domain.ReleasePlan{}, err
 	}
@@ -54,11 +59,45 @@ func (r *Releases) Plan(request domain.ReleaseRequest) (domain.ReleasePlan, erro
 	return plan, err
 }
 func (r *Releases) PlanIntent(intent domain.ReleaseIntent) (domain.ReleasePlan, error) {
+	return r.planIntent(context.Background(), intent)
+}
+func (r *Releases) PlanIntentContext(ctx context.Context, tenant string, intent domain.ReleaseIntent) (domain.ReleasePlan, error) {
+	if err := bindTenant(tenant, &intent.TenantID); err != nil {
+		return domain.ReleasePlan{}, err
+	}
+	return r.planIntent(ctx, intent)
+}
+func (r *Releases) planIntent(ctx context.Context, intent domain.ReleaseIntent) (domain.ReleasePlan, error) {
+	if r.Authority != nil {
+		var err error
+		intent, err = r.Authority.Prepare(ctx, intent)
+		if err != nil {
+			return domain.ReleasePlan{}, err
+		}
+	}
+	return r.planPreparedIntent(ctx, intent)
+}
+func (r *Releases) planPreparedIntent(ctx context.Context, intent domain.ReleaseIntent) (domain.ReleasePlan, error) {
 	request := planner.LegacyRequestFromIntent(intent)
 	if err := validateRequest(request); err != nil {
 		return domain.ReleasePlan{}, err
 	}
 	plan, err := r.planner.PlanIntent(intent)
+	if err == nil && r.Authority != nil {
+		request := planner.LegacyRequestFromIntent(intent)
+		for _, phase := range plan.Phases {
+			for _, planned := range phase.Steps {
+				for _, change := range request.Changes {
+					if change.Service == planned.Service {
+						_, err = r.Authority.Authorize(ctx, domain.ReleaseRun{TenantID: request.TenantID, RequestedBy: request.RequestedBy, SubjectIssuer: request.SubjectIssuer, SubjectType: request.SubjectType, UserIdentityProof: request.UserIdentityProof, RequestID: request.RequestID, Agent: request.Agent, DelegationRef: request.DelegationRef, Environment: request.Environment}, domain.ReleaseStep{Service: change.Service, Change: change}, planned, protocol.CapabilityDeploy)
+						if err != nil {
+							return domain.ReleasePlan{}, err
+						}
+					}
+				}
+			}
+		}
+	}
 	if err == nil {
 		err = r.store.SavePlan(plan)
 	}
@@ -97,7 +136,14 @@ func (r *Releases) Start(ctx context.Context, request domain.ReleaseRequest) (*d
 	return r.start(ctx, request, plan)
 }
 func (r *Releases) StartIntent(ctx context.Context, intent domain.ReleaseIntent) (*domain.ReleaseRun, bool, error) {
-	plan, err := r.PlanIntent(intent)
+	if r.Authority != nil {
+		var err error
+		intent, err = r.Authority.Prepare(ctx, intent)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	plan, err := r.planPreparedIntent(ctx, intent)
 	if err != nil {
 		return nil, false, err
 	}

@@ -1,3 +1,5 @@
+identity:
+  mode: development-headers # Local fixtures only. See docs/guides/production-identity.md.
 mode: all
 http:
   address: ":8080"

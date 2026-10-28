@@ -69,6 +69,13 @@ type controlPlaneSettings struct {
 	TrustKeyFile    string `yaml:"trust_key_file"`
 }
 type identitySettings struct {
+	AttestationIssuer          string `yaml:"attestation_issuer"`
+	AttestationTrustBundleFile string `yaml:"attestation_trust_bundle_file"`
+	DirectoryFile              string `yaml:"directory_file"`
+	DirectoryIssuer            string `yaml:"directory_issuer"`
+	DirectoryTrustBundleFile   string `yaml:"directory_trust_bundle_file"`
+	DirectoryMinimumRevision   int64  `yaml:"directory_minimum_revision"`
+
 	Issuer          string `yaml:"issuer"`
 	Audience        string `yaml:"audience"`
 	DiscoveryURL    string `yaml:"discovery_url"`
@@ -232,7 +239,7 @@ func load(path string) (settings, error) {
 			return settings{}, fmt.Errorf("unsupported capability %q", capability)
 		}
 	}
-	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.Identity.DiscoveryURL == "" || result.Identity.TrustKeyID != "" || result.Identity.TrustKeyFile != "" || result.Identity.DelegationsFile == "" || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
+	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.Identity.DiscoveryURL == "" || result.Identity.TrustKeyID != "" || result.Identity.TrustKeyFile != "" || (result.Identity.AttestationIssuer == "" || result.Identity.AttestationTrustBundleFile == "" || result.Identity.AttestationIssuer == result.ControlPlane.Issuer || result.Identity.DirectoryFile == "" || result.Identity.DirectoryIssuer == "" || result.Identity.DirectoryTrustBundleFile == "" || result.Identity.DirectoryMinimumRevision < 1 || result.Identity.DelegationsFile != "") || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
 		return settings{}, fmt.Errorf("production requires durable journal and customer-managed OIDC and policy trust keys")
 	}
 	if err := validateIdentityTrust(result.Identity, result.Mode); err != nil {
@@ -415,9 +422,13 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("load OIDC trust: %w", err)
 	}
-	delegations, err := loadDelegations(configuration.Identity.DelegationsFile)
-	if err != nil {
-		return nil, nil, nil, nil, err
+	var delegationResolver identity.DelegationResolver
+	if configuration.Mode != "production" {
+		loaded, err := loadDelegations(configuration.Identity.DelegationsFile)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		delegationResolver = loaded
 	}
 	policyEngine, err := loadRunnerPolicy(ctx, configuration)
 	if err != nil {
@@ -430,6 +441,21 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	fail := func(err error) (*runnercore.Runner, *runnertransport.RunnerClient, runnercore.Reconciler, func(), error) {
 		cleanup()
 		return nil, nil, nil, nil, err
+	}
+	subjectVerifier := runnercore.SubjectVerifier(&identity.OIDCVerifier{Issuer: configuration.Identity.Issuer, Audience: configuration.Identity.Audience, Keys: oidcKeys, ClockSkew: 30 * time.Second})
+	delegationVerifier := &identity.DelegationVerifier{Resolver: delegationResolver}
+	if configuration.Mode == "production" {
+		ledger, ok := journal.(identity.DirectoryLedger)
+		if !ok {
+			return fail(errors.New("production journal requires durable identity Directory ledger"))
+		}
+		cfg := configuration.Identity
+		directory := &identity.FileDirectory{Path: cfg.DirectoryFile, Issuer: cfg.DirectoryIssuer, TenantID: configuration.TenantID, MinimumRevision: cfg.DirectoryMinimumRevision, Keys: grant.FileKeys{Path: cfg.DirectoryTrustBundleFile, Issuer: cfg.DirectoryIssuer, Tenant: configuration.TenantID}, Ledger: ledger}
+		if _, err := directory.Read(ctx); err != nil {
+			return fail(err)
+		}
+		subjectVerifier = &identity.AttestationVerifier{Issuer: cfg.AttestationIssuer, TenantID: configuration.TenantID, Audience: cfg.Audience, Keys: grant.FileKeys{Path: cfg.AttestationTrustBundleFile, Issuer: cfg.AttestationIssuer, Tenant: configuration.TenantID}, OIDC: &identity.OIDCVerifier{Issuer: cfg.Issuer, Audience: cfg.Audience, Keys: oidcKeys}, Directory: directory}
+		delegationVerifier = &identity.DelegationVerifier{TenantID: configuration.TenantID, TenantClaim: "tenant_id", Resolver: directory}
 	}
 	deployAdapter, broker, err := buildDeployAdapter(ctx, configuration)
 	if err != nil {
@@ -462,8 +488,8 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 	executionRunner := &runnercore.Runner{
 		RunnerID: configuration.RunnerID,
 		TenantID: configuration.TenantID, RunnerGroup: configuration.RunnerGroup, Grants: grantVerifier,
-		Subjects:    &identity.OIDCVerifier{Issuer: configuration.Identity.Issuer, Audience: configuration.Identity.Audience, Keys: oidcKeys, ClockSkew: 30 * time.Second},
-		Delegations: &identity.DelegationVerifier{Resolver: delegations}, Contexts: received, Approvals: received,
+		Subjects:    subjectVerifier,
+		Delegations: delegationVerifier, Contexts: received, Approvals: received,
 		Capabilities: runnercore.NewCapabilitySet(configuration.Capabilities...), Policy: policyEngine, Journal: journal,
 		Observations: observations, Credentials: broker, Adapter: dispatcher, Connectivity: connectivity, Admission: runtimeState,
 	}

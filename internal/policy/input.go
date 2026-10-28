@@ -80,9 +80,7 @@ func InputForOperation(run domain.ReleaseRun, step domain.ReleaseStep, capabilit
 		for _, planned := range phase.Steps {
 			if planned.Service == step.Service {
 				result.ContractHash, result.ProfileHash = planned.ContractHash, planned.ProfileHash
-				if result.Risk == "" {
-					result.Risk = planned.Scheduling.RiskTier
-				}
+				result.Risk = EffectiveRisk(result.Risk, planned.Scheduling.RiskTier)
 				if planned.Scheduling.RunnerGroup != "" {
 					result.RunnerGroup = planned.Scheduling.RunnerGroup
 				}
@@ -100,4 +98,19 @@ func InputForGrant(grant protocol.ActionGrant, userIssuer, verifiedUser, verifie
 	input := Input{Version: InputVersionV1Alpha1, TenantID: grant.TenantID, RunnerGroup: grant.RunnerGroup, UserID: verifiedUser, UserIssuer: userIssuer, AgentID: verifiedAgent, DelegationRef: verifiedDelegation, Environment: domain.Environment(grant.Target.Environment), Service: grant.Target.Service, Capability: grant.Action.Capability, ArtifactDigest: grant.Action.ArtifactDigest, Risk: grant.Risk, PlanHash: grant.PlanHash, ContractHash: grant.ContractHash, ProfileHash: grant.ProfileHash, PolicyHash: grant.PolicyHash, EvidenceHash: grant.EvidenceHash, ApprovalProofs: append([]string(nil), grant.ApprovalProofs...), CISuccess: true, DependenciesHealthy: true}
 	input.SubjectType = grant.SubjectType
 	return NormalizeInput(input)
+}
+
+// EffectiveRisk never lets caller input lower the pinned contract risk.
+func EffectiveRisk(requested, pinned string) string {
+	levels := map[string]int{"low": 1, "medium": 2, "high": 3}
+	if pinned == "" && levels[requested] > 0 {
+		return requested
+	}
+	if (requested != "" && levels[requested] == 0) || levels[pinned] == 0 {
+		return "invalid"
+	}
+	if levels[requested] > levels[pinned] {
+		return requested
+	}
+	return pinned
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"themisy/internal/domain"
+	"themisy/internal/identity"
 	workflowcore "themisy/internal/workflow"
 )
 
@@ -41,11 +42,15 @@ func (r *Releases) DecideApproval(ctx context.Context, runID, approvalID, actor 
 	if approve && !containsAll(roles, target.RequiredRoles) {
 		return nil, fmt.Errorf("%w: approver lacks required roles %v", ErrApproval, target.RequiredRoles)
 	}
+	issuer, err := r.approvalActor(ctx, *run, actor, roles, target.RequiredRoles)
+	if err != nil {
+		return nil, err
+	}
 	action := "deny"
 	if approve {
 		action = "approve"
 	}
-	if err := r.workflows.SignalApproval(ctx, run.WorkflowID, workflowcore.ApprovalSignal{ApprovalID: approvalID, Actor: actor, Roles: roles, Approve: approve, Action: action}); err != nil {
+	if err := r.workflows.SignalApproval(ctx, run.WorkflowID, workflowcore.ApprovalSignal{ApprovalID: approvalID, Actor: actor, Issuer: issuer, Roles: roles, Approve: approve, Action: action}); err != nil {
 		return nil, err
 	}
 	return r.store.GetRun(runID)
@@ -79,7 +84,11 @@ func (r *Releases) RevokeApprovalForTenant(ctx context.Context, tenant, runID, a
 	if !containsAll(roles, target.RequiredRoles) {
 		return nil, fmt.Errorf("%w: revoker lacks required roles %v", ErrApproval, target.RequiredRoles)
 	}
-	if err := r.workflows.SignalApproval(ctx, run.WorkflowID, workflowcore.ApprovalSignal{ApprovalID: approvalID, Actor: actor, Roles: roles, Action: "revoke"}); err != nil {
+	issuer, err := r.approvalActor(ctx, *run, actor, roles, target.RequiredRoles)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.workflows.SignalApproval(ctx, run.WorkflowID, workflowcore.ApprovalSignal{ApprovalID: approvalID, Actor: actor, Issuer: issuer, Roles: roles, Action: "revoke"}); err != nil {
 		return nil, err
 	}
 	return r.store.GetRun(runID)
@@ -158,4 +167,26 @@ func (r *Releases) control(ctx context.Context, runID, actor, action string) (*d
 		return nil, err
 	}
 	return r.store.GetRun(runID)
+}
+
+func (r *Releases) approvalActor(ctx context.Context, run domain.ReleaseRun, actor string, roles, required []string) (string, error) {
+	if r.Authority == nil {
+		return "", nil
+	}
+	verified, ok := identity.RequestActorFromContext(ctx)
+	if !ok || verified.TenantID != run.TenantID || verified.Subject != actor || !containsAll(verified.Roles, required) || r.Authority.Verifier == nil || r.Authority.Verifier.OIDC == nil {
+		return "", ErrApproval
+	}
+	subject, err := r.Authority.Verifier.OIDC.Verify(ctx, verified.ProofToken)
+	if err != nil || subject.ID != verified.Subject || subject.Issuer != verified.Issuer {
+		return "", ErrApproval
+	}
+	member, err := r.Authority.Verifier.Directory.Member(ctx, verified.Issuer, verified.Subject)
+	if err != nil || !containsAll(member.Roles, required) {
+		return "", ErrApproval
+	}
+	if _, ok := identity.RequestActorFromContext(ctx); !ok {
+		return "", ErrApproval
+	}
+	return verified.Issuer, nil
 }

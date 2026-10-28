@@ -49,6 +49,7 @@ type jwtClaims struct {
 	Subject   string   `json:"sub"`
 	Audience  audience `json:"aud"`
 	ExpiresAt int64    `json:"exp"`
+	NotBefore int64    `json:"nbf"`
 	IssuedAt  int64    `json:"iat"`
 }
 type audience []string
@@ -69,7 +70,7 @@ func (a *audience) UnmarshalJSON(data []byte) error {
 
 func (v *OIDCVerifier) Verify(ctx context.Context, token string) (Subject, error) {
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 || v.Issuer == "" || v.Audience == "" || v.Keys == nil {
+	if ctx.Err() != nil || len(parts) != 3 || v.Issuer == "" || v.Audience == "" || v.Keys == nil {
 		return Subject{}, ErrInvalidIdentityProof
 	}
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
@@ -109,6 +110,9 @@ func (v *OIDCVerifier) Verify(ctx context.Context, token string) (Subject, error
 		now = v.Now().UTC()
 	}
 	if claims.Issuer != v.Issuer || claims.Subject == "" || !contains(claims.Audience, v.Audience) || claims.ExpiresAt == 0 || !time.Unix(claims.ExpiresAt, 0).After(now.Add(-v.ClockSkew)) {
+		return Subject{}, ErrInvalidIdentityProof
+	}
+	if ctx.Err() != nil || (claims.NotBefore != 0 && time.Unix(claims.NotBefore, 0).After(now.Add(v.ClockSkew))) {
 		return Subject{}, ErrInvalidIdentityProof
 	}
 	if claims.IssuedAt != 0 && time.Unix(claims.IssuedAt, 0).After(now.Add(v.ClockSkew)) {

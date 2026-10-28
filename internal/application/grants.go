@@ -92,12 +92,13 @@ func (e *GrantExecutor) Verify(ctx context.Context, deployment executor.Deployme
 }
 
 type Grants struct {
-	Policy *policy.Engine
-	Store  store.DurableStore
-	Signer grant.Signer
-	Issuer string
-	TTL    time.Duration
-	Now    func() time.Time
+	Authority *IdentityAuthority
+	Policy    *policy.Engine
+	Store     store.DurableStore
+	Signer    grant.Signer
+	Issuer    string
+	TTL       time.Duration
+	Now       func() time.Time
 }
 
 func NewGrants(st store.DurableStore, signer grant.Signer, issuer string, ttl time.Duration) (*Grants, error) {
@@ -154,6 +155,15 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: final policy input mismatch", ErrGrantNotAuthorized)
 	}
 	expiresAt := now.Add(g.TTL)
+	if g.Authority != nil {
+		until, authErr := g.Authority.Authorize(ctx, *run, step, planned, request.Capability)
+		if authErr != nil {
+			return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: identity authority unavailable", ErrGrantNotAuthorized)
+		}
+		if until.Before(expiresAt) {
+			expiresAt = until
+		}
+	}
 	if !run.Plan.ExpiresAt.IsZero() && run.Plan.ExpiresAt.Before(expiresAt) {
 		expiresAt = run.Plan.ExpiresAt
 	}
@@ -164,10 +174,7 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 	if step.Approval != nil && step.Approval.Status == domain.ApprovalApproved {
 		approvalProofs = append(approvalProofs, step.Approval.ID)
 	}
-	risk := step.Change.Risk
-	if risk == "" {
-		risk = planned.Scheduling.RiskTier
-	}
+	risk := effectiveRisk(step.Change.Risk, planned.Scheduling.RiskTier)
 	actionGrant := protocol.ActionGrant{
 		ProtocolVersion:   protocol.VersionV1Alpha1,
 		GrantID:           newID("grant"),
@@ -199,6 +206,18 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 	signed, err := grant.SignActionGrant(ctx, g.Signer, actionGrant)
 	if err != nil {
 		return store.GrantDispatchRecord{}, false, fmt.Errorf("sign action grant: %w", err)
+	}
+	if !signed.ExpiresAt.After(g.now()) {
+		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
+	}
+	if g.Authority != nil {
+		until, err := g.Authority.Authorize(ctx, *run, step, planned, request.Capability)
+		if err != nil || until.Before(signed.ExpiresAt) {
+			return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
+		}
+	}
+	if ctx.Err() != nil || !signed.ExpiresAt.After(g.now()) {
+		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
 	}
 	outboxID := "grant-dispatch/" + signed.GrantID
 	record := store.GrantDispatchRecord{Grant: signed, OutboxID: outboxID, CreatedAt: now, UpdatedAt: now}

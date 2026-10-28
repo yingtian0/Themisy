@@ -449,6 +449,9 @@ func (p *Planner) PlanIntent(intent domain.ReleaseIntent) (domain.ReleasePlan, e
 		CreatedAt:          now,
 		ExpiresAt:          now.Add(p.planTTL),
 	}
+	if intent.SubjectIssuer != "" {
+		plan.Requester = &domain.PlanRequester{TenantID: intent.TenantID, Subject: intent.RequestedBy, Issuer: intent.SubjectIssuer, SubjectType: intent.SubjectType, AgentID: intent.Agent.ID, DelegationRef: intent.DelegationRef}
+	}
 	for _, number := range phaseNumbers {
 		steps := byPhase[number]
 		sort.Slice(steps, func(i, j int) bool { return steps[i].Service < steps[j].Service })
@@ -502,16 +505,18 @@ func (p *Planner) ValidatePlan(plan domain.ReleasePlan, now time.Time) error {
 
 func planHash(plan domain.ReleasePlan) (string, error) {
 	canonical := struct {
-		APIVersion         string             `json:"api_version"`
-		ReleaseVersion     string             `json:"release_version"`
-		Environment        domain.Environment `json:"environment"`
-		Phases             []domain.PlanPhase `json:"phases"`
-		ContractHashes     map[string]string  `json:"contract_hashes"`
-		ProfileHashes      map[string]string  `json:"profile_hashes"`
-		ContextSnapshotRef string             `json:"context_snapshot_ref"`
-		PolicyHash         string             `json:"policy_hash"`
-		EvidenceHash       string             `json:"evidence_hash"`
+		Requester          *domain.PlanRequester `json:"requester,omitempty"`
+		APIVersion         string                `json:"api_version"`
+		ReleaseVersion     string                `json:"release_version"`
+		Environment        domain.Environment    `json:"environment"`
+		Phases             []domain.PlanPhase    `json:"phases"`
+		ContractHashes     map[string]string     `json:"contract_hashes"`
+		ProfileHashes      map[string]string     `json:"profile_hashes"`
+		ContextSnapshotRef string                `json:"context_snapshot_ref"`
+		PolicyHash         string                `json:"policy_hash"`
+		EvidenceHash       string                `json:"evidence_hash"`
 	}{
+		Requester:          plan.Requester,
 		APIVersion:         plan.APIVersion,
 		ReleaseVersion:     plan.ReleaseVersion,
 		Environment:        plan.Environment,

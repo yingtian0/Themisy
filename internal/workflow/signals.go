@@ -9,6 +9,7 @@ const (
 )
 
 type ApprovalSignal struct {
+	Issuer     string   `json:"issuer,omitempty"`
 	ApprovalID string   `json:"approval_id"`
 	Actor      string   `json:"actor"`
 	Roles      []string `json:"roles"`
