@@ -13,34 +13,21 @@ import (
 	"time"
 
 	"themisy/internal/grant"
+	"themisy/internal/policymodel"
 	"themisy/pkg/protocol"
 )
 
-type Layer string
+type Layer = policymodel.Layer
 
 const (
-	LayerPlatform    Layer = "platform_mandatory"
-	LayerEnvironment Layer = "environment"
-	LayerTeam        Layer = "team"
-	LayerService     Layer = "service"
+	LayerPlatform    = policymodel.LayerPlatform
+	LayerEnvironment = policymodel.LayerEnvironment
+	LayerTeam        = policymodel.LayerTeam
+	LayerService     = policymodel.LayerService
 )
 
-type Module struct {
-	Name   string `json:"name"`
-	Layer  Layer  `json:"layer"`
-	Source string `json:"source"`
-}
-
-type Bundle struct {
-	Version       string             `json:"version"`
-	Issuer        string             `json:"issuer"`
-	Compatibility []string           `json:"compatibility"`
-	IssuedAt      time.Time          `json:"issued_at"`
-	ExpiresAt     time.Time          `json:"expires_at"`
-	Modules       []Module           `json:"modules"`
-	Hash          string             `json:"hash"`
-	Signature     protocol.Signature `json:"signature"`
-}
+type Module = policymodel.Module
+type Bundle = policymodel.Bundle
 
 type BundleKeyResolver interface {
 	ResolvePolicyKey(context.Context, string, string) (ed25519.PublicKey, error)
@@ -77,13 +64,33 @@ func CanonicalBundlePayload(bundle Bundle) ([]byte, error) {
 	return json.Marshal(copy)
 }
 
+const BundleSigningVersion = "themisy.policy-signature/v2"
+
+func bundleSigningPayload(bundle Bundle) ([]byte, error) {
+	raw, err := CanonicalBundlePayload(bundle)
+	if err != nil {
+		return nil, err
+	}
+	if bundle.SigningVersion == "" {
+		return raw, nil
+	}
+	if bundle.SigningVersion != BundleSigningVersion {
+		return nil, ErrInvalidBundle
+	}
+	sum := sha256.Sum256(raw)
+	return []byte(BundleSigningVersion + "\x00" + hex.EncodeToString(sum[:])), nil
+}
 func SignBundle(ctx context.Context, signer grant.Signer, bundle Bundle) (Bundle, error) {
+	if signer == nil || ctx.Err() != nil {
+		return Bundle{}, ErrInvalidBundle
+	}
+	bundle.SigningVersion = BundleSigningVersion
 	hash, err := CalculateBundleHash(bundle)
 	if err != nil {
 		return Bundle{}, err
 	}
 	bundle.Hash = hash
-	payload, err := CanonicalBundlePayload(bundle)
+	payload, err := bundleSigningPayload(bundle)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -92,14 +99,14 @@ func SignBundle(ctx context.Context, signer grant.Signer, bundle Bundle) (Bundle
 }
 
 func VerifyBundle(ctx context.Context, bundle Bundle, issuer string, keys BundleKeyResolver, now time.Time) error {
-	if bundle.Issuer != issuer || bundle.Signature.Algorithm != grant.AlgorithmEd25519 || keys == nil || !containsString(bundle.Compatibility, InputVersionV1Alpha1) || bundle.IssuedAt.After(now.UTC()) || !bundle.ExpiresAt.After(now.UTC()) || !validLayers(bundle.Modules) {
+	if ctx.Err() != nil || bundle.Issuer != issuer || bundle.Signature.Algorithm != grant.AlgorithmEd25519 || keys == nil || !containsString(bundle.Compatibility, InputVersionV1Alpha1) || bundle.IssuedAt.After(now.UTC()) || !bundle.ExpiresAt.After(now.UTC()) || !validLayers(bundle.Modules) {
 		return ErrInvalidBundle
 	}
 	expected, err := CalculateBundleHash(bundle)
 	if err != nil || expected != bundle.Hash {
 		return ErrInvalidBundle
 	}
-	payload, err := CanonicalBundlePayload(bundle)
+	payload, err := bundleSigningPayload(bundle)
 	if err != nil {
 		return ErrInvalidBundle
 	}
@@ -108,7 +115,7 @@ func VerifyBundle(ctx context.Context, bundle Bundle, issuer string, keys Bundle
 		return ErrInvalidBundle
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(bundle.Signature.Value)
-	if err != nil || !ed25519.Verify(key, payload, signature) {
+	if err != nil || len(key) != ed25519.PublicKeySize || ctx.Err() != nil || !ed25519.Verify(key, payload, signature) {
 		return ErrInvalidBundle
 	}
 	return nil
@@ -116,6 +123,7 @@ func VerifyBundle(ctx context.Context, bundle Bundle, issuer string, keys Bundle
 
 func validLayers(modules []Module) bool {
 	hasPlatform := false
+	seen := map[string]bool{}
 	for _, module := range modules {
 		switch module.Layer {
 		case LayerPlatform:
@@ -124,6 +132,11 @@ func validLayers(modules []Module) bool {
 		default:
 			return false
 		}
+		key := string(module.Layer) + "/" + module.Name
+		if seen[key] {
+			return false
+		}
+		seen[key] = true
 		if module.Name == "" || module.Source == "" {
 			return false
 		}

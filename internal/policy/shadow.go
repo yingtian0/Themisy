@@ -107,15 +107,10 @@ func newOfflineShadowOPA(ctx context.Context, bundle Bundle, issuer string, keys
 	if err := VerifyBundle(ctx, bundle, issuer, keys, now); err != nil {
 		return nil, err
 	}
-	capabilities := ast.CapabilitiesForThisVersion()
-	allowed := make([]*ast.Builtin, 0, len(capabilities.Builtins))
-	for _, builtin := range capabilities.Builtins {
-		if !builtin.IsNondeterministic() && builtin.Name != "opa.runtime" {
-			allowed = append(allowed, builtin)
-		}
-	}
-	capabilities.Builtins = allowed
-	capabilities.AllowNet = []string{}
+	return compileLayered(ctx, bundle, newOfflineRawOPA)
+}
+func newOfflineRawOPA(ctx context.Context, bundle Bundle) (*OPA, error) {
+	capabilities := offlineCapabilities()
 	options := []func(*rego.Rego){rego.Query("data.themisy.authorization.decision"), rego.Capabilities(capabilities)}
 	for _, module := range normalizedBundle(bundle).Modules {
 		options = append(options, rego.Module(string(module.Layer)+"/"+module.Name, module.Source))
@@ -141,4 +136,17 @@ func shadowDifference(left, right []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func offlineCapabilities() *ast.Capabilities {
+	capabilities := ast.CapabilitiesForThisVersion()
+	allowed := make([]*ast.Builtin, 0, len(capabilities.Builtins))
+	for _, builtin := range capabilities.Builtins {
+		if !builtin.IsNondeterministic() && builtin.Name != "opa.runtime" {
+			allowed = append(allowed, builtin)
+		}
+	}
+	capabilities.Builtins = allowed
+	capabilities.AllowNet = []string{}
+	return capabilities
 }

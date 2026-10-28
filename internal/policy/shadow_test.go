@@ -114,7 +114,7 @@ decision := {"allow":false,"require_approval":true,"reasons":["REVIEW_REQUIRED",
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := CompareSignedBundles(context.Background(), current, candidate, current.Issuer, keys, []ShadowCase{{ID: "approval", Input: Input{}}}, now)
+	report, err := CompareSignedBundles(context.Background(), current, candidate, current.Issuer, keys, []ShadowCase{{ID: "approval", Input: Input{UserID: "user", AgentID: "agent", Environment: domain.EnvironmentStaging}}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
