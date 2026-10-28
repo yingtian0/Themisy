@@ -54,11 +54,10 @@ func TestIdentityDirectoryFenceSurvivesRestart(t *testing.T) {
 				go func(rev int64) {
 					defer wg.Done()
 					err := st.AcceptIdentityDirectory(ctx, "tenant", "directory", rev, "new-hash")
-					if err != nil && err != store.ErrConflict { // conflict can be wrapped
-						if !errors.Is(err, store.ErrConflict) {
-							errs <- err
-						}
+					if err != nil && !errors.Is(err, store.ErrConflict) {
+						errs <- err
 					}
+
 				}(n)
 			}
 			wg.Wait()

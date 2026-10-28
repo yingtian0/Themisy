@@ -216,6 +216,9 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 			return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
 		}
 	}
+	if ctx.Err() != nil || !signed.ExpiresAt.After(g.now()) {
+		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
+	}
 	outboxID := "grant-dispatch/" + signed.GrantID
 	record := store.GrantDispatchRecord{Grant: signed, OutboxID: outboxID, CreatedAt: now, UpdatedAt: now}
 	record.AuthorizingRunVersion = run.StateVersion

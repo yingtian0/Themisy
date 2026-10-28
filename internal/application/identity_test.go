@@ -37,7 +37,7 @@ func (s hookSigner) Sign(ctx context.Context, b []byte) (protocol.Signature, err
 }
 
 func TestProductionGrantRevalidatesDirectoryAndPersistsNoBearer(t *testing.T) {
-	for _, scenario := range []string{"success", "requester revoked", "approver revoked", "delegation revoked", "directory unavailable", "expired", "revoked while signing", "plan subject changed", "lower caller risk"} {
+	for _, scenario := range []string{"success", "requester revoked", "approver revoked", "delegation revoked", "directory unavailable", "expired", "revoked while signing", "plan subject changed", "lower caller risk", "audit unavailable", "idp unavailable", "grant expired during signing"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC().Truncate(time.Second)
@@ -98,6 +98,13 @@ func TestProductionGrantRevalidatesDirectoryAndPersistsNoBearer(t *testing.T) {
 				service.Signer = hookSigner{delegate: signer, hook: func() { bundle.Revision++; bundle.Members[0].Enabled = false; write() }}
 			case "plan subject changed":
 				run.Plan.Requester.Subject = "other"
+			case "audit unavailable":
+				service.Authority.Audit = unavailableIdentityAudit{}
+			case "idp unavailable":
+				oidc.Keys = identity.StaticOIDCKeys{}
+			case "grant expired during signing":
+				service.TTL = time.Second
+				service.Signer = hookSigner{delegate: signer, hook: func() { now = now.Add(2 * time.Second) }}
 			case "lower caller risk":
 				run.Steps[1].Change.Risk = "low"
 				bundle.Revision++
@@ -140,4 +147,10 @@ func TestProductionGrantRevalidatesDirectoryAndPersistsNoBearer(t *testing.T) {
 			}
 		})
 	}
+}
+
+type unavailableIdentityAudit struct{}
+
+func (unavailableIdentityAudit) AppendAuditContext(context.Context, domain.AuditEvent) error {
+	return fmt.Errorf("audit unavailable")
 }
