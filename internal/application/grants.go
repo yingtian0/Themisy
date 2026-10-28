@@ -92,6 +92,7 @@ func (e *GrantExecutor) Verify(ctx context.Context, deployment executor.Deployme
 }
 
 type Grants struct {
+	Sources   *SourceAuthority
 	Authority *IdentityAuthority
 	Policy    *policy.Engine
 	Store     store.DurableStore
@@ -159,6 +160,18 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: final policy input mismatch", ErrGrantNotAuthorized)
 	}
 	expiresAt := now.Add(g.TTL)
+	if run.Plan.Context != nil && g.Sources == nil {
+		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
+	}
+	if g.Sources != nil {
+		until, sourceErr := g.Sources.Authorize(ctx, *run)
+		if sourceErr != nil {
+			return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: SOURCE_CONTEXT_UNAVAILABLE", ErrGrantNotAuthorized)
+		}
+		if until.Before(expiresAt) {
+			expiresAt = until
+		}
+	}
 	if g.Authority != nil {
 		until, authErr := g.Authority.Authorize(ctx, *run, step, planned, request.Capability)
 		if authErr != nil {
@@ -208,6 +221,11 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 		IssuedAt:          now,
 		ExpiresAt:         expiresAt,
 	}
+	if run.Plan.Context != nil {
+		actionGrant.ContextIssuer = run.Plan.Context.Issuer
+		actionGrant.ContextRevision = run.Plan.Context.Revision
+		actionGrant.ContextExpiresAt = run.Plan.Context.ExpiresAt.Format(time.RFC3339Nano)
+	}
 	signed, err := grant.SignActionGrant(ctx, g.Signer, actionGrant)
 	if err != nil {
 		return store.GrantDispatchRecord{}, false, fmt.Errorf("sign action grant: %w", err)
@@ -226,6 +244,15 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
 	}
 	if ctx.Err() != nil || !signed.ExpiresAt.After(g.now()) {
+		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
+	}
+	if g.Sources != nil {
+		until, err := g.Sources.Authorize(ctx, *run)
+		if err != nil || until.Before(signed.ExpiresAt) {
+			return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
+		}
+	}
+	if !signed.ExpiresAt.After(g.now()) || ctx.Err() != nil {
 		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
 	}
 	outboxID := "grant-dispatch/" + signed.GrantID

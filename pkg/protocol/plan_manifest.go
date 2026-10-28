@@ -15,6 +15,9 @@ const PlanManifestVersion = "themisy.plan-manifest/v1alpha1"
 // PlanManifest is independently provisioned, never reconstructed by a Runner
 // from an ActionGrant. Revision is monotonic within a tenant/group/run.
 type PlanManifest struct {
+	ContextIssuer    string    `json:"context_issuer,omitempty"`
+	ContextRevision  int64     `json:"context_revision,omitempty"`
+	ContextExpiresAt string    `json:"context_expires_at,omitempty"`
 	PolicyRevision   int64     `json:"policy_revision,omitempty"`
 	ProtocolVersion  string    `json:"protocol_version"`
 	Issuer           string    `json:"issuer"`
@@ -38,6 +41,9 @@ type PlanManifest struct {
 }
 
 func CanonicalManifestPayload(m PlanManifest) ([]byte, error) {
+	if err := ValidateContextBinding(m.ContextIssuer, m.ContextRevision, m.ContextExpiresAt, m.ExpiresAt); err != nil {
+		return nil, err
+	}
 	if m.PolicyRevision < 0 || m.ProtocolVersion != PlanManifestVersion || m.Revision < 1 || m.Issuer == "" || m.TenantID == "" || m.RunnerGroup == "" || m.RunID == "" || m.StepID == "" || m.Target.Service == "" || m.Target.Environment == "" || m.IssuedAt.IsZero() || !m.ExpiresAt.After(m.IssuedAt) {
 		return nil, errors.New("invalid plan manifest")
 	}

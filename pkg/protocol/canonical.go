@@ -58,6 +58,9 @@ func EncodeActionGrant(grant ActionGrant) ([]byte, error) {
 }
 
 func validateGrantShape(grant ActionGrant) error {
+	if err := ValidateContextBinding(grant.ContextIssuer, grant.ContextRevision, grant.ContextExpiresAt, grant.ExpiresAt); err != nil {
+		return err
+	}
 	if grant.PolicyRevision < 0 {
 		return fmt.Errorf("invalid Policy revision")
 	}
@@ -121,6 +124,20 @@ func validateGrantShape(grant ActionGrant) error {
 		}
 	default:
 		return fmt.Errorf("INVALID_ACTION_GRANT: unsupported capability %q", grant.Action.Capability)
+	}
+	return nil
+}
+
+func ValidateContextBinding(issuer string, revision int64, expires string, grantExpiry time.Time) error {
+	if revision == 0 {
+		if issuer != "" || expires != "" {
+			return fmt.Errorf("invalid Context binding")
+		}
+		return nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, expires)
+	if revision < 1 || issuer == "" || err != nil || at.IsZero() || grantExpiry.After(at) {
+		return fmt.Errorf("invalid Context lifetime binding")
 	}
 	return nil
 }

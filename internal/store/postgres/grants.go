@@ -30,6 +30,16 @@ func (s *Store) CreateGrantDispatch(ctx context.Context, record store.GrantDispa
 		return store.GrantDispatchRecord{}, false, err
 	}
 	defer tx.Rollback(ctx)
+	if record.Grant.ContextRevision > 0 {
+		var revision int64
+		var hash string
+		if err := tx.QueryRow(ctx, `SELECT revision,context_hash FROM context_revision_fences WHERE tenant_id=$1 AND issuer=$2 FOR SHARE`, record.Grant.TenantID, record.Grant.ContextIssuer).Scan(&revision, &hash); err != nil {
+			return store.GrantDispatchRecord{}, false, err
+		}
+		if revision != record.Grant.ContextRevision || hash != record.Grant.EvidenceHash {
+			return store.GrantDispatchRecord{}, false, store.ErrConflict
+		}
+	}
 	if record.Grant.PolicyRevision > 0 {
 		var revision int64
 		var hash string

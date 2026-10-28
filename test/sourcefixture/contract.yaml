@@ -1,0 +1,38 @@
+apiVersion: execution.themisy.io/v1alpha1
+kind: ServiceContract
+metadata:
+  name: payment-api
+  owner: payment-team
+  repository: github.com/example/themisy-demo
+  riskTier: critical
+environments:
+  staging:
+    releaseProfile: ecs-canary-critical
+    runnerGroup: staging-ap-northeast-1
+    capabilities: [deploy, get_status, verify_runtime, verify_metric, shift_traffic, rollback]
+  production:
+    releaseProfile: ecs-canary-critical
+    runnerGroup: production-ap-northeast-1
+    capabilities: [deploy, get_status, verify_runtime, verify_metric, shift_traffic, rollback]
+dependencies:
+  - service: identity-api
+    type: rollout-order
+    condition: verified
+  - resource: payment-primary-db
+    type: shared-failure-domain
+    constraint: exclusive
+  - resource: payment-schema
+    type: schema-compatibility
+    constraint: backward-compatible
+verification:
+  profile: critical-http-api
+  observationWindow: 10m
+  checks:
+    - type: error-rate
+      threshold: < 1%
+    - type: p95-latency
+      threshold: < 400ms
+rollback:
+  capability: automatic
+  strategy: previous-task-definition
+  deadline: 30m

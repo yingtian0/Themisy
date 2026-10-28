@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"themisy/internal/contextsnapshot"
 )
 
 func TestLoadRejectsUnknownConfigurationFields(t *testing.T) {
@@ -68,6 +70,7 @@ func TestKMSRejectsDevelopmentHeaders(t *testing.T) {
 	if c.Validate() == nil {
 		t.Fatal("production signer accepted development identity")
 	}
+	c.Context = contextsnapshot.AdmissionConfig{Mode: "signed", File: "context.json", Issuer: "source", TrustBundleFile: "source-trust.json", BuildIssuer: "build", BuildTrustBundleFile: "build-trust.json", MinimumRevision: 1, MaximumAge: "5m", DependencyMaximumAge: "5m", Targets: []contextsnapshot.CISourceConfig{{Service: "identity", Environment: "staging", Owner: "example", Repository: "identity", Workflow: "ci.yml", MaximumAge: "1h"}}, Metadata: []contextsnapshot.MetadataSourceConfig{{Service: "identity", Environment: "staging", Owner: "example", Repository: "metadata", Revision: strings.Repeat("a", 40), ContractPath: "contracts/identity.yaml", ProfilePath: "profiles/staging.yaml", MaximumAge: "1h"}}}
 	c.Policy = Policy{RunnerGroups: []string{c.RunnerTransport.Registrations[0].RunnerGroup}, Mode: "distributed", Issuer: "policy-issuer", TrustBundleFile: "policy-trust.json"}
 	c.Identity = Identity{Mode: "oidc", TenantID: c.RunnerTransport.Registrations[0].TenantID, Issuer: "https://idp.example", Audience: "themisy", DiscoveryURL: "https://idp.example/.well-known/openid-configuration", CacheTTL: "5m", TenantClaim: "organization", RoleClaim: "groups", RoleMappings: map[string][]string{"release-team": {"deployer"}}, DirectoryFile: "directory.json", DirectoryIssuer: "directory", DirectoryTrustBundleFile: "directory-trust.json", DirectoryMinimumRevision: 1, AttestationEndpoint: "https://identity.example/attest", AttestationIssuer: "https://identity.example", AttestationCAFile: "ca", AttestationClientCertFile: "cert", AttestationClientKeyFile: "key", AttestationTrustBundleFile: "identity-trust.json"}
 	if err := c.Validate(); err != nil {

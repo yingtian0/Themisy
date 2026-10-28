@@ -20,7 +20,9 @@ import (
 	"themisy/adapters/datadog"
 	ecsadapter "themisy/adapters/ecs"
 	"themisy/adapters/githubactions"
+	"themisy/internal/application"
 	"themisy/internal/config"
+	"themisy/internal/contextsnapshot"
 	"themisy/internal/grant"
 	"themisy/internal/identity"
 	"themisy/internal/policy"
@@ -40,21 +42,22 @@ import (
 )
 
 type settings struct {
-	ResultSigning config.GrantSigning   `yaml:"result_signing"`
-	Mode          string                `yaml:"mode"`
-	RunnerID      string                `yaml:"runner_id"`
-	RunnerGroup   string                `yaml:"runner_group"`
-	TenantID      string                `yaml:"tenant_id"`
-	Capacity      int                   `yaml:"capacity"`
-	HealthAddress string                `yaml:"health_address"`
-	ControlPlane  controlPlaneSettings  `yaml:"control_plane"`
-	Identity      identitySettings      `yaml:"identity"`
-	Policy        policySettings        `yaml:"policy"`
-	Journal       journalSettings       `yaml:"journal"`
-	Manifests     manifestSettings      `yaml:"manifests"`
-	Adapters      adapterSettings       `yaml:"adapters"`
-	Credentials   credentialSettings    `yaml:"credentials"`
-	Capabilities  []protocol.Capability `yaml:"capabilities"`
+	Context       contextsnapshot.AdmissionConfig `yaml:"context"`
+	ResultSigning config.GrantSigning             `yaml:"result_signing"`
+	Mode          string                          `yaml:"mode"`
+	RunnerID      string                          `yaml:"runner_id"`
+	RunnerGroup   string                          `yaml:"runner_group"`
+	TenantID      string                          `yaml:"tenant_id"`
+	Capacity      int                             `yaml:"capacity"`
+	HealthAddress string                          `yaml:"health_address"`
+	ControlPlane  controlPlaneSettings            `yaml:"control_plane"`
+	Identity      identitySettings                `yaml:"identity"`
+	Policy        policySettings                  `yaml:"policy"`
+	Journal       journalSettings                 `yaml:"journal"`
+	Manifests     manifestSettings                `yaml:"manifests"`
+	Adapters      adapterSettings                 `yaml:"adapters"`
+	Credentials   credentialSettings              `yaml:"credentials"`
+	Capabilities  []protocol.Capability           `yaml:"capabilities"`
 }
 type controlPlaneSettings struct {
 	Address         string `yaml:"address"`
@@ -241,8 +244,18 @@ func load(path string) (settings, error) {
 			return settings{}, fmt.Errorf("unsupported capability %q", capability)
 		}
 	}
+	if result.Context.Mode == "" {
+		result.Context.Mode = "synthetic"
+	}
+	if err := result.Context.Validate(); err != nil {
+		return settings{}, err
+	}
+
 	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.Identity.DiscoveryURL == "" || result.Identity.TrustKeyID != "" || result.Identity.TrustKeyFile != "" || (result.Identity.AttestationIssuer == "" || result.Identity.AttestationTrustBundleFile == "" || result.Identity.AttestationIssuer == result.ControlPlane.Issuer || result.Identity.DirectoryFile == "" || result.Identity.DirectoryIssuer == "" || result.Identity.DirectoryTrustBundleFile == "" || result.Identity.DirectoryMinimumRevision < 1 || result.Identity.DelegationsFile != "") || (result.Policy.Issuer == "" || result.Policy.TrustBundleFile == "" || result.Policy.Issuer == result.ControlPlane.Issuer || result.Policy.BundleFile != "" || result.Policy.TrustKeyID != "" || result.Policy.TrustKeyFile != "")) {
 		return settings{}, fmt.Errorf("production requires durable journal and customer-managed OIDC and policy trust keys")
+	}
+	if result.Mode == "production" && (result.Context.Mode != "signed" || result.Context.Issuer == result.ControlPlane.Issuer || result.Context.BuildIssuer == result.ControlPlane.Issuer) {
+		return settings{}, fmt.Errorf("production requires independent signed source Context")
 	}
 	if err := validateIdentityTrust(result.Identity, result.Mode); err != nil {
 		return settings{}, err
@@ -521,6 +534,21 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 		keys := policy.FileBundleKeys{Trust: grant.FileKeys{Path: configuration.Policy.TrustBundleFile, Issuer: configuration.Policy.Issuer, Tenant: configuration.TenantID}}
 		source := &policy.RunnerPolicySource{TenantID: configuration.TenantID, RunnerGroup: configuration.RunnerGroup, Issuer: configuration.Policy.Issuer, Keys: keys, Ledger: ledger, Fetch: client.FetchPolicy, Acknowledge: client.AcknowledgePolicy}
 		executionRunner.Policy = policy.NewEngine(&policy.AssignedEvaluator{Load: source.Load, Issuer: source.Issuer, Keys: keys})
+	}
+	if configuration.Context.Mode == "signed" {
+		ledger, ok := journal.(contextsnapshot.ContextLedger)
+		if !ok {
+			return fail(errors.New("signed Context requires durable source revision fence"))
+		}
+		sink, ok := journal.(contextsnapshot.CIAuditSink)
+		if !ok {
+			return fail(errors.New("signed Context requires durable source audit"))
+		}
+		trust, err := configuration.Context.Trust(configuration.TenantID)
+		if err != nil {
+			return fail(err)
+		}
+		executionRunner.Sources = &application.SourceAuthority{Source: &contextsnapshot.FileAdmissionSource{Path: configuration.Context.File, Trust: trust, Ledger: ledger, Audit: sink}}
 	}
 	executionRunner.Reporter = client
 	return executionRunner, client, dispatcher, cleanup, nil

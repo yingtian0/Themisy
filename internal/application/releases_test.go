@@ -227,3 +227,32 @@ func (*fakeWorkflowController) Resume(context.Context, string, workflowcore.Cont
 func (*fakeWorkflowController) Cancel(context.Context, string, workflowcore.ControlSignal) error {
 	return nil
 }
+
+func TestRepeatedRequestRemainsBoundToOriginalTenantAndPlan(t *testing.T) {
+	p, err := planner.New([]domain.Service{{Name: "identity"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewReleases(p, store.NewMemory(), &fakeWorkflowController{})
+	request := applicationRequest()
+	request.TenantID = "tenant-a"
+	original, _, err := service.Start(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := request
+	changed.TenantID = "tenant-b"
+	if returned, created, err := service.Start(context.Background(), changed); err == nil || returned != nil || created {
+		t.Fatal("command identity binding changed")
+	}
+	changed = request
+	changed.Changes = append([]domain.Change(nil), request.Changes...)
+	changed.Changes[0].DesiredVersion = "new-version"
+	if returned, created, err := service.Start(context.Background(), changed); err == nil || returned != nil || created {
+		t.Fatal("command silently adopted a different Plan")
+	}
+	replay, created, err := service.Start(context.Background(), request)
+	if err != nil || created || replay.ID != original.ID {
+		t.Fatal("valid idempotent replay failed")
+	}
+}

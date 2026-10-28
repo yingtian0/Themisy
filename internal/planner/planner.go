@@ -506,18 +506,20 @@ func (p *Planner) ValidatePlan(plan domain.ReleasePlan, now time.Time) error {
 
 func planHash(plan domain.ReleasePlan) (string, error) {
 	canonical := struct {
-		PolicyAssignments  map[string]int64      `json:"policy_assignments,omitempty"`
-		Requester          *domain.PlanRequester `json:"requester,omitempty"`
-		APIVersion         string                `json:"api_version"`
-		ReleaseVersion     string                `json:"release_version"`
-		Environment        domain.Environment    `json:"environment"`
-		Phases             []domain.PlanPhase    `json:"phases"`
-		ContractHashes     map[string]string     `json:"contract_hashes"`
-		ProfileHashes      map[string]string     `json:"profile_hashes"`
-		ContextSnapshotRef string                `json:"context_snapshot_ref"`
-		PolicyHash         string                `json:"policy_hash"`
-		EvidenceHash       string                `json:"evidence_hash"`
+		Context            *domain.SourceContextBinding `json:"source_context,omitempty"`
+		PolicyAssignments  map[string]int64             `json:"policy_assignments,omitempty"`
+		Requester          *domain.PlanRequester        `json:"requester,omitempty"`
+		APIVersion         string                       `json:"api_version"`
+		ReleaseVersion     string                       `json:"release_version"`
+		Environment        domain.Environment           `json:"environment"`
+		Phases             []domain.PlanPhase           `json:"phases"`
+		ContractHashes     map[string]string            `json:"contract_hashes"`
+		ProfileHashes      map[string]string            `json:"profile_hashes"`
+		ContextSnapshotRef string                       `json:"context_snapshot_ref"`
+		PolicyHash         string                       `json:"policy_hash"`
+		EvidenceHash       string                       `json:"evidence_hash"`
 	}{
+		Context:            plan.Context,
 		PolicyAssignments:  plan.PolicyAssignments,
 		Requester:          plan.Requester,
 		APIVersion:         plan.APIVersion,
@@ -629,16 +631,6 @@ func (p *Planner) WithPolicy(hash string) (*Planner, error) {
 	}
 	copy := *p
 	copy.policyHash = hash
-	snapshot, err := hashValue(struct {
-		Contracts map[string]string
-		Profiles  map[string]string
-		Policy    string
-		Evidence  string
-	}{p.contractHashes, p.profileHashes, hash, p.evidenceHash})
-	if err != nil {
-		return nil, err
-	}
-	copy.contextSnapshotRef = "content:" + snapshot
 	return &copy, nil
 }
 func BindPolicyAssignments(plan domain.ReleasePlan, revisions map[string]int64) (domain.ReleasePlan, error) {
@@ -658,3 +650,31 @@ func BindPolicyAssignments(plan domain.ReleasePlan, revisions map[string]int64) 
 	plan.ID = "plan_" + strings.TrimPrefix(hash, "sha256:")[:24]
 	return plan, nil
 }
+
+func BindSourceContext(plan domain.ReleasePlan, binding *domain.SourceContextBinding) (domain.ReleasePlan, error) {
+	if binding == nil || binding.Hash == "" || binding.Revision < 1 {
+		return domain.ReleasePlan{}, fmt.Errorf("source context required")
+	}
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return domain.ReleasePlan{}, err
+	}
+	var owned domain.SourceContextBinding
+	if err := json.Unmarshal(raw, &owned); err != nil {
+		return domain.ReleasePlan{}, err
+	}
+	plan.Context = &owned
+	if plan.ExpiresAt.After(binding.ExpiresAt) {
+		plan.ExpiresAt = binding.ExpiresAt
+	}
+	hash, err := planHash(plan)
+	if err != nil {
+		return domain.ReleasePlan{}, err
+	}
+	plan.Hash = hash
+	plan.PlanHash = hash
+	plan.ID = "plan_" + strings.TrimPrefix(hash, "sha256:")[:24]
+	return plan, nil
+}
+
+func (p *Planner) PolicyHash() string { return p.policyHash }

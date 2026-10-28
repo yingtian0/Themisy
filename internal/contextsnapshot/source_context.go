@@ -100,6 +100,26 @@ func (a *SourceContextAssembler) Assemble(ctx context.Context, ci CISnapshot, de
 		return SourceContextSnapshot{}, ErrSourceContext
 	}
 	now := a.now().UTC()
+	snapshot, err := composeSources(now, ci, dependencies, metadata)
+	if err != nil {
+		return SourceContextSnapshot{}, err
+	}
+	c := ci.Record()
+	r := snapshot.Record()
+	id := "source_context_" + rand.Text()
+	// Record deep-copies artifact/dependency slices before passing to the sink.
+	event := domain.AuditEvent{ID: id, CorrelationID: "context/" + c.TenantID + "/" + id, ActorType: "system", ActorID: "source-context-assembler", Action: "context.sources.observe", ResourceType: "source_context_snapshot", ResourceID: r.Hash, Result: "OBSERVED", Timestamp: now, Details: map[string]any{"record": snapshot.Record()}}
+	appendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if a.sink.AppendAuditContext(appendCtx, event) != nil || appendCtx.Err() != nil || ctx.Err() != nil || snapshot.RequireFreshSources(a.now().UTC()) != nil {
+		return SourceContextSnapshot{}, ErrSourceContext
+	}
+	return snapshot, nil
+}
+
+// composeSources performs no I/O or audit. Signed admission import uses the
+// original capture time to reproduce hashes, then checks freshness at real now.
+func composeSources(now time.Time, ci CISnapshot, dependencies DependencySnapshot, metadata MetadataSnapshot) (SourceContextSnapshot, error) {
 	if now.IsZero() || ci.RequireFreshCI(now) != nil || metadata.RequireFreshMetadata(now) != nil {
 		return SourceContextSnapshot{}, ErrSourceContext
 	}
@@ -165,14 +185,6 @@ func (a *SourceContextAssembler) Assemble(ctx context.Context, ci CISnapshot, de
 	}
 	snapshot := SourceContextSnapshot{record: r, ci: ci, metadata: metadata, dependencies: dependencies}
 	if snapshot.RequireFreshSources(now) != nil {
-		return SourceContextSnapshot{}, ErrSourceContext
-	}
-	id := "source_context_" + rand.Text()
-	// Record deep-copies artifact/dependency slices before passing to the sink.
-	event := domain.AuditEvent{ID: id, CorrelationID: "context/" + c.TenantID + "/" + id, ActorType: "system", ActorID: "source-context-assembler", Action: "context.sources.observe", ResourceType: "source_context_snapshot", ResourceID: r.Hash, Result: "OBSERVED", Timestamp: now, Details: map[string]any{"record": snapshot.Record()}}
-	appendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if a.sink.AppendAuditContext(appendCtx, event) != nil || appendCtx.Err() != nil || ctx.Err() != nil || snapshot.RequireFreshSources(a.now().UTC()) != nil {
 		return SourceContextSnapshot{}, ErrSourceContext
 	}
 	return snapshot, nil
