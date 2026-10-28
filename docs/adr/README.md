@@ -34,6 +34,8 @@ Architecture Decision Records (ADRs) capture decisions that materially affect Tr
 
 - [0025: Production identity Directory](0025-production-identity-directory.md) — Proposed
 
+- [0026: Signed Policy distribution](0026-signed-policy-distribution.md) — Proposed
+
 ## Process
 
 1. Copy the structure of an existing ADR and assign the next four-digit number.

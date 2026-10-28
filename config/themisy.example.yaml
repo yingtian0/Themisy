@@ -1,3 +1,5 @@
+policy:
+  mode: embedded # Development only. Production requires distributed Policy.
 identity:
   mode: development-headers # Local fixtures only. See docs/guides/production-identity.md.
 mode: all

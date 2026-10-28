@@ -1,6 +1,6 @@
 # Readiness and supported evaluation scope
 
-Reviewed 2026-10-27 (Asia/Tokyo). This is a development snapshot, not a release
+Reviewed 2026-10-28 (Asia/Tokyo). This is a development snapshot, not a release
 or a production support commitment. Task order: [#52](https://github.com/yingtian0/Themisy/issues/52).
 
 ## Versions and evidence
@@ -11,6 +11,8 @@ or a production support commitment. Task order: [#52](https://github.com/yingtia
 | offline course `671fe6953a09b2156ec1542cce877e798f18e8c7` | [PR #53](https://github.com/yingtian0/Themisy/pull/53), [local verification](guides/offline-verification.md); [CI run 39090979789](https://github.com/yingtian0/Themisy/actions/runs/39090979789), all five jobs succeeded on this commit |
 | main `8808bf733cb57e75d9c600f2f33ad1b2c0fcde82` | [CI run 40090297722](https://github.com/yingtian0/Themisy/actions/runs/40090297722), all five jobs succeeded; current integration and source-observation baseline |
 | coordinator acceptance `1d9fbfbd2a65d821c625278f228698eb108cd5aa` | Dedicated PostgreSQL independent-store and independent-OS-process tests passed locally with race detection; [reproduction target](runbooks/workflow-coordinator.md#reproduce-the-acceptance-gate) is now required in CI |
+| runtime verification `dc5f584fa4ac7f145639f81d7a512ed8f5509309` | [PR #93](https://github.com/yingtian0/Themisy/pull/93), [CI 40452048603](https://github.com/yingtian0/Themisy/actions/runs/40452048603), all five jobs succeeded; signed read-only observations, real PostgreSQL fixtures and simulated provider boundaries |
+| production identity `8d94cd97020f98fea6f66a442eb944dc516eed3d` | [PR #94](https://github.com/yingtian0/Themisy/pull/94), [CI 40624014693](https://github.com/yingtian0/Themisy/actions/runs/40624014693), all five jobs succeeded; independent identity attestation and durable Directory fences; no live IdP/cloud evidence |
 | This documentation revision | Git commit adding this table; document/link checks recorded in the associated PR. No execution changes |
 
 “Implemented” means code exists. “Simulated” includes mocks, fake SDKs, memory
@@ -43,21 +45,24 @@ Proposed; local acceptance is not production approval.
 
 ## Execution status and failure paths
 
-Paths below are repository-relative evidence references at the main snapshot
-above, browsable in the [pinned source tree](https://github.com/yingtian0/Themisy/tree/8808bf733cb57e75d9c600f2f33ad1b2c0fcde82).
-Later implementations must provide new commit-specific evidence.
+Paths below are repository-relative references in this revision. Historical PRs
+identify provenance; commit-specific CI evidence is listed above. New Policy
+rollout tests in this revision have local fixture evidence and require the PR's
+exact-head CI checks before merge. None of these rows is live cloud evidence.
 
 | Capability / scenario | Implementation / simulated evidence | Real DB / Temporal evidence | Real AWS / remaining gate |
 |---|---|---|---|
 | Contract/Profile validation, Plan/hash/expiry | `internal/contract`, `internal/profile`, `internal/planner`; offline tests compare full Plan | Not needed for offline planning | No cloud claim; [#41](https://github.com/yingtian0/Themisy/issues/41), [#51](https://github.com/yingtian0/Themisy/issues/51) |
 | Signed Grant, approval refusal and tamper rejection | `internal/application/grants_test.go`, `internal/runner/runner_test.go`; rejects before credentials/Write. `internal/runner/final_policy_grant_test.go` connects approved deploy, simulated failed observation and separately evaluated rollback | Real PostgreSQL `TestPostgresFinalPolicyIssuanceAtomicity` verifies atomic Grant/audit and concurrent revocation refusal | [#4](https://github.com/yingtian0/Themisy/issues/4), final-input evidence [#48](https://github.com/yingtian0/Themisy/issues/48) / [migration](runbooks/final-operation-policy.md); production lifetime redesign remains #51 |
 | Production verification cannot be omitted | [PR #36](https://github.com/yingtian0/Themisy/pull/36), `internal/workflow/release_test.go`; [migration](runbooks/production-verification.md) | Main CI includes integration suite; guard tests are simulated | Completed [#35](https://github.com/yingtian0/Themisy/issues/35) unit, distinct from parent #9 |
-| ECS runtime health required before success | [PR #37](https://github.com/yingtian0/Themisy/pull/37), `adapters/ecs`, `internal/runner/dispatch_reconcile_test.go` | Shared journal tests preserve dispatch/reconcile state | Runtime gate unit implemented. Full Evidence body/storage/API/UI and end-to-end verification remain [#9](https://github.com/yingtian0/Themisy/issues/9); [Opt-in read-only runtime snapshots](verification/runtime-observations.md) are audited and freshness checked; default Control Plane verification executor remains unavailable |
-| Missing/inconclusive Evidence | `internal/verification`, `adapters/datadog` four-value tests; unavailable workflow verifier blocks | No complete real-backend evidence course recorded | Never mapped to PASS; parent #9 |
+| ECS runtime health required before success | [PR #93](https://github.com/yingtian0/Themisy/pull/93), signed source-bound runtime/health reports and standard GrantExecutor connection; [migration](verification/runner-observation-flow.md) | `TestPostgresSignedObservationFlow` reopens durable pools and reverifies reports; Workflow fixture rejects forged observations | Local acceptance of #9 complete; live ECS/Datadog staging remains #11 |
+| Missing/inconclusive Evidence | Four-value health/runtime results are preserved in signed reports; no missing result becomes PASS | Signed observation/audit and Workflow tests use fixtures | #9 local gate implemented; real provider outage/stale-data staging unverified |
 | Rollback and subsequent verification | Typed separate operation and simulated executor tests exist | `internal/workflow/deployment_result_integration_test.go` and signed recovery tests cover complete restored Deployment and one Write; `internal/application/deployment_restore_test.go` binds rollback Grant to restored source execution. Dedicated PostgreSQL/Temporal recovery target includes Worker process crashes | [#49](https://github.com/yingtian0/Themisy/issues/49), #48, #51; live rollback unverified |
 | UNKNOWN and restart, no blind retry | `internal/runner/recovery_integration_test.go`, journal ownership and read-only reconciliation | Main CI real PostgreSQL shared-journal/process recovery plus Temporal integration | Workflow/Run convergence [#38](https://github.com/yingtian0/Themisy/issues/38) and backup/retention [#30](https://github.com/yingtian0/Themisy/issues/30) completed. `make test-workflow-recovery` and `make verify-runner-journal-backup-restore` reproduce positive/negative gates; live AWS remains unverified |
 | STS credentials and fixed ECS targets | SDK fakes in `pkg/credentials`, `adapters/ecs`; Runner-local allowlists plus active registered task-definition and exact digest preflight ([PR #86](https://github.com/yingtian0/Themisy/pull/86)) | Not a cloud credential test | [#6](https://github.com/yingtian0/Themisy/issues/6), [#7](https://github.com/yingtian0/Themisy/issues/7), [#11](https://github.com/yingtian0/Themisy/issues/11) live KMS/STS/ECS/CloudTrail and direct Write denial pending |
-| Policy, identity and pre-dispatch Context | Explicit OIDC mode for REST/UI/MCP and Worker Grant admission; independently signed short-lived Directory with durable revision fences; token-free identity receipts and rechecked requester/delegation/approver roles. See [production identity setup](guides/production-identity.md). Reverified local Policy candidate inventory and audited shadow observations remain separate. [Typed source assembly](context/source-context.md) combines collector-minted CI/dependency/metadata observations; local examples remain synthetic | Dedicated PostgreSQL audit tests cover source assembly, shadow and runtime observations. No production trust-chain deployment evidence | [#10](https://github.com/yingtian0/Themisy/issues/10), [#12](https://github.com/yingtian0/Themisy/issues/12), [#13](https://github.com/yingtian0/Themisy/issues/13); do not infer production readiness |
+| Policy distribution | Authenticated registry/assignment/status/shadow/rollback API, scoped monotonic revisions, independent embedded mandatory baseline, fresh Runner verification; [guide](guides/policy-distribution.md) | Local real-PostgreSQL restart and concurrent admission tests plus full race suite; PR CI required | #10 local implementation; real customer canary rollout unverified |
+| Identity | [PR #94](https://github.com/yingtian0/Themisy/pull/94): OIDC REST/UI/MCP, separate mTLS identity attestor, signed Directory, requester/approver/delegation rechecks; [guide](guides/production-identity.md) | Exact-head CI above includes real DB fences and simulated HTTPS IdP/exchange boundaries | #12 local trust chain implemented; customer key/cert/Directory provisioning and live IdP validation unverified |
+| Pre-dispatch Context | [Typed source assembly](context/source-context.md) combines collector-minted CI/dependency/metadata observations; default planning still needs trusted-source admission wiring | Dedicated source audit tests are observations, not authorization | #13 remains open; caller CI/health booleans are not production evidence |
 
 Private security triage is tracked through [SECURITY.md](../SECURITY.md), with
 channel availability in [#39](https://github.com/yingtian0/Themisy/issues/39).
@@ -69,8 +74,7 @@ reports privately before recommending any affected execution scope.
 All require versioned evidence and review; there is no promised completion date:
 
 - Production identity deployment validation and customer provisioning remain external gates. The local OIDC/Directory trust chain is implemented; trusted pre-dispatch Context freshness/provenance remains #13.
-- Signed Policy distribution, mandatory enforcement, shadow/rollout/rollback and
-  operation-specific final authorization (#10/#48/#51).
+- Customer Policy provisioning and real canary/shadow/rollback rollout validation remain external gates. Local signed distribution and mandatory enforcement are implemented; long-lived operation/compensation authorization remains #51.
 - Key custody, rotation and revocation for Grants, manifests and results (#4).
 - Real runtime health and signed Evidence, including unavailable and missing
   observations, deploy failure, rollback and rollback verification (#9).
@@ -124,7 +128,7 @@ that remain open.
 The implementation accompanying [ADR-0024](adr/0024-source-bound-runtime-verification.md)
 connects the standard GrantExecutor to read-only Runner verification for ECS,
 including signed runtime/health bodies and tenant-scoped API/UI projection.
-The earlier pinned snapshot's unavailable-executor statement is historical.
+The earlier snapshot's unavailable-executor statement is superseded by that implementation.
 See [reproduction and migration](verification/runner-observation-flow.md) for
 required read roles, queries, credentials and fail-closed behavior. This does not
 complete live AWS/Datadog staging, production identity/Context or compensation

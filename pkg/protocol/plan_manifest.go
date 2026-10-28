@@ -15,6 +15,7 @@ const PlanManifestVersion = "themisy.plan-manifest/v1alpha1"
 // PlanManifest is independently provisioned, never reconstructed by a Runner
 // from an ActionGrant. Revision is monotonic within a tenant/group/run.
 type PlanManifest struct {
+	PolicyRevision   int64     `json:"policy_revision,omitempty"`
 	ProtocolVersion  string    `json:"protocol_version"`
 	Issuer           string    `json:"issuer"`
 	TenantID         string    `json:"tenant_id"`
@@ -37,7 +38,7 @@ type PlanManifest struct {
 }
 
 func CanonicalManifestPayload(m PlanManifest) ([]byte, error) {
-	if m.ProtocolVersion != PlanManifestVersion || m.Revision < 1 || m.Issuer == "" || m.TenantID == "" || m.RunnerGroup == "" || m.RunID == "" || m.StepID == "" || m.Target.Service == "" || m.Target.Environment == "" || m.IssuedAt.IsZero() || !m.ExpiresAt.After(m.IssuedAt) {
+	if m.PolicyRevision < 0 || m.ProtocolVersion != PlanManifestVersion || m.Revision < 1 || m.Issuer == "" || m.TenantID == "" || m.RunnerGroup == "" || m.RunID == "" || m.StepID == "" || m.Target.Service == "" || m.Target.Environment == "" || m.IssuedAt.IsZero() || !m.ExpiresAt.After(m.IssuedAt) {
 		return nil, errors.New("invalid plan manifest")
 	}
 	for _, d := range []string{m.PlanHash, m.ContractHash, m.ProfileHash, m.PolicyHash, m.EvidenceHash, m.Action.ArtifactDigest} {

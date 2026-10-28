@@ -85,9 +85,11 @@ type identitySettings struct {
 	DelegationsFile string `yaml:"delegations_file"`
 }
 type policySettings struct {
-	BundleFile   string `yaml:"bundle_file"`
-	TrustKeyID   string `yaml:"trust_key_id"`
-	TrustKeyFile string `yaml:"trust_key_file"`
+	Issuer          string `yaml:"issuer"`
+	TrustBundleFile string `yaml:"trust_bundle_file"`
+	BundleFile      string `yaml:"bundle_file"`
+	TrustKeyID      string `yaml:"trust_key_id"`
+	TrustKeyFile    string `yaml:"trust_key_file"`
 }
 type journalSettings struct {
 	DatabaseURL string `yaml:"database_url"`
@@ -239,7 +241,7 @@ func load(path string) (settings, error) {
 			return settings{}, fmt.Errorf("unsupported capability %q", capability)
 		}
 	}
-	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.Identity.DiscoveryURL == "" || result.Identity.TrustKeyID != "" || result.Identity.TrustKeyFile != "" || (result.Identity.AttestationIssuer == "" || result.Identity.AttestationTrustBundleFile == "" || result.Identity.AttestationIssuer == result.ControlPlane.Issuer || result.Identity.DirectoryFile == "" || result.Identity.DirectoryIssuer == "" || result.Identity.DirectoryTrustBundleFile == "" || result.Identity.DirectoryMinimumRevision < 1 || result.Identity.DelegationsFile != "") || result.Policy.BundleFile == "" || result.Policy.TrustKeyID == "" || result.Policy.TrustKeyFile == "") {
+	if result.Mode == "production" && (result.Journal.DatabaseURL == "" || result.ControlPlane.ClientCertFile == "" || result.ControlPlane.ClientKeyFile == "" || result.ControlPlane.CAFile == "" || result.Identity.DiscoveryURL == "" || result.Identity.TrustKeyID != "" || result.Identity.TrustKeyFile != "" || (result.Identity.AttestationIssuer == "" || result.Identity.AttestationTrustBundleFile == "" || result.Identity.AttestationIssuer == result.ControlPlane.Issuer || result.Identity.DirectoryFile == "" || result.Identity.DirectoryIssuer == "" || result.Identity.DirectoryTrustBundleFile == "" || result.Identity.DirectoryMinimumRevision < 1 || result.Identity.DelegationsFile != "") || (result.Policy.Issuer == "" || result.Policy.TrustBundleFile == "" || result.Policy.Issuer == result.ControlPlane.Issuer || result.Policy.BundleFile != "" || result.Policy.TrustKeyID != "" || result.Policy.TrustKeyFile != "")) {
 		return settings{}, fmt.Errorf("production requires durable journal and customer-managed OIDC and policy trust keys")
 	}
 	if err := validateIdentityTrust(result.Identity, result.Mode); err != nil {
@@ -430,7 +432,7 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 		}
 		delegationResolver = loaded
 	}
-	policyEngine, err := loadRunnerPolicy(ctx, configuration)
+	policyEngine, err := policy.NewMandatoryEngine(ctx)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -510,6 +512,15 @@ func buildRunner(ctx context.Context, configuration settings) (*runnercore.Runne
 			}
 			return received.LoadFile(ctx, configuration.Manifests.File)
 		},
+	}
+	if configuration.Mode == "production" {
+		ledger, ok := journal.(policy.RevisionLedger)
+		if !ok {
+			return fail(errors.New("production Policy requires durable revision fence"))
+		}
+		keys := policy.FileBundleKeys{Trust: grant.FileKeys{Path: configuration.Policy.TrustBundleFile, Issuer: configuration.Policy.Issuer, Tenant: configuration.TenantID}}
+		source := &policy.RunnerPolicySource{TenantID: configuration.TenantID, RunnerGroup: configuration.RunnerGroup, Issuer: configuration.Policy.Issuer, Keys: keys, Ledger: ledger, Fetch: client.FetchPolicy, Acknowledge: client.AcknowledgePolicy}
+		executionRunner.Policy = policy.NewEngine(&policy.AssignedEvaluator{Load: source.Load, Issuer: source.Issuer, Keys: keys})
 	}
 	executionRunner.Reporter = client
 	return executionRunner, client, dispatcher, cleanup, nil
@@ -676,34 +687,6 @@ func loadDelegations(path string) (identity.StaticDelegations, error) {
 		result[value.ID] = value
 	}
 	return result, nil
-}
-
-func loadRunnerPolicy(ctx context.Context, configuration settings) (*policy.Engine, error) {
-	if configuration.Mode == "development" {
-		return policy.NewMandatoryEngine(ctx)
-	}
-	data, err := os.ReadFile(configuration.Policy.BundleFile)
-	if err != nil {
-		return nil, fmt.Errorf("read policy bundle: %w", err)
-	}
-	var bundle policy.Bundle
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&bundle); err != nil {
-		return nil, fmt.Errorf("decode policy bundle: %w", err)
-	}
-	if err := requireJSONEOF(decoder); err != nil {
-		return nil, fmt.Errorf("decode policy bundle: %w", err)
-	}
-	key, err := grant.LoadEd25519PublicKey(configuration.Policy.TrustKeyFile)
-	if err != nil {
-		return nil, err
-	}
-	verified, err := policy.NewVerifiedOPA(ctx, bundle, bundle.Issuer, policy.StaticBundleKeys{bundle.Issuer + "\x00" + configuration.Policy.TrustKeyID: key}, time.Now().UTC())
-	if err != nil {
-		return nil, err
-	}
-	return policy.NewEngine(verified), nil
 }
 
 func requireJSONEOF(decoder *json.Decoder) error {

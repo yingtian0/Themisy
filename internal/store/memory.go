@@ -9,25 +9,30 @@ import (
 	"time"
 
 	"themisy/internal/domain"
+	policy "themisy/internal/policymodel"
 	"themisy/pkg/protocol"
 )
 
 type Memory struct {
-	manifests      map[string]protocol.PlanManifest
-	mu             sync.RWMutex
-	runs           map[string]*domain.ReleaseRun
-	plans          map[string]domain.ReleasePlan
-	runByRequestID map[string]string
-	audit          map[string][]domain.AuditEvent
-	executions     map[string]ExecutionRecord
-	outbox         []domain.OutboxEvent
-	projections    map[string]*domain.ReleaseRun
-	runnerActions  map[string]RunnerActionRecord
-	runnerByKey    map[string]string
-	grantDispatch  map[string]GrantDispatchRecord
-	grantByKey     map[string]string
-	runnerFleet    map[string]domain.RunnerInfo
-	journalError   error
+	policyBundles     map[string]policy.Bundle
+	policyAssignments map[string]policy.Assignment
+	policyAcks        map[string]policy.Acknowledgement
+	policyFences      map[string]policy.Assignment
+	manifests         map[string]protocol.PlanManifest
+	mu                sync.RWMutex
+	runs              map[string]*domain.ReleaseRun
+	plans             map[string]domain.ReleasePlan
+	runByRequestID    map[string]string
+	audit             map[string][]domain.AuditEvent
+	executions        map[string]ExecutionRecord
+	outbox            []domain.OutboxEvent
+	projections       map[string]*domain.ReleaseRun
+	runnerActions     map[string]RunnerActionRecord
+	runnerByKey       map[string]string
+	grantDispatch     map[string]GrantDispatchRecord
+	grantByKey        map[string]string
+	runnerFleet       map[string]domain.RunnerInfo
+	journalError      error
 }
 
 func NewMemory() *Memory {
@@ -126,6 +131,12 @@ func (m *Memory) SetRunnerStatus(_ context.Context, tenantID, runnerID string, s
 func (m *Memory) CreateGrantDispatch(_ context.Context, record GrantDispatchRecord, audit domain.AuditEvent, outbox domain.OutboxEvent) (GrantDispatchRecord, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if record.Grant.PolicyRevision > 0 {
+		a := m.policyAssignments[record.Grant.TenantID+"\x00"+record.Grant.RunnerGroup]
+		if a.Revision != record.Grant.PolicyRevision || a.BundleHash != record.Grant.PolicyHash {
+			return GrantDispatchRecord{}, false, ErrConflict
+		}
+	}
 	if record.AuthorizingRunVersion > 0 {
 		run, ok := m.runs[record.Grant.RunID]
 		if !ok || run.StateVersion != record.AuthorizingRunVersion {

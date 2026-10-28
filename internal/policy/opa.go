@@ -16,6 +16,7 @@ import (
 var stableReasonCode = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,63}$`)
 
 type OPA struct {
+	components    []*OPA
 	query         rego.PreparedEvalQuery
 	bundleVersion string
 	bundleHash    string
@@ -49,11 +50,11 @@ func NewVerifiedOPA(ctx context.Context, bundle Bundle, issuer string, keys Bund
 	if err := VerifyBundle(ctx, bundle, issuer, keys, now); err != nil {
 		return nil, err
 	}
-	return newOPA(ctx, bundle)
+	return compileLayered(ctx, bundle, newOPA)
 }
 
 func newOPA(ctx context.Context, bundle Bundle) (*OPA, error) {
-	options := []func(*rego.Rego){rego.Query("data.themisy.authorization.decision")}
+	options := []func(*rego.Rego){rego.Query("data.themisy.authorization.decision"), rego.Capabilities(offlineCapabilities())}
 	seenMandatory := false
 	for _, module := range normalizedBundle(bundle).Modules {
 		if module.Name == "" || module.Source == "" {
@@ -79,6 +80,9 @@ func (o *OPA) Evaluate(ctx context.Context, input Input) (Evaluation, error) {
 		return Evaluation{}, fmt.Errorf("POLICY_UNAVAILABLE")
 	}
 	input = NormalizeInput(input)
+	if len(o.components) > 0 {
+		return o.evaluateLayers(ctx, input)
+	}
 	results, err := o.query.Eval(ctx, rego.EvalInput(input))
 	if err != nil || len(results) != 1 || len(results[0].Expressions) != 1 {
 		return Evaluation{}, fmt.Errorf("POLICY_UNAVAILABLE: invalid OPA result: %w", err)

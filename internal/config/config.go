@@ -11,6 +11,7 @@ import (
 )
 
 type Config struct {
+	Policy          Policy          `yaml:"policy"`
 	Identity        Identity        `yaml:"identity"`
 	Mode            string          `yaml:"mode"`
 	HTTP            HTTP            `yaml:"http"`
@@ -67,6 +68,13 @@ func (c Identity) Validate() error {
 	return nil
 }
 
+type Policy struct {
+	RunnerGroups    []string `yaml:"runner_groups"`
+	Mode            string   `yaml:"mode"`
+	Issuer          string   `yaml:"issuer"`
+	TrustBundleFile string   `yaml:"trust_bundle_file"`
+}
+
 type HTTP struct {
 	Address     string `yaml:"address"`
 	TLSCertFile string `yaml:"tls_cert_file"`
@@ -111,7 +119,7 @@ type RunnerRegistration struct {
 }
 
 func Load(path string) (Config, error) {
-	result := Config{Identity: Identity{Mode: "development-headers"}, Mode: "all", HTTP: HTTP{Address: ":8080"}, Database: Database{AutoMigrate: true}, Temporal: Temporal{Address: "localhost:7233", Namespace: "default", TaskQueue: "themisy-releases"}, Planning: Planning{Contracts: "examples/contracts", Profiles: "examples/profiles"}}
+	result := Config{Policy: Policy{Mode: "embedded"}, Identity: Identity{Mode: "development-headers"}, Mode: "all", HTTP: HTTP{Address: ":8080"}, Database: Database{AutoMigrate: true}, Temporal: Temporal{Address: "localhost:7233", Namespace: "default", TaskQueue: "themisy-releases"}, Planning: Planning{Contracts: "examples/contracts", Profiles: "examples/profiles"}}
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -131,11 +139,35 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.Policy.Mode != "embedded" && c.Policy.Mode != "distributed" {
+		return fmt.Errorf("policy.mode must be embedded or distributed")
+	}
+	if c.Identity.Mode == "oidc" && c.Policy.Mode != "distributed" {
+		return fmt.Errorf("OIDC production admission requires distributed signed Policy")
+	}
+	if c.Policy.Mode == "distributed" && (c.Identity.Mode != "oidc" || c.Policy.Issuer == "" || c.Policy.TrustBundleFile == "" || len(c.Policy.RunnerGroups) == 0 || c.Policy.Issuer == c.Grants.Issuer) {
+		return fmt.Errorf("distributed Policy requires OIDC and independent issuer trust")
+	}
+
 	if err := c.Identity.Validate(); err != nil {
 		return err
 	}
 	if c.Grants.Signing.Provider == "aws-kms" && c.Identity.Mode != "oidc" {
 		return fmt.Errorf("AWS KMS signing requires OIDC identity mode")
+	}
+	if c.Policy.Mode == "distributed" {
+		seen := map[string]bool{}
+		for _, group := range c.Policy.RunnerGroups {
+			if group == "" || seen[group] {
+				return fmt.Errorf("Policy Runner groups must be nonempty and unique")
+			}
+			seen[group] = true
+		}
+		for _, registration := range c.RunnerTransport.Registrations {
+			if !seen[registration.RunnerGroup] {
+				return fmt.Errorf("Runner registration is outside configured Policy groups")
+			}
+		}
 	}
 	if c.Identity.Mode == "oidc" {
 		if c.Identity.AttestationIssuer == c.Grants.Issuer || c.Identity.DirectoryIssuer == c.Grants.Issuer || c.Identity.AttestationIssuer == c.Identity.DirectoryIssuer {

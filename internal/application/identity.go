@@ -125,3 +125,24 @@ func (a *IdentityAuthority) authorize(ctx context.Context, run domain.ReleaseRun
 	return expires, nil
 }
 func effectiveRisk(requested, pinned string) string { return policy.EffectiveRisk(requested, pinned) }
+
+// RequireRole rechecks the original request token and current Directory after
+// potentially slow Policy compilation, before an administrative state change.
+func (a *IdentityAuthority) RequireRole(ctx context.Context, tenant, actor, issuer, role string) error {
+	verified, ok := identity.RequestActorFromContext(ctx)
+	if !ok || a == nil || a.Verifier == nil || a.Verifier.OIDC == nil || verified.TenantID != tenant || tenant != a.Verifier.TenantID || verified.Subject != actor || verified.Issuer != issuer || !slices.Contains(verified.Roles, role) {
+		return identity.ErrInvalidIdentityProof
+	}
+	subject, err := a.Verifier.OIDC.Verify(ctx, verified.ProofToken)
+	if err != nil || subject.ID != actor || subject.Issuer != issuer {
+		return identity.ErrInvalidIdentityProof
+	}
+	member, err := a.Verifier.Directory.Member(ctx, issuer, actor)
+	if err != nil || !slices.Contains(member.Roles, role) {
+		return identity.ErrInvalidIdentityProof
+	}
+	if _, ok := identity.RequestActorFromContext(ctx); !ok {
+		return identity.ErrInvalidIdentityProof
+	}
+	return nil
+}

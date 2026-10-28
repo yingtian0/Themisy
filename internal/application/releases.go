@@ -14,6 +14,7 @@ import (
 	"themisy/internal/contract"
 	"themisy/internal/domain"
 	"themisy/internal/planner"
+	"themisy/internal/policy"
 	"themisy/internal/store"
 	workflowcore "themisy/internal/workflow"
 	"themisy/pkg/protocol"
@@ -22,6 +23,7 @@ import (
 var ErrInvalidRequest = errors.New("invalid release request")
 
 type Releases struct {
+	Policies      *policy.Distributor
 	Authority     *IdentityAuthority
 	planner       *planner.Planner
 	store         store.DurableStore
@@ -83,6 +85,31 @@ func (r *Releases) planPreparedIntent(ctx context.Context, intent domain.Release
 		return domain.ReleasePlan{}, err
 	}
 	plan, err := r.planner.PlanIntent(intent)
+	if err == nil && r.Policies != nil {
+		hash := ""
+		revisions := map[string]int64{}
+		for _, phase := range plan.Phases {
+			for _, step := range phase.Steps {
+				delivery, loadErr := r.Policies.Current(ctx, intent.TenantID, step.Scheduling.RunnerGroup)
+				if loadErr != nil {
+					return domain.ReleasePlan{}, loadErr
+				}
+				if hash != "" && hash != delivery.Bundle.Hash {
+					return domain.ReleasePlan{}, fmt.Errorf("selected Runner groups require separate Runs for different Policy bundles")
+				}
+				hash = delivery.Bundle.Hash
+				revisions[step.Scheduling.RunnerGroup] = delivery.Assignment.Revision
+			}
+		}
+		scoped, scopedErr := r.planner.WithPolicy(hash)
+		if scopedErr != nil {
+			return domain.ReleasePlan{}, scopedErr
+		}
+		plan, err = scoped.PlanIntent(intent)
+		if err == nil {
+			plan, err = planner.BindPolicyAssignments(plan, revisions)
+		}
+	}
 	if err == nil && r.Authority != nil {
 		request := planner.LegacyRequestFromIntent(intent)
 		for _, phase := range plan.Phases {
@@ -151,7 +178,23 @@ func (r *Releases) StartIntent(ctx context.Context, intent domain.ReleaseIntent)
 }
 
 func (r *Releases) start(ctx context.Context, request domain.ReleaseRequest, plan domain.ReleasePlan) (*domain.ReleaseRun, bool, error) {
-	if err := r.planner.ValidatePlan(plan, r.now()); err != nil {
+	validationPlanner := r.planner
+	if r.Policies != nil {
+		for _, phase := range plan.Phases {
+			for _, step := range phase.Steps {
+				current, err := r.Policies.Current(ctx, request.TenantID, step.Scheduling.RunnerGroup)
+				if err != nil || current.Bundle.Hash != plan.PolicyHash || current.Assignment.Revision != plan.PolicyAssignments[step.Scheduling.RunnerGroup] {
+					return nil, false, policy.ErrDistribution
+				}
+			}
+		}
+		var err error
+		validationPlanner, err = r.planner.WithPolicy(plan.PolicyHash)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	if err := validationPlanner.ValidatePlan(plan, r.now()); err != nil {
 		return nil, false, fmt.Errorf("validate release plan before workflow start: %w", err)
 	}
 	now := r.now().UTC()

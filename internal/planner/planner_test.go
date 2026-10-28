@@ -499,3 +499,29 @@ func TestProductionProfileRequiresVerification(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyRollbackGenerationDoesNotReviveOldPlanHash(t *testing.T) {
+	p, err := New([]domain.Service{{Name: "service", OwnerTeam: "team", RiskTier: "low"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := p.Plan(domain.ReleaseRequest{RequestID: "request", ReleaseVersion: "v1", Environment: domain.EnvironmentStaging, RequestedBy: "user", Agent: domain.AgentIdentity{ID: "agent"}, Changes: []domain.Change{{Service: "service", DesiredVersion: "v1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := BindPolicyAssignments(plan, map[string]int64{"legacy-staging": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback, err := BindPolicyAssignments(plan, map[string]int64{"legacy-staging": 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := BindPolicyAssignments(plan, map[string]int64{"legacy-staging": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Hash == rollback.Hash || first.Hash != same.Hash {
+		t.Fatal("Policy assignment not pinned deterministically")
+	}
+}

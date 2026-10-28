@@ -6,7 +6,8 @@ signed organization Directory. See [ADR 0025](../adr/0025-production-identity-di
 
 ## Control Plane and Worker
 
-Add the following to an otherwise complete configuration. Replace all values
+Add the following to an otherwise complete configuration, including
+[distributed signed Policy](policy-distribution.md). Replace all values
 with customer-controlled settings; do not put tokens in YAML.
 
 ```yaml

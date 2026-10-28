@@ -18,6 +18,7 @@ import (
 
 	"themisy/internal/domain"
 	grantvalidation "themisy/internal/grant"
+	"themisy/internal/policy"
 	"themisy/internal/resultreport"
 	"themisy/internal/runner"
 	"themisy/internal/store"
@@ -67,6 +68,7 @@ func (a StaticRunnerAuthenticator) Authenticate(request *http.Request) (RunnerId
 }
 
 type RunnerServer struct {
+	Policies          *policy.Distributor
 	ResultVerifier    *resultreport.Verifier
 	Store             store.GrantDispatchStore
 	Fleet             store.RunnerFleetStore
@@ -100,6 +102,8 @@ type resultSubmission struct {
 
 func (s *RunnerServer) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/runner/policy", s.policyCurrent)
+	mux.HandleFunc("POST /v1/runner/policy/ack", s.policyAck)
 	mux.HandleFunc("GET /v1/runner/grants:next", s.next)
 	mux.HandleFunc("POST /v1/runner/grants/{id}/ack", s.ack)
 	mux.HandleFunc("POST /v1/runner/grants/{id}/result", s.result)
