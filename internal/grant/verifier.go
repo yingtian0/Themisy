@@ -47,7 +47,7 @@ func (v *Verifier) Verify(ctx context.Context, actionGrant protocol.ActionGrant)
 	if err := protocol.ValidateVersion(actionGrant.ProtocolVersion); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidProtocol, err)
 	}
-	payload, err := protocol.CanonicalGrantPayload(actionGrant)
+	payload, err := protocol.GrantSigningMessage(actionGrant)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
 	}
@@ -77,6 +77,18 @@ func (v *Verifier) Verify(ctx context.Context, actionGrant protocol.ActionGrant)
 	now := time.Now().UTC()
 	if v.Now != nil {
 		now = v.Now().UTC()
+	}
+	if actionGrant.Compensation != nil {
+		until, err := time.Parse(time.RFC3339Nano, actionGrant.Compensation.ValidUntil)
+		if err != nil || !now.Before(until) {
+			return ErrExpired
+		}
+	}
+	if actionGrant.AuthorizationValidUntil != "" {
+		until, err := time.Parse(time.RFC3339Nano, actionGrant.AuthorizationValidUntil)
+		if err != nil || !now.Before(until) || !now.Before(actionGrant.ExpiresAt) {
+			return ErrExpired
+		}
 	}
 	if actionGrant.IssuedAt.After(now.Add(v.ClockSkew)) || !actionGrant.ExpiresAt.After(now.Add(-v.ClockSkew)) {
 		return ErrExpired

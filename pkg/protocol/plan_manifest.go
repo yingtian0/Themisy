@@ -10,41 +10,60 @@ import (
 	"time"
 )
 
+const PlanManifestVersionV2 = "themisy.plan-manifest/v1alpha2"
+
 const PlanManifestVersion = "themisy.plan-manifest/v1alpha1"
 
 // PlanManifest is independently provisioned, never reconstructed by a Runner
 // from an ActionGrant. Revision is monotonic within a tenant/group/run.
 type PlanManifest struct {
-	ContextIssuer    string    `json:"context_issuer,omitempty"`
-	ContextRevision  int64     `json:"context_revision,omitempty"`
-	ContextExpiresAt string    `json:"context_expires_at,omitempty"`
-	PolicyRevision   int64     `json:"policy_revision,omitempty"`
-	ProtocolVersion  string    `json:"protocol_version"`
-	Issuer           string    `json:"issuer"`
-	TenantID         string    `json:"tenant_id"`
-	RunnerGroup      string    `json:"runner_group"`
-	RunID            string    `json:"run_id"`
-	StepID           string    `json:"step_id"`
-	Revision         int64     `json:"revision"`
-	PlanHash         string    `json:"plan_hash"`
-	ContractHash     string    `json:"contract_hash"`
-	ProfileHash      string    `json:"profile_hash"`
-	PolicyHash       string    `json:"policy_hash"`
-	EvidenceHash     string    `json:"evidence_hash"`
-	Target           Target    `json:"target"`
-	Action           Action    `json:"action"`
-	ApprovalRequired bool      `json:"approval_required"`
-	ApprovalProofs   []string  `json:"approval_proofs"`
-	IssuedAt         time.Time `json:"issued_at"`
-	ExpiresAt        time.Time `json:"expires_at"`
-	Signature        Signature `json:"signature"`
+	Compensation            *CompensationBinding `json:"compensation,omitempty"`
+	AuthorizationEpoch      string               `json:"authorization_epoch,omitempty"`
+	AuthorizationValidUntil string               `json:"authorization_valid_until,omitempty"`
+	ContextIssuer           string               `json:"context_issuer,omitempty"`
+	ContextRevision         int64                `json:"context_revision,omitempty"`
+	ContextExpiresAt        string               `json:"context_expires_at,omitempty"`
+	PolicyRevision          int64                `json:"policy_revision,omitempty"`
+	ProtocolVersion         string               `json:"protocol_version"`
+	Issuer                  string               `json:"issuer"`
+	TenantID                string               `json:"tenant_id"`
+	RunnerGroup             string               `json:"runner_group"`
+	RunID                   string               `json:"run_id"`
+	StepID                  string               `json:"step_id"`
+	Revision                int64                `json:"revision"`
+	PlanHash                string               `json:"plan_hash"`
+	ContractHash            string               `json:"contract_hash"`
+	ProfileHash             string               `json:"profile_hash"`
+	PolicyHash              string               `json:"policy_hash"`
+	EvidenceHash            string               `json:"evidence_hash"`
+	Target                  Target               `json:"target"`
+	Action                  Action               `json:"action"`
+	ApprovalRequired        bool                 `json:"approval_required"`
+	ApprovalProofs          []string             `json:"approval_proofs"`
+	IssuedAt                time.Time            `json:"issued_at"`
+	ExpiresAt               time.Time            `json:"expires_at"`
+	Signature               Signature            `json:"signature"`
 }
 
 func CanonicalManifestPayload(m PlanManifest) ([]byte, error) {
+	if err := ValidateCompensation(m.Compensation, m.Action, m.IssuedAt, m.ExpiresAt, m.ProtocolVersion == PlanManifestVersionV2); err != nil {
+		return nil, err
+	}
+	if m.ProtocolVersion == PlanManifestVersion && m.Compensation != nil {
+		return nil, errors.New("compensation requires v1alpha2")
+	}
+
+	if err := ValidateAuthorizationLifetime(m.AuthorizationEpoch, m.AuthorizationValidUntil, m.IssuedAt, m.ExpiresAt, m.ProtocolVersion == PlanManifestVersionV2); err != nil {
+		return nil, err
+	}
+	if m.ProtocolVersion == PlanManifestVersion && m.AuthorizationEpoch != "" {
+		return nil, errors.New("lifetime fields require manifest v1alpha2")
+	}
+
 	if err := ValidateContextBinding(m.ContextIssuer, m.ContextRevision, m.ContextExpiresAt, m.ExpiresAt); err != nil {
 		return nil, err
 	}
-	if m.PolicyRevision < 0 || m.ProtocolVersion != PlanManifestVersion || m.Revision < 1 || m.Issuer == "" || m.TenantID == "" || m.RunnerGroup == "" || m.RunID == "" || m.StepID == "" || m.Target.Service == "" || m.Target.Environment == "" || m.IssuedAt.IsZero() || !m.ExpiresAt.After(m.IssuedAt) {
+	if m.PolicyRevision < 0 || (m.ProtocolVersion != PlanManifestVersion && m.ProtocolVersion != PlanManifestVersionV2) || m.Revision < 1 || m.Issuer == "" || m.TenantID == "" || m.RunnerGroup == "" || m.RunID == "" || m.StepID == "" || m.Target.Service == "" || m.Target.Environment == "" || m.IssuedAt.IsZero() || !m.ExpiresAt.After(m.IssuedAt) {
 		return nil, errors.New("invalid plan manifest")
 	}
 	for _, d := range []string{m.PlanHash, m.ContractHash, m.ProfileHash, m.PolicyHash, m.EvidenceHash, m.Action.ArtifactDigest} {
@@ -87,4 +106,16 @@ func ManifestHash(m PlanManifest) (string, error) {
 	}
 	h := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(h[:]), nil
+}
+
+func ManifestSigningMessage(m PlanManifest) ([]byte, error) {
+	raw, err := CanonicalManifestPayload(m)
+	if err != nil {
+		return nil, err
+	}
+	if m.ProtocolVersion == PlanManifestVersion {
+		return raw, nil
+	}
+	sum := sha256.Sum256(raw)
+	return []byte("themisy.plan-manifest-signature/v2\x00" + hex.EncodeToString(sum[:])), nil
 }
