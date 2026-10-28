@@ -27,9 +27,10 @@ type Metadata struct {
 }
 
 type EnvironmentContract struct {
-	ReleaseProfile string              `json:"releaseProfile" yaml:"releaseProfile"`
-	RunnerGroup    string              `json:"runnerGroup" yaml:"runnerGroup"`
-	Capabilities   []domain.Capability `json:"capabilities" yaml:"capabilities"`
+	RollbackTargetHash string              `json:"rollbackTargetHash,omitempty" yaml:"rollbackTargetHash,omitempty"`
+	ReleaseProfile     string              `json:"releaseProfile" yaml:"releaseProfile"`
+	RunnerGroup        string              `json:"runnerGroup" yaml:"runnerGroup"`
+	Capabilities       []domain.Capability `json:"capabilities" yaml:"capabilities"`
 }
 
 type Verification struct {

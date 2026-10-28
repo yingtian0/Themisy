@@ -66,6 +66,8 @@ type PolicyEvaluator interface {
 type Connectivity interface{ Connected() bool }
 
 type PinnedContext struct {
+	Compensation                                                  *protocol.CompensationBinding
+	AuthorizationEpoch, AuthorizationValidUntil                   string
 	ContextIssuer                                                 string
 	ContextRevision                                               int64
 	ContextExpiresAt                                              string
@@ -126,6 +128,9 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	if actionGrant.Action.Capability == protocol.CapabilityVerify {
 		return r.observe(ctx, actionGrant)
 	}
+	if r.Sources != nil && actionGrant.AuthorizationEpoch == "" {
+		return r.reject(actionGrant, ReasonHashMismatch, errors.New("versioned authorization epoch required"))
+	}
 	authorizer, ok := r.Adapter.(TargetAuthorizer)
 	if !ok {
 		return r.reject(actionGrant, ReasonTarget, errors.New("target authorizer unavailable"))
@@ -182,6 +187,11 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	if err != nil || !matchingHashes(actionGrant, pinned) {
 		return r.reject(actionGrant, ReasonHashMismatch, err)
 	}
+	if actionGrant.Action.Capability == protocol.CapabilityRollback && actionGrant.AuthorizationEpoch != "" {
+		if err := r.verifyCompensation(ctx, actionGrant); err != nil {
+			return r.reject(actionGrant, ReasonHashMismatch, err)
+		}
+	}
 	if actionGrant.ContextRevision > 0 && r.Sources == nil {
 		return r.reject(actionGrant, ReasonSourceContext, nil)
 	}
@@ -227,6 +237,9 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	record := store.RunnerActionRecord{GrantID: actionGrant.GrantID, RunID: actionGrant.RunID, StepID: actionGrant.StepID, TenantID: actionGrant.TenantID, RunnerGroup: actionGrant.RunnerGroup, Nonce: actionGrant.Nonce, IdempotencyKey: actionGrant.IdempotencyKey, RequestHash: requestHash, Target: actionGrant.Target, Action: actionGrant.Action, CreatedAt: now, UpdatedAt: now}
 	record.RunnerID = r.RunnerID
 	record.PlanRevision, record.PlanHash = pinned.Revision, actionGrant.PlanHash
+	if actionGrant.Compensation != nil {
+		record.CompensationSourceNonce = actionGrant.Compensation.SourceNonce
+	}
 	record, created, err := r.Journal.ReserveRunnerAction(ctx, record, journalAudit(auditID(actionGrant.GrantID, "reserve", 1), actionGrant.GrantID, "runner.action.reserve", "AUTHORIZED", now, map[string]any{"request_hash": requestHash, "runner_id": r.RunnerID}))
 	if err != nil {
 		return r.reject(actionGrant, ReasonJournalUnavailable, err)
@@ -283,6 +296,11 @@ func (r *Runner) Execute(ctx context.Context, actionGrant protocol.ActionGrant) 
 	if err := r.Grants.Verify(ctx, actionGrant); err != nil {
 		return r.failReserved(ctx, record, actionGrant, reasonForGrant(err), err)
 	}
+	if actionGrant.Compensation != nil {
+		if err := r.verifyCompensation(ctx, actionGrant); err != nil {
+			return r.failReserved(ctx, record, actionGrant, ReasonHashMismatch, err)
+		}
+	}
 	record.Status, record.UpdatedAt = store.RunnerActionDispatched, r.now()
 	if err := r.Journal.CompleteRunnerAction(ctx, record, record.StateVersion, journalAudit(auditID(actionGrant.GrantID, "dispatch", record.StateVersion+1), actionGrant.GrantID, "runner.action.dispatch", "DISPATCHED", record.UpdatedAt, nil)); err != nil {
 		return r.reject(actionGrant, ReasonJournalUnavailable, err)
@@ -323,7 +341,7 @@ func (r *Runner) now() time.Time {
 }
 
 func matchingHashes(grant protocol.ActionGrant, pinned PinnedContext) bool {
-	return grant.ContextIssuer == pinned.ContextIssuer && grant.ContextRevision == pinned.ContextRevision && grant.ContextExpiresAt == pinned.ContextExpiresAt && grant.PolicyRevision == pinned.PolicyRevision && grant.PlanHash == pinned.PlanHash && grant.ContractHash == pinned.ContractHash && grant.ProfileHash == pinned.ProfileHash && grant.PolicyHash == pinned.PolicyHash && grant.EvidenceHash == pinned.EvidenceHash && grant.Target == pinned.Target && grant.Action == pinned.Action
+	return protocol.SameCompensation(grant.Compensation, pinned.Compensation) && grant.AuthorizationEpoch == pinned.AuthorizationEpoch && grant.AuthorizationValidUntil == pinned.AuthorizationValidUntil && grant.ContextIssuer == pinned.ContextIssuer && grant.ContextRevision == pinned.ContextRevision && grant.ContextExpiresAt == pinned.ContextExpiresAt && grant.PolicyRevision == pinned.PolicyRevision && grant.PlanHash == pinned.PlanHash && grant.ContractHash == pinned.ContractHash && grant.ProfileHash == pinned.ProfileHash && grant.PolicyHash == pinned.PolicyHash && grant.EvidenceHash == pinned.EvidenceHash && grant.Target == pinned.Target && grant.Action == pinned.Action
 }
 func replayResult(grant protocol.ActionGrant, record store.RunnerActionRecord, requestHash string) (protocol.Result, error) {
 	if record.RequestHash != requestHash {

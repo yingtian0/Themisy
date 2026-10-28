@@ -29,6 +29,7 @@ func run() error {
 	issuer := flag.String("issuer", "", "independent approval issuer")
 	revision := flag.Int64("revision", 0, "monotonically increasing plan revision")
 	capability := flag.String("capability", string(protocol.CapabilityDeploy), "typed operation")
+	sourceGrant := flag.String("source-grant", "", "successful source Grant ID for rollback")
 	external := flag.String("external-execution-id", "", "original execution for rollback")
 	kmsID := flag.String("kms-key-id", "", "independent approval KMS Ed25519 key")
 	devFile := flag.String("development-key-file", "", "protected development key; never use for production")
@@ -65,7 +66,7 @@ func run() error {
 		return err
 	}
 	defer st.Close()
-	p, err := application.ApprovedManifest(ctx, st, signer, *issuer, application.GrantIssueRequest{RunID: *runID, StepID: *step, Capability: protocol.Capability(*capability), ExternalExecutionID: *external}, *revision, time.Now().UTC())
+	p, err := application.ApprovedManifest(ctx, st, signer, *issuer, application.GrantIssueRequest{RunID: *runID, StepID: *step, Capability: protocol.Capability(*capability), ExternalExecutionID: *external, SourceGrantID: *sourceGrant}, *revision, time.Now().UTC())
 	if err != nil {
 		return err
 	}

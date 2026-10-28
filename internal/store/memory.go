@@ -519,6 +519,13 @@ func (m *Memory) ReserveRunnerAction(_ context.Context, record RunnerActionRecor
 	if existingNonce, ok := m.runnerByKey[idempotencyKey]; ok {
 		return cloneRunnerAction(m.runnerActions[existingNonce]), false, nil
 	}
+	if record.CompensationSourceNonce != "" {
+		for _, existing := range m.runnerActions {
+			if existing.TenantID == record.TenantID && existing.RunnerGroup == record.RunnerGroup && existing.CompensationSourceNonce == record.CompensationSourceNonce {
+				return RunnerActionRecord{}, false, ErrConflict
+			}
+		}
+	}
 	record.Status, record.StateVersion = RunnerActionReserved, 1
 	m.runnerActions[nonceKey] = cloneRunnerAction(record)
 	m.runnerByKey[idempotencyKey] = nonceKey

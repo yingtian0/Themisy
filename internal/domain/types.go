@@ -58,6 +58,8 @@ type ReleaseRequest struct {
 }
 
 type PlanStep struct {
+	RollbackDeadline     string            `json:"rollback_deadline,omitempty"`
+	RollbackTargetHash   string            `json:"rollback_target_hash,omitempty"`
 	Service              string            `json:"service"`
 	DesiredVersion       string            `json:"desired_version"`
 	Phase                int               `json:"phase"`
@@ -311,29 +313,30 @@ type ReleaseStep struct {
 }
 
 type ReleaseRun struct {
-	ID                string        `json:"id"`
-	RequestID         string        `json:"request_id"`
-	ReleaseVersion    string        `json:"release_version"`
-	Environment       Environment   `json:"environment"`
-	RequestedBy       string        `json:"requested_by"`
-	SubjectType       string        `json:"subject_type,omitempty"`
-	SubjectIssuer     string        `json:"subject_issuer,omitempty"`
-	UserIdentityProof string        `json:"user_identity_proof,omitempty"`
-	TenantID          string        `json:"tenant_id,omitempty"`
-	Region            string        `json:"region,omitempty"`
-	Cluster           string        `json:"cluster,omitempty"`
-	RunnerGroup       string        `json:"runner_group,omitempty"`
-	DelegationRef     string        `json:"delegation_ref,omitempty"`
-	Agent             AgentIdentity `json:"delegated_agent"`
-	Plan              ReleasePlan   `json:"plan"`
-	Status            RunStatus     `json:"status"`
-	PausedFrom        RunStatus     `json:"paused_from,omitempty"`
-	Steps             []ReleaseStep `json:"steps"`
-	StateVersion      int64         `json:"state_version"`
-	WorkflowID        string        `json:"workflow_id,omitempty"`
-	TemporalRunID     string        `json:"temporal_run_id,omitempty"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
+	AuthorizationStop *AuthorizationStop `json:"authorization_stop,omitempty"`
+	ID                string             `json:"id"`
+	RequestID         string             `json:"request_id"`
+	ReleaseVersion    string             `json:"release_version"`
+	Environment       Environment        `json:"environment"`
+	RequestedBy       string             `json:"requested_by"`
+	SubjectType       string             `json:"subject_type,omitempty"`
+	SubjectIssuer     string             `json:"subject_issuer,omitempty"`
+	UserIdentityProof string             `json:"user_identity_proof,omitempty"`
+	TenantID          string             `json:"tenant_id,omitempty"`
+	Region            string             `json:"region,omitempty"`
+	Cluster           string             `json:"cluster,omitempty"`
+	RunnerGroup       string             `json:"runner_group,omitempty"`
+	DelegationRef     string             `json:"delegation_ref,omitempty"`
+	Agent             AgentIdentity      `json:"delegated_agent"`
+	Plan              ReleasePlan        `json:"plan"`
+	Status            RunStatus          `json:"status"`
+	PausedFrom        RunStatus          `json:"paused_from,omitempty"`
+	Steps             []ReleaseStep      `json:"steps"`
+	StateVersion      int64              `json:"state_version"`
+	WorkflowID        string             `json:"workflow_id,omitempty"`
+	TemporalRunID     string             `json:"temporal_run_id,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 type OutboxEvent struct {

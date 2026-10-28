@@ -36,6 +36,24 @@ func (r *Releases) DecideApproval(ctx context.Context, runID, approvalID, actor 
 	if !r.now().Before(target.ExpiresAt) {
 		return nil, fmt.Errorf("%w: approval expired", ErrApproval)
 	}
+	if approve {
+		if stop := domain.ExpiredAuthority(run.Plan, target, "", r.now()); stop != nil {
+			return nil, fmt.Errorf("%w: %s: %s expired at %s; create a fresh Plan and approval", ErrApproval, stop.ReasonCode, stop.Object, stop.Deadline)
+		}
+		if r.Sources != nil {
+			if _, err := r.Sources.VerifyPlan(ctx, run.Plan, run.TenantID); err != nil {
+				return nil, fmt.Errorf("%w: current Plan/Context unavailable", ErrApproval)
+			}
+		}
+		if r.Policies != nil {
+			for group, revision := range run.Plan.PolicyAssignments {
+				current, err := r.Policies.Current(ctx, run.TenantID, group)
+				if err != nil || current.Assignment.Revision != revision || current.Bundle.Hash != run.Plan.PolicyHash {
+					return nil, fmt.Errorf("%w: current Policy changed; replan and reapprove", ErrApproval)
+				}
+			}
+		}
+	}
 	if approve && actor == run.RequestedBy {
 		return nil, fmt.Errorf("%w: requester cannot approve their own release", ErrApproval)
 	}

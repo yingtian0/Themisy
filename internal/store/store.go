@@ -65,26 +65,27 @@ const (
 )
 
 type RunnerActionRecord struct {
-	PlanRevision   int64
-	PlanHash       string
-	RunnerID       string
-	ReconcileOwner string
-	ReconcileUntil time.Time
-	GrantID        string
-	RunID          string
-	StepID         string
-	TenantID       string
-	RunnerGroup    string
-	Nonce          string
-	IdempotencyKey string
-	RequestHash    string
-	Target         protocol.Target
-	Action         protocol.Action
-	Status         RunnerActionStatus
-	Result         protocol.Result
-	StateVersion   int64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	CompensationSourceNonce string
+	PlanRevision            int64
+	PlanHash                string
+	RunnerID                string
+	ReconcileOwner          string
+	ReconcileUntil          time.Time
+	GrantID                 string
+	RunID                   string
+	StepID                  string
+	TenantID                string
+	RunnerGroup             string
+	Nonce                   string
+	IdempotencyKey          string
+	RequestHash             string
+	Target                  protocol.Target
+	Action                  protocol.Action
+	Status                  RunnerActionStatus
+	Result                  protocol.Result
+	StateVersion            int64
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 type RunnerJournal interface {
