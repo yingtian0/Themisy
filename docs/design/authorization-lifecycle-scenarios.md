@@ -1,38 +1,31 @@
-# Authorization lifetime scenario specification
+# Authorization lifetime scenarios and evidence
 
-Companion to [proposed ADR-0011](../adr/0011-authorization-and-compensation-lifetimes.md).
-These are implementation test oracles, **not executed test results**. Simulated
-time/provider tests, real PostgreSQL/Temporal and live AWS must be reported
-separately. Fixed origin: `2026-10-18T00:00:00Z`; forward Plan expires at +15m,
-Grant TTL 5m, explicitly approved compensation ends at source dispatch +30m.
+See [ADR-0011](../adr/0011-authorization-and-compensation-lifetimes.md).
+The implemented path stops when original forward authority expires, including
+rollback. A 30m Contract deadline does not extend a 15m Plan or a shorter Context.
+No automatic successor or post-expiry compensation permission is implemented.
 
-| Scenario | Clock / trigger | Required outcome and new Write count |
+| Scenario | Expected behavior | Local regression evidence |
 |---|---|---|
-| Fast approval | approve +2m, deploy +3m | New forward Grant expires no later than +8m; exactly one deploy Write |
-| Late approval | approve +16m while displayed wait window still open | Explicit reauthorization stop; no new Grant/Write. New Plan and epoch/approval required |
-| Boundary | dispatch exactly +15m | Expired; zero Write. +14m59.999999999s is valid only if all other checks pass |
-| Long observation | first deploy +1m, observe until +6m; second deploy +7m, observe until +20m | Both writes authorized before expiry; observation/result at +20m can finish. Exactly two deploy Writes, no renewed authority |
-| Later forward step | try third deploy +16m | Stop old segment, no third Write. New Plan/successor Run requires fresh dependency evidence and approval |
-| Changed Context | same intent, changed artifact/Contract/Policy/CI/health/source revision before Write | Invalidate epoch; no Write until replanned/reapproved. Reusing same PlanHash is insufficient |
-| Changed time bounds only | content hash unchanged, ExpiresAt increased | Old approval not transferable; zero new Write |
-| Inside compensation window | source dispatch +1m, failure +17m, compensation deadline +31m; fresh rollback Context at +18m | Future versioned compensation path may issue one rollback Grant capped at +23m. Current v1alpha1 refuses because original Plan expired; do not mark this current behavior PASS |
-| Compensation boundary | rollback at exactly +31m | `COMPENSATION_EXPIRED`, zero rollback Write; reconcile/read-only and escalate |
-| No predecessor | source outcome known, approved predecessor digest/mapping absent | `COMPENSATION_UNAVAILABLE`, zero rollback Write |
-| Unknown source | response lost after source Write | No rollback/new deploy until read-only source reconciliation resolves outcome; lease expiry creates no additional Write |
-| Revocation | revoke forward/compensation approval before Write | Zero new Write; supported manifest fencing controls outstanding signed Grants |
-| Lost completion | source success commit then Worker crash | Restore exact operation/context; no second Write (#49). Recovered result does not start another step without fresh authority |
-| All authority expired | signed UNKNOWN→resolved report arrives after +1h | Authenticate and record existing-operation truth; no new Grant/credential Write, no direct Run success assignment (#38) |
-| Duplicate reapproval/successor | duplicate signal/request across Worker restart | One epoch/successor and at most one reservation per logical operation; no nonce/key reset |
-| Old history | replay pre-lifecycle-change completed/waiting/UNKNOWN histories | No new commands on old version path; no old object silently gains compensation authority |
+| Approval at +16m for 15m Plan | Explicit stop, no deploy; old expiry unchanged | `TestAuthorizationLifetimeStopsWithoutExtendingPlan/late-approval` |
+| Two observations of 8m each | Both Writes before +15m, last observation completes at +16m | same test `/multi-observation` |
+| First observation 16m, later forward step | First result retained, no later Write | same test `/later-step` |
+| Final observation 16m | Final read-only result can complete Run | same test `/last-observation` |
+| Failed observation after Plan expiry | Explicit reauthorization stop, no rollback | same test `/failed-observation` |
+| Large signed receipt, modified epoch, exact deadline with clock skew | Untampered payload verifies; tampering/expired deadline refused | `TestV2LargeSignedPayloadAndStrictDeadline` |
+| Valid compensation inside all deadlines | Source-bound Grant and independent manifest | `TestPostgresCompensationAdmission` |
+| Expired Plan/approval/compensation, revoked approval, unknown source/target | No new Grant/Write | application and Runner compensation tests |
+| Same operation replay or second permission for same source | Restore original; no second compensation Write | Runner compensation tests |
+| Concurrent reservations and DB reopen | Exactly one source consumption; restart does not reset it | `TestCompensationConsumptionSurvivesRestart` |
+| Changed signed Context or stale policy | Replan/reapprove; no inherited permission | signed source admission and policy Grant admission tests |
+| All authority expired, known signed recovery result arrives | Preserve authenticated truth, no new Write | `TestRecoveryReportsAfterExpiryAndRejectsConflicts` |
+| Existing Temporal histories | Old version marker preserves command sequence | existing Workflow replay suite |
 
-For each implemented scenario, record source commit, injected times, source
-revisions, Plan/approval/Grant/manifest IDs, policy decisions, journal reservation,
-credential/adapter call counters, result/audit and final Workflow state. Use
-synthetic IDs and redact credentials. Evidence retention must not depend on the
-expired authorization object remaining valid.
+Workflow tests use virtual time and simulated executor boundaries. Application
+and Runner tests use fixture providers and explicit Write/credential counters.
+`scripts/test-signed-observation.sh` owns a real PostgreSQL container and verifies
+admission plus durable fences across pool reopen. CI's PostgreSQL/Temporal target
+also exercises process recovery. These are not AWS/Datadog staging results.
 
-Current baseline evidence to retain: `TestRecoveryReportsAfterExpiryAndRejectsConflicts`
-in `internal/transport/recovery_test.go` accepts authenticated recovery after
-expiry and rejects conflicts. It does not prove new lifecycle transitions or
-cross-component Run convergence. Existing Runner/Grant expiry tests do not imply
-that the future compensation window is implemented.
+A new Plan or longer interval requires its own approval and manifest. Operator
+restart procedure is [authorization expiry](../runbooks/authorization-expiry.md).

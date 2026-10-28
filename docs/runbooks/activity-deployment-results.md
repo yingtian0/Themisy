@@ -212,5 +212,5 @@ its Plan expired. The rejection audit must identify expiry, not a missing fixtur
 field. A store guard fails any attempted new Grant persistence. The Run stays
 BLOCKED, the next Step UNKNOWN, and only the first Grant exists. This deliberately
 retains the current conservative UNKNOWN projection for a failed downstream
-activity; lifecycle classification improvements remain #51. No expiry is extended
+activity. Known pre-reservation expiry now stops explicitly; a reserved or unknown operation retains reconciliation semantics. No expiry is extended
 and no provider Write is used to discover the old result.
