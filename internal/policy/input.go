@@ -20,6 +20,7 @@ const InputVersionV1Alpha1 = "themisy.policy.input/v1alpha1"
 // Input is the sole canonical policy input used by both Control Plane and Runner.
 // Trusted fields are populated only after identity and delegation verification.
 type Input struct {
+	PolicyRevision       int64               `json:"policy_revision,omitempty"`
 	Version              string              `json:"version,omitempty"`
 	TenantID             string              `json:"tenant_id,omitempty"`
 	RunnerGroup          string              `json:"runner_group,omitempty"`
@@ -88,6 +89,7 @@ func InputForOperation(run domain.ReleaseRun, step domain.ReleaseStep, capabilit
 			}
 		}
 	}
+	result.PolicyRevision = run.Plan.PolicyAssignments[result.RunnerGroup]
 	if step.Approval != nil && step.Approval.Status == domain.ApprovalApproved {
 		result.ApprovalProofs = []string{step.Approval.ID}
 	}
@@ -96,6 +98,7 @@ func InputForOperation(run domain.ReleaseRun, step domain.ReleaseStep, capabilit
 
 func InputForGrant(grant protocol.ActionGrant, userIssuer, verifiedUser, verifiedAgent, verifiedDelegation string) Input {
 	input := Input{Version: InputVersionV1Alpha1, TenantID: grant.TenantID, RunnerGroup: grant.RunnerGroup, UserID: verifiedUser, UserIssuer: userIssuer, AgentID: verifiedAgent, DelegationRef: verifiedDelegation, Environment: domain.Environment(grant.Target.Environment), Service: grant.Target.Service, Capability: grant.Action.Capability, ArtifactDigest: grant.Action.ArtifactDigest, Risk: grant.Risk, PlanHash: grant.PlanHash, ContractHash: grant.ContractHash, ProfileHash: grant.ProfileHash, PolicyHash: grant.PolicyHash, EvidenceHash: grant.EvidenceHash, ApprovalProofs: append([]string(nil), grant.ApprovalProofs...), CISuccess: true, DependenciesHealthy: true}
+	input.PolicyRevision = grant.PolicyRevision
 	input.SubjectType = grant.SubjectType
 	return NormalizeInput(input)
 }

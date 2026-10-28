@@ -12,6 +12,7 @@ type Signature struct {
 }
 
 type ActionGrant struct {
+	PolicyRevision    int64     `json:"policy_revision,omitempty"`
 	ProtocolVersion   string    `json:"protocol_version"`
 	GrantID           string    `json:"grant_id"`
 	Issuer            string    `json:"issuer"`

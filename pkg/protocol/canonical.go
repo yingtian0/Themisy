@@ -58,6 +58,9 @@ func EncodeActionGrant(grant ActionGrant) ([]byte, error) {
 }
 
 func validateGrantShape(grant ActionGrant) error {
+	if grant.PolicyRevision < 0 {
+		return fmt.Errorf("invalid Policy revision")
+	}
 	if err := ValidateVersion(grant.ProtocolVersion); err != nil {
 		return err
 	}

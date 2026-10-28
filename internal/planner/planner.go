@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strings"
 	"time"
 
 	"themisy/internal/contract"
@@ -505,6 +506,7 @@ func (p *Planner) ValidatePlan(plan domain.ReleasePlan, now time.Time) error {
 
 func planHash(plan domain.ReleasePlan) (string, error) {
 	canonical := struct {
+		PolicyAssignments  map[string]int64      `json:"policy_assignments,omitempty"`
 		Requester          *domain.PlanRequester `json:"requester,omitempty"`
 		APIVersion         string                `json:"api_version"`
 		ReleaseVersion     string                `json:"release_version"`
@@ -516,6 +518,7 @@ func planHash(plan domain.ReleasePlan) (string, error) {
 		PolicyHash         string                `json:"policy_hash"`
 		EvidenceHash       string                `json:"evidence_hash"`
 	}{
+		PolicyAssignments:  plan.PolicyAssignments,
 		Requester:          plan.Requester,
 		APIVersion:         plan.APIVersion,
 		ReleaseVersion:     plan.ReleaseVersion,
@@ -618,4 +621,40 @@ func hashValue(value any) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func (p *Planner) WithPolicy(hash string) (*Planner, error) {
+	if hash == "" {
+		return nil, fmt.Errorf("policy hash required")
+	}
+	copy := *p
+	copy.policyHash = hash
+	snapshot, err := hashValue(struct {
+		Contracts map[string]string
+		Profiles  map[string]string
+		Policy    string
+		Evidence  string
+	}{p.contractHashes, p.profileHashes, hash, p.evidenceHash})
+	if err != nil {
+		return nil, err
+	}
+	copy.contextSnapshotRef = "content:" + snapshot
+	return &copy, nil
+}
+func BindPolicyAssignments(plan domain.ReleasePlan, revisions map[string]int64) (domain.ReleasePlan, error) {
+	plan.PolicyAssignments = map[string]int64{}
+	for group, revision := range revisions {
+		if group == "" || revision < 1 {
+			return domain.ReleasePlan{}, fmt.Errorf("invalid policy assignment")
+		}
+		plan.PolicyAssignments[group] = revision
+	}
+	hash, err := planHash(plan)
+	if err != nil {
+		return domain.ReleasePlan{}, err
+	}
+	plan.Hash = hash
+	plan.PlanHash = hash
+	plan.ID = "plan_" + strings.TrimPrefix(hash, "sha256:")[:24]
+	return plan, nil
 }

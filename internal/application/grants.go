@@ -143,7 +143,11 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 	if run.StateVersion <= 0 || !finalInput.CISuccess || !finalInput.DependenciesHealthy {
 		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: final pinned execution facts unavailable", ErrGrantNotAuthorized)
 	}
-	if g.Policy == nil || g.Policy.PolicyHash() != run.Plan.PolicyHash {
+	if g.Policy == nil {
+		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
+	}
+	activeHash, policyErr := g.Policy.PolicyHashFor(ctx, finalInput)
+	if policyErr != nil || activeHash != run.Plan.PolicyHash {
 		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: pinned policy unavailable or changed", ErrGrantNotAuthorized)
 	}
 	finalDecision, err := g.Policy.EvaluateContext(ctx, finalInput)
@@ -176,6 +180,7 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 	}
 	risk := effectiveRisk(step.Change.Risk, planned.Scheduling.RiskTier)
 	actionGrant := protocol.ActionGrant{
+		PolicyRevision:    run.Plan.PolicyAssignments[planned.Scheduling.RunnerGroup],
 		ProtocolVersion:   protocol.VersionV1Alpha1,
 		GrantID:           newID("grant"),
 		Issuer:            g.Issuer,
@@ -215,6 +220,10 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 		if err != nil || until.Before(signed.ExpiresAt) {
 			return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
 		}
+	}
+	confirmed, policyErr := g.Policy.EvaluateContext(ctx, finalInput)
+	if policyErr != nil || confirmed.Decision != domain.DecisionAllow || confirmed.InputHash != finalHash || confirmed.PolicyHash != run.Plan.PolicyHash {
+		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
 	}
 	if ctx.Err() != nil || !signed.ExpiresAt.After(g.now()) {
 		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized

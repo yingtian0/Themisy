@@ -30,6 +30,16 @@ func (s *Store) CreateGrantDispatch(ctx context.Context, record store.GrantDispa
 		return store.GrantDispatchRecord{}, false, err
 	}
 	defer tx.Rollback(ctx)
+	if record.Grant.PolicyRevision > 0 {
+		var revision int64
+		var hash string
+		if err := tx.QueryRow(ctx, `SELECT revision,bundle_hash FROM policy_assignments WHERE tenant_id=$1 AND runner_group=$2 FOR SHARE`, record.Grant.TenantID, record.Grant.RunnerGroup).Scan(&revision, &hash); err != nil {
+			return store.GrantDispatchRecord{}, false, err
+		}
+		if revision != record.Grant.PolicyRevision || hash != record.Grant.PolicyHash {
+			return store.GrantDispatchRecord{}, false, store.ErrConflict
+		}
+	}
 	if record.AuthorizingRunVersion > 0 {
 		var version int64
 		if err := tx.QueryRow(ctx, `SELECT state_version FROM release_runs WHERE id=$1 FOR SHARE`, record.Grant.RunID).Scan(&version); err != nil {

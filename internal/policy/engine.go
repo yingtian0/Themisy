@@ -68,3 +68,15 @@ func (e *Engine) Evaluate(input Input) domain.PolicyDecision {
 	}
 	return domain.PolicyDecision{Decision: evaluation.Decision, PolicyVersion: evaluation.PolicyVersion, ReasonCode: reason, ReasonDetail: strings.Join(evaluation.Reasons, ", "), RequiredRoles: append([]string(nil), evaluation.RequiredRoles...), InputHash: evaluation.InputHash, CreatedAt: createdAt}
 }
+
+func (e *Engine) PolicyHashFor(ctx context.Context, input Input) (string, error) {
+	if e == nil || e.evaluator == nil {
+		return "", ErrDistribution
+	}
+	if scoped, ok := e.evaluator.(interface {
+		PolicyHashFor(context.Context, Input) (string, error)
+	}); ok {
+		return scoped.PolicyHashFor(ctx, input)
+	}
+	return e.PolicyHash(), nil
+}

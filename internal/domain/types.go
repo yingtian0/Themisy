@@ -97,6 +97,7 @@ type PlanRequester struct {
 	DelegationRef string `json:"delegation_ref"`
 }
 type ReleasePlan struct {
+	PolicyAssignments  map[string]int64  `json:"policy_assignments,omitempty"`
 	Requester          *PlanRequester    `json:"requester,omitempty"`
 	APIVersion         string            `json:"api_version,omitempty"`
 	ID                 string            `json:"plan_id,omitempty"`

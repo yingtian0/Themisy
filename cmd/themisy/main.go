@@ -94,6 +94,14 @@ func main() {
 		logger.Error("initialize mandatory OPA policy", "error", err)
 		os.Exit(1)
 	}
+	policies, err := buildPolicyDistribution(ctx, settings, persistentStore)
+	if err != nil {
+		logger.Error("initialize Policy distribution", "error", err)
+		os.Exit(1)
+	}
+	if policies != nil {
+		policyEngine = policy.NewEngine(&policy.AssignedEvaluator{Load: policies.Current, Issuer: policies.Issuer, Keys: policies.Keys})
+	}
 	releasePlanner, err := planner.NewFromContracts(contracts, profiles, planner.Options{PolicyHash: policyEngine.PolicyHash(), EvidenceHash: policy.PreDispatchEvidenceHash()})
 	if err != nil {
 		logger.Error("initialize planner", "error", err)
@@ -101,8 +109,9 @@ func main() {
 	}
 	controller := workflowcore.NewController(temporalClient, settings.Temporal.TaskQueue)
 	releases := application.NewReleases(releasePlanner, persistentStore, controller)
+	releases.Policies = policies
 	go releases.RunWorkflowRecovery(ctx, 5*time.Second, func(err error) { logger.Error("recover workflow outbox", "error", err) })
-	grantService, runnerHandler, err := buildGrantPath(ctx, settings, persistentStore)
+	grantService, runnerHandler, err := buildGrantPath(ctx, settings, persistentStore, policies)
 	if err != nil {
 		logger.Error("initialize grant execution path", "error", err)
 		os.Exit(1)
@@ -114,6 +123,11 @@ func main() {
 	}
 	releases.Authority = authority
 	grantService.Authority = authority
+	if policies != nil {
+		policies.Authorize = func(ctx context.Context, tenant, actor, issuer string) error {
+			return authority.RequireRole(ctx, tenant, actor, issuer, "policy-admin")
+		}
+	}
 	grantExecutor := newGrantExecutor(grantService)
 	grantService.Policy = policyEngine
 	activities := workflowcore.NewActivities(persistentStore, policyEngine, grantExecutor)
@@ -149,6 +163,9 @@ func main() {
 		os.Exit(1)
 	}
 	routes := http.NewServeMux()
+	if policies != nil {
+		routes.Handle("/v1/policy/", protect(api.PolicyHandler(policies)))
+	}
 	routes.Handle("/mcp", protect(mcp.NewHTTP(releases, mcpIdentity, nil)))
 	routes.Handle("/ui/", protect(uiServer.Handler()))
 	routes.Handle("/v1/runner/", runnerHandler)
@@ -171,7 +188,7 @@ func main() {
 	}
 }
 
-func buildGrantPath(ctx context.Context, settings config.Config, persistentStore *postgresstore.Store) (*application.Grants, http.Handler, error) {
+func buildGrantPath(ctx context.Context, settings config.Config, persistentStore *postgresstore.Store, distributions ...*policy.Distributor) (*application.Grants, http.Handler, error) {
 	if settings.Grants.Issuer == "" {
 		return nil, nil, errors.New("grants configuration is required")
 	}
@@ -238,7 +255,11 @@ func buildGrantPath(ctx context.Context, settings config.Config, persistentStore
 	if len(bearer) == 0 && len(workloads) == 0 {
 		return nil, nil, errors.New("at least one runner registration is required")
 	}
-	server := &runnertransport.RunnerServer{ResultVerifier: &resultreport.Verifier{Keys: resultKeys}, Store: persistentStore, Fleet: persistentStore, Audit: persistentStore, Auth: runnertransport.HybridRunnerAuthenticator{MTLS: workloads, Bearer: bearer}, RequireHeartbeat: true}
+	var policies *policy.Distributor
+	if len(distributions) > 0 {
+		policies = distributions[0]
+	}
+	server := &runnertransport.RunnerServer{Policies: policies, ResultVerifier: &resultreport.Verifier{Keys: resultKeys}, Store: persistentStore, Fleet: persistentStore, Audit: persistentStore, Auth: runnertransport.HybridRunnerAuthenticator{MTLS: workloads, Bearer: bearer}, RequireHeartbeat: true}
 	return grants, server.Handler(), nil
 }
 

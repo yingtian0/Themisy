@@ -77,8 +77,19 @@ func Authenticate(next http.Handler, resolver IdentityResolver, now func() time.
 			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "IDENTITY_UNAVAILABLE"})
 			return
 		}
+		clock := now
+		if clock == nil {
+			clock = time.Now
+		}
+		lifetime := principal.ExpiresAt.Sub(clock().UTC())
+		if lifetime <= 0 {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "IDENTITY_UNAVAILABLE"})
+			return
+		}
+		bounded, cancel := context.WithTimeout(r.Context(), lifetime)
+		defer cancel()
 		actor := identity.RequestActor{TenantID: principal.TenantID, Subject: principal.Subject, Issuer: principal.Issuer, SubjectType: principal.SubjectType, Roles: principal.Roles, ProofToken: principal.IdentityProof, ExpiresAt: principal.ExpiresAt}
-		next.ServeHTTP(w, r.WithContext(identity.WithRequestActor(r.Context(), actor, now)))
+		next.ServeHTTP(w, r.WithContext(identity.WithRequestActor(bounded, actor, now)))
 	})
 }
 
