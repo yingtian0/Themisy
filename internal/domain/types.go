@@ -88,7 +88,16 @@ type PlanPhase struct {
 	Steps  []PlanStep `json:"steps"`
 }
 
+type PlanRequester struct {
+	TenantID      string `json:"tenant_id"`
+	Subject       string `json:"subject"`
+	Issuer        string `json:"issuer"`
+	SubjectType   string `json:"subject_type"`
+	AgentID       string `json:"agent_id"`
+	DelegationRef string `json:"delegation_ref"`
+}
 type ReleasePlan struct {
+	Requester          *PlanRequester    `json:"requester,omitempty"`
 	APIVersion         string            `json:"api_version,omitempty"`
 	ID                 string            `json:"plan_id,omitempty"`
 	ReleaseVersion     string            `json:"release_version"`
@@ -170,6 +179,7 @@ type Approval struct {
 	PlanHash      string         `json:"plan_hash"`
 	RequestedAt   time.Time      `json:"requested_at"`
 	ExpiresAt     time.Time      `json:"expires_at"`
+	DecidedIssuer string         `json:"decided_issuer,omitempty"`
 	DecidedBy     string         `json:"decided_by,omitempty"`
 	DecidedAt     *time.Time     `json:"decided_at,omitempty"`
 }

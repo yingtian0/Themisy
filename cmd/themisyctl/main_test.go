@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -83,3 +84,30 @@ func (noopController) SignalApproval(context.Context, string, workflowcore.Appro
 func (noopController) Pause(context.Context, string, workflowcore.ControlSignal) error  { return nil }
 func (noopController) Resume(context.Context, string, workflowcore.ControlSignal) error { return nil }
 func (noopController) Cancel(context.Context, string, workflowcore.ControlSignal) error { return nil }
+
+func TestOIDCTokenFileUsesHTTPSAndNeverSendsTrustedActorHeaders(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("verified-token"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer verified-token" || r.Header.Get("X-Actor-ID") != "" || r.Header.Get("X-Actor-Roles") != "" {
+			t.Error("wrong production identity transport")
+		}
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	c := &client{baseURL: server.URL, tenant: "tenant", actor: "forged", roles: "admin", tokenFile: tokenFile, http: server.Client()}
+	if _, err := c.request(context.Background(), "GET", "/v1/releases/run", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	c.baseURL = "http://localhost:1234"
+	if _, err := c.request(context.Background(), "GET", "/", nil, true); err == nil {
+		t.Fatal("sent token without HTTPS")
+	}
+	if calls != 1 {
+		t.Fatal("unexpected requests")
+	}
+}

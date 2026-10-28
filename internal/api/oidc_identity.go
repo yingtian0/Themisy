@@ -15,21 +15,23 @@ var ErrUnauthenticatedPrincipal = errors.New("UNAUTHENTICATED_PRINCIPAL")
 // OIDCPrincipalConfig belongs to one trusted tenant/issuer/audience tuple. Claim
 // names and role mappings are operator configuration, never request parameters.
 type OIDCPrincipalConfig struct {
-	TenantID     string
-	TenantClaim  string
-	RoleClaim    string
-	RoleMappings map[string][]string
-	Verifier     identity.OIDCVerifier
+	TenantID         string
+	SubjectTypeClaim string
+	TenantClaim      string
+	RoleClaim        string
+	RoleMappings     map[string][]string
+	Verifier         identity.OIDCVerifier
 }
 
 // OIDCIdentityResolver is an opt-in resolver for routes already using
 // IdentityResolver. It is not authentication middleware for all API endpoints.
 type OIDCIdentityResolver struct {
-	tenantID    string
-	tenantClaim string
-	roleClaim   string
-	roles       map[string][]string
-	verifier    identity.OIDCVerifier
+	tenantID         string
+	subjectTypeClaim string
+	tenantClaim      string
+	roleClaim        string
+	roles            map[string][]string
+	verifier         identity.OIDCVerifier
 }
 
 func NewOIDCIdentityResolver(config OIDCPrincipalConfig) (*OIDCIdentityResolver, error) {
@@ -50,7 +52,7 @@ func NewOIDCIdentityResolver(config OIDCPrincipalConfig) (*OIDCIdentityResolver,
 		}
 		roles[group] = append([]string(nil), mapped...)
 	}
-	return &OIDCIdentityResolver{tenantID: config.TenantID, tenantClaim: config.TenantClaim, roleClaim: config.RoleClaim, roles: roles, verifier: config.Verifier}, nil
+	return &OIDCIdentityResolver{tenantID: config.TenantID, subjectTypeClaim: config.SubjectTypeClaim, tenantClaim: config.TenantClaim, roleClaim: config.RoleClaim, roles: roles, verifier: config.Verifier}, nil
 }
 
 func (o *OIDCIdentityResolver) Resolve(r *http.Request) (Principal, error) {
@@ -105,5 +107,15 @@ func (o *OIDCIdentityResolver) Resolve(r *http.Request) (Principal, error) {
 		roles = append(roles, role)
 	}
 	sort.Strings(roles)
-	return Principal{Subject: subject.ID, TenantID: o.tenantID, Roles: roles, Issuer: subject.Issuer, ExpiresAt: subject.ExpiresAt}, nil
+	subjectType := "user"
+	if o.subjectTypeClaim != "" {
+		if value, exists := subject.Claims[o.subjectTypeClaim]; exists {
+			var ok bool
+			subjectType, ok = value.(string)
+			if !ok || (subjectType != "user" && subjectType != "ci") {
+				return Principal{}, ErrUnauthenticatedPrincipal
+			}
+		}
+	}
+	return Principal{Verified: true, IdentityProof: parts[1], SubjectType: subjectType, Subject: subject.ID, TenantID: o.tenantID, Roles: roles, Issuer: subject.Issuer, ExpiresAt: subject.ExpiresAt}, nil
 }

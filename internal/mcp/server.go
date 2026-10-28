@@ -11,8 +11,10 @@ import (
 	"net/url"
 	"strings"
 
+	"slices"
 	"themisy/internal/application"
 	"themisy/internal/domain"
+	"themisy/internal/identity"
 )
 
 const ProtocolVersion = "2025-11-25"
@@ -214,7 +216,17 @@ func (s *Server) Call(ctx context.Context, name string, arguments json.RawMessag
 		if err != nil {
 			return nil, err
 		}
-		plan, err := s.app.PlanIntentForTenant(s.principal.TenantID, intent)
+		if err := identity.BindIntentActor(ctx, &intent); err != nil {
+			return nil, err
+		}
+		var plan domain.ReleasePlan
+		if contextual, ok := s.app.(interface {
+			PlanIntentContext(context.Context, string, domain.ReleaseIntent) (domain.ReleasePlan, error)
+		}); ok {
+			plan, err = contextual.PlanIntentContext(ctx, s.principal.TenantID, intent)
+		} else {
+			plan, err = s.app.PlanIntentForTenant(s.principal.TenantID, intent)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -242,18 +254,27 @@ func (s *Server) Call(ctx context.Context, name string, arguments json.RawMessag
 		if err != nil {
 			return nil, err
 		}
+		if err := identity.BindIntentActor(ctx, &intent); err != nil {
+			return nil, err
+		}
 		run, created, err := s.app.StartIntentForTenant(ctx, s.principal.TenantID, intent)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"run": run, "created": created}, nil
+		return map[string]any{"run": publicRun(run), "created": created}, nil
 	case "get_release_status":
 		return s.runResult(arguments, func(runID string) (any, error) { return s.app.GetForTenant(s.principal.TenantID, runID) })
 	case "pause_release":
+		if !operatorAllowed(ctx) {
+			return nil, fmt.Errorf("operator role required")
+		}
 		return s.runResult(arguments, func(runID string) (any, error) {
 			return s.app.ControlForTenant(ctx, s.principal.TenantID, runID, s.principal.Subject, "pause")
 		})
 	case "cancel_release":
+		if !operatorAllowed(ctx) {
+			return nil, fmt.Errorf("operator role required")
+		}
 		return s.runResult(arguments, func(runID string) (any, error) {
 			return s.app.ControlForTenant(ctx, s.principal.TenantID, runID, s.principal.Subject, "cancel")
 		})
@@ -279,7 +300,7 @@ func (s *Server) Call(ctx context.Context, name string, arguments json.RawMessag
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"run": run, "events": events}, nil
+		return map[string]any{"run": publicRun(run), "events": events}, nil
 	default:
 		return nil, fmt.Errorf("unknown or prohibited tool %q", name)
 	}
@@ -293,6 +314,9 @@ func (s *Server) runResult(arguments json.RawMessage, operation func(string) (an
 	result, err := operation(input.RunID)
 	if err != nil {
 		return nil, err
+	}
+	if run, ok := result.(*domain.ReleaseRun); ok {
+		result = publicRun(run)
 	}
 	return object("run", result)
 }
@@ -393,4 +417,17 @@ func supportedProtocol(version string) bool {
 	default:
 		return false
 	}
+}
+
+func publicRun(run *domain.ReleaseRun) *domain.ReleaseRun {
+	if run == nil {
+		return nil
+	}
+	copy := *run
+	copy.UserIdentityProof = ""
+	return &copy
+}
+func operatorAllowed(ctx context.Context) bool {
+	actor, ok := identity.RequestActorFromContext(ctx)
+	return (!ok && !identity.HasRequestActor(ctx)) || slices.Contains(actor.Roles, "operator") || slices.Contains(actor.Roles, "admin") || slices.Contains(actor.Roles, "sre")
 }

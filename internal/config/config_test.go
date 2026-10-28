@@ -57,3 +57,23 @@ func TestRunnerRegistrationRequiresDedicatedResultTrust(t *testing.T) {
 		t.Fatal("registration without dedicated result trust accepted")
 	}
 }
+
+func TestKMSRejectsDevelopmentHeaders(t *testing.T) {
+	c, err := Load("../../config/themisy.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Grants.Signing.Provider = "aws-kms"
+	c.Grants.Signing.AWSRegion = "ap-northeast-1"
+	if c.Validate() == nil {
+		t.Fatal("production signer accepted development identity")
+	}
+	c.Identity = Identity{Mode: "oidc", TenantID: c.RunnerTransport.Registrations[0].TenantID, Issuer: "https://idp.example", Audience: "themisy", DiscoveryURL: "https://idp.example/.well-known/openid-configuration", CacheTTL: "5m", TenantClaim: "organization", RoleClaim: "groups", RoleMappings: map[string][]string{"release-team": {"deployer"}}, DirectoryFile: "directory.json", DirectoryIssuer: "directory", DirectoryTrustBundleFile: "directory-trust.json", DirectoryMinimumRevision: 1, AttestationTrustBundleFile: "control-trust.json"}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	c.Identity.TenantID = "other"
+	if c.Validate() == nil {
+		t.Fatal("cross tenant runner registration accepted")
+	}
+}

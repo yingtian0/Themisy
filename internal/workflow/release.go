@@ -491,6 +491,7 @@ func awaitApproval(activityContext, ctx workflow.Context, run domain.ReleaseRun,
 		}
 		decidedAt := workflow.Now(ctx).UTC()
 		run.Steps[index].Approval.DecidedBy = signal.Actor
+		run.Steps[index].Approval.DecidedIssuer = signal.Issuer
 		run.Steps[index].Approval.DecidedAt = &decidedAt
 		if action == "revoke" {
 			run.Steps[index].Approval.Status = domain.ApprovalRevoked

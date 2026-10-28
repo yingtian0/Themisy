@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"themisy/internal/domain"
+	"themisy/internal/identity"
 	workflowcore "themisy/internal/workflow"
 )
 
@@ -41,11 +42,22 @@ func (r *Releases) DecideApproval(ctx context.Context, runID, approvalID, actor 
 	if approve && !containsAll(roles, target.RequiredRoles) {
 		return nil, fmt.Errorf("%w: approver lacks required roles %v", ErrApproval, target.RequiredRoles)
 	}
+	issuer := ""
+	if r.Authority != nil {
+		verified, ok := identity.RequestActorFromContext(ctx)
+		if !ok || verified.TenantID != run.TenantID || verified.Subject != actor || !containsAll(verified.Roles, target.RequiredRoles) {
+			return nil, ErrApproval
+		}
+		issuer = verified.Issuer
+		if approve && verified.Subject == run.RequestedBy && verified.Issuer == run.SubjectIssuer {
+			return nil, ErrApproval
+		}
+	}
 	action := "deny"
 	if approve {
 		action = "approve"
 	}
-	if err := r.workflows.SignalApproval(ctx, run.WorkflowID, workflowcore.ApprovalSignal{ApprovalID: approvalID, Actor: actor, Roles: roles, Approve: approve, Action: action}); err != nil {
+	if err := r.workflows.SignalApproval(ctx, run.WorkflowID, workflowcore.ApprovalSignal{ApprovalID: approvalID, Actor: actor, Issuer: issuer, Roles: roles, Approve: approve, Action: action}); err != nil {
 		return nil, err
 	}
 	return r.store.GetRun(runID)

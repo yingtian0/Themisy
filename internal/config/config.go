@@ -11,6 +11,7 @@ import (
 )
 
 type Config struct {
+	Identity        Identity        `yaml:"identity"`
 	Mode            string          `yaml:"mode"`
 	HTTP            HTTP            `yaml:"http"`
 	Database        Database        `yaml:"database"`
@@ -18,6 +19,47 @@ type Config struct {
 	Planning        Planning        `yaml:"planning"`
 	Grants          Grants          `yaml:"grants"`
 	RunnerTransport RunnerTransport `yaml:"runner_transport"`
+}
+
+type Identity struct {
+	Mode                       string              `yaml:"mode"`
+	TenantID                   string              `yaml:"tenant_id"`
+	Issuer                     string              `yaml:"issuer"`
+	Audience                   string              `yaml:"audience"`
+	DiscoveryURL               string              `yaml:"discovery_url"`
+	CacheTTL                   string              `yaml:"jwks_cache_ttl"`
+	TenantClaim                string              `yaml:"tenant_claim"`
+	RoleClaim                  string              `yaml:"role_claim"`
+	SubjectTypeClaim           string              `yaml:"subject_type_claim"`
+	RoleMappings               map[string][]string `yaml:"role_mappings"`
+	DirectoryFile              string              `yaml:"directory_file"`
+	DirectoryIssuer            string              `yaml:"directory_issuer"`
+	DirectoryTrustBundleFile   string              `yaml:"directory_trust_bundle_file"`
+	DirectoryMinimumRevision   int64               `yaml:"directory_minimum_revision"`
+	AttestationTrustBundleFile string              `yaml:"attestation_trust_bundle_file"`
+}
+
+func (c Identity) Validate() error {
+	if c.Mode == "development-headers" {
+		return nil
+	}
+	if c.Mode != "oidc" {
+		return fmt.Errorf("identity.mode must be development-headers or oidc")
+	}
+	for _, value := range []string{c.Issuer, c.DiscoveryURL} {
+		u, err := url.Parse(value)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
+			return fmt.Errorf("OIDC issuer and discovery_url must be HTTPS")
+		}
+	}
+	ttl, err := time.ParseDuration(c.CacheTTL)
+	if err != nil || ttl < time.Second || ttl > time.Hour {
+		return fmt.Errorf("identity.jwks_cache_ttl must be between one second and one hour")
+	}
+	if c.TenantID == "" || c.Audience == "" || c.TenantClaim == "" || c.RoleClaim == "" || c.TenantClaim == c.RoleClaim || len(c.RoleMappings) == 0 || c.DirectoryFile == "" || c.DirectoryIssuer == "" || c.DirectoryTrustBundleFile == "" || c.DirectoryMinimumRevision < 1 || c.AttestationTrustBundleFile == "" {
+		return fmt.Errorf("OIDC identity and signed Directory configuration is incomplete")
+	}
+	return nil
 }
 
 type HTTP struct {
@@ -64,7 +106,7 @@ type RunnerRegistration struct {
 }
 
 func Load(path string) (Config, error) {
-	result := Config{Mode: "all", HTTP: HTTP{Address: ":8080"}, Database: Database{AutoMigrate: true}, Temporal: Temporal{Address: "localhost:7233", Namespace: "default", TaskQueue: "themisy-releases"}, Planning: Planning{Contracts: "examples/contracts", Profiles: "examples/profiles"}}
+	result := Config{Identity: Identity{Mode: "development-headers"}, Mode: "all", HTTP: HTTP{Address: ":8080"}, Database: Database{AutoMigrate: true}, Temporal: Temporal{Address: "localhost:7233", Namespace: "default", TaskQueue: "themisy-releases"}, Planning: Planning{Contracts: "examples/contracts", Profiles: "examples/profiles"}}
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -84,6 +126,20 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if err := c.Identity.Validate(); err != nil {
+		return err
+	}
+	if c.Grants.Signing.Provider == "aws-kms" && c.Identity.Mode != "oidc" {
+		return fmt.Errorf("AWS KMS signing requires OIDC identity mode")
+	}
+	if c.Identity.Mode == "oidc" {
+		for _, registration := range c.RunnerTransport.Registrations {
+			if registration.TenantID != c.Identity.TenantID {
+				return fmt.Errorf("runner registration must match configured identity tenant")
+			}
+		}
+	}
+
 	switch c.Mode {
 	case "control", "worker", "all":
 	default:

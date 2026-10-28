@@ -18,11 +18,12 @@ import (
 )
 
 type client struct {
-	baseURL string
-	tenant  string
-	actor   string
-	roles   string
-	http    *http.Client
+	tokenFile string
+	baseURL   string
+	tenant    string
+	actor     string
+	roles     string
+	http      *http.Client
 }
 
 // Set only by the source-pinned packaging build; ordinary source builds say dev.
@@ -37,7 +38,8 @@ Global options (place before the command):
   -server URL   Control Plane URL (default http://localhost:8080)
   -tenant ID    Tenant for the request
   -actor ID     Actor for approval and other control operations
-  -roles LIST   Comma-separated trusted actor roles
+  -roles LIST   Development-only trusted actor roles
+  -oidc-token-file FILE  Protected OIDC bearer token file; HTTPS required
 
 Commands:
   help [offline-plan]  Show general or offline planning help
@@ -79,6 +81,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	server := flags.String("server", envOr("THEMISY_SERVER", "http://localhost:8080"), "Themisy control-plane base URL")
 	tenant := flags.String("tenant", envOr("THEMISY_TENANT_ID", "default"), "authenticated tenant")
 	actor := flags.String("actor", os.Getenv("THEMISY_ACTOR_ID"), "authenticated actor for control operations")
+	tokenFile := flags.String("oidc-token-file", os.Getenv("THEMISY_OIDC_TOKEN_FILE"), "protected OIDC bearer token file")
 	roles := flags.String("roles", os.Getenv("THEMISY_ACTOR_ROLES"), "comma-separated trusted actor roles")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -120,7 +123,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if command == "offline-plan" {
 		return runOfflinePlan(values, stdout, stderr)
 	}
-	c := &client{baseURL: strings.TrimRight(*server, "/"), tenant: *tenant, actor: *actor, roles: *roles, http: &http.Client{Timeout: 30 * time.Second}}
+	c := &client{tokenFile: *tokenFile, baseURL: strings.TrimRight(*server, "/"), tenant: *tenant, actor: *actor, roles: *roles, http: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if requiresOneArgument(command) && len(values) != 1 {
 		return fmt.Errorf("%s requires exactly one argument", command)
 	}
@@ -190,7 +193,25 @@ func (c *client) request(ctx context.Context, method, path string, body []byte, 
 	if len(body) > 0 {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if authenticated {
+	if c.tokenFile != "" {
+		u, parseErr := url.Parse(c.baseURL)
+		if parseErr != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return nil, errors.New("OIDC requires an HTTPS Control Plane URL")
+		}
+		info, readErr := os.Lstat(c.tokenFile)
+		if readErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 16384 {
+			return nil, errors.New("OIDC token file must be a protected bounded regular file")
+		}
+		raw, readErr := os.ReadFile(c.tokenFile)
+		if readErr != nil {
+			return nil, errors.New("OIDC token file unavailable")
+		}
+		token := strings.TrimSpace(string(raw))
+		if token == "" || strings.ContainsAny(token, "\r\n ") {
+			return nil, errors.New("OIDC token file invalid")
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+	} else if authenticated {
 		if strings.TrimSpace(c.actor) == "" {
 			return nil, errors.New("-actor or THEMISY_ACTOR_ID is required for this command")
 		}

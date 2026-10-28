@@ -107,6 +107,13 @@ func main() {
 		logger.Error("initialize grant execution path", "error", err)
 		os.Exit(1)
 	}
+	authority, resolver, err := buildIdentity(ctx, settings, persistentStore, grantService)
+	if err != nil {
+		logger.Error("initialize identity chain", "error", err)
+		os.Exit(1)
+	}
+	releases.Authority = authority
+	grantService.Authority = authority
 	grantExecutor := newGrantExecutor(grantService)
 	grantService.Policy = policyEngine
 	activities := workflowcore.NewActivities(persistentStore, policyEngine, grantExecutor)
@@ -126,16 +133,27 @@ func main() {
 		}
 		defer worker.Stop()
 	}
-	uiServer, err := ui.New(releases, ui.HeaderIdentityVerifier{})
+	var uiIdentity ui.IdentityVerifier = ui.HeaderIdentityVerifier{}
+	var mcpIdentity mcp.PrincipalResolver = mcp.HeaderPrincipalResolver{}
+	var apiIdentity api.IdentityResolver = api.HeaderIdentityResolver{}
+	protect := func(handler http.Handler) http.Handler { return handler }
+	if authority != nil {
+		uiIdentity = contextUIIdentity{}
+		mcpIdentity = contextMCPIdentity{}
+		apiIdentity = api.ContextIdentityResolver{}
+		protect = func(handler http.Handler) http.Handler { return api.Authenticate(handler, resolver, nil) }
+	}
+	uiServer, err := ui.New(releases, uiIdentity)
 	if err != nil {
 		logger.Error("initialize status UI", "error", err)
 		os.Exit(1)
 	}
 	routes := http.NewServeMux()
-	routes.Handle("/mcp", mcp.NewHTTP(releases, mcp.HeaderPrincipalResolver{}, nil))
-	routes.Handle("/ui/", uiServer.Handler())
+	routes.Handle("/mcp", protect(mcp.NewHTTP(releases, mcpIdentity, nil)))
+	routes.Handle("/ui/", protect(uiServer.Handler()))
 	routes.Handle("/v1/runner/", runnerHandler)
-	routes.Handle("/", api.New(releases, logger).Handler())
+	routes.Handle("/", protect(api.NewWithIdentity(releases, apiIdentity, logger).Handler()))
+	routes.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	server := &http.Server{Addr: settings.HTTP.Address, Handler: routes, ReadHeaderTimeout: 5 * time.Second}
 	server.TLSConfig, err = buildServerTLS(settings)
 	if err != nil {
