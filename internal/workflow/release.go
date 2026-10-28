@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 	if err := workflow.SetQueryHandler(ctx, QueryState, func() (domain.ReleaseRun, error) { return run, nil }); err != nil {
 		return run, err
 	}
+	lifetimeVersion := workflow.GetVersion(ctx, "explicit-authorization-expiry-stop", workflow.DefaultVersion, 1)
 	scheduleVersion := workflow.GetVersion(ctx, "persistent-schedule-coordinator", workflow.DefaultVersion, 1)
 	recoveryVersion := workflow.GetVersion(ctx, "persistent-runner-recovery-wait", workflow.DefaultVersion, 1)
 	activityContext := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute, RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Second, MaximumAttempts: 3}})
@@ -63,6 +65,9 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		if step.Status == domain.StepSucceeded {
 			continue
 		}
+		if lifetimeVersion != workflow.DefaultVersion && domain.ExpiredAuthority(run.Plan, step.Approval, step.Service, workflow.Now(ctx)) != nil {
+			return stopForAuthorization(activityContext, ctx, run, index)
+		}
 		if unmet := unmetDependency(run.Plan, step.Service, selected, succeeded); unmet != "" {
 			step.Status = domain.StepBlocked
 			step.Failure = "selected dependency did not succeed: " + unmet
@@ -91,7 +96,7 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 			return persist(activityContext, run, nil, "release.blocked")
 		}
 		if decision.Decision == domain.DecisionRequireApproval {
-			run, err = awaitApproval(activityContext, ctx, run, index, decision, approvalChannel, pauseChannel, resumeChannel, cancelChannel)
+			run, err = awaitApproval(activityContext, ctx, run, index, decision, approvalChannel, pauseChannel, resumeChannel, cancelChannel, lifetimeVersion)
 			if err != nil || run.Status != domain.RunRunning {
 				return run, err
 			}
@@ -109,6 +114,12 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 			run.UpdatedAt = workflow.Now(ctx).UTC()
 			return persist(activityContext, run, []AuditIntent{{ActorType: "system", ActorID: "scheduler", Action: "dispatch.block", ResourceType: "release_step", ResourceID: step.Service, Result: "BLOCKED", Details: map[string]any{"reason": scheduleResult.Reason, "budget": scheduleResult.BlockedBy}}}, "dispatch.backpressured")
 		}
+		if lifetimeVersion != workflow.DefaultVersion && domain.ExpiredAuthority(run.Plan, step.Approval, step.Service, workflow.Now(ctx)) != nil {
+			if err := completeScheduling(activityContext, run.ID, step.Service, false, false, scheduleResult.Lease, scheduleVersion); err != nil {
+				return run, err
+			}
+			return stopForAuthorization(activityContext, ctx, run, index)
+		}
 		step.Status = domain.StepExecuting
 		run.UpdatedAt = workflow.Now(ctx).UTC()
 		run, err = persist(activityContext, run, nil, "deployment.executing")
@@ -122,6 +133,16 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 		}
 		var deployed DeployResult
 		if err := workflow.ExecuteActivity(executionContext, ActivityDeploy, deployInput).Get(executionContext, &deployed); err != nil {
+			var refused *temporal.ApplicationError
+			if lifetimeVersion != workflow.DefaultVersion && errors.As(err, &refused) && refused.Type() == "REAUTHORIZATION_REQUIRED" {
+				var stop domain.AuthorizationStop
+				if refused.Details(&stop) == nil && stop.ReasonCode == "REAUTHORIZATION_REQUIRED" {
+					if err := completeScheduling(activityContext, run.ID, step.Service, false, false, scheduleResult.Lease, scheduleVersion); err != nil {
+						return run, err
+					}
+					return persistAuthorizationStop(activityContext, ctx, run, index, &stop)
+				}
+			}
 			if completeErr := completeScheduling(activityContext, run.ID, step.Service, true, true, scheduleResult.Lease, scheduleVersion); completeErr != nil {
 				return run, completeErr
 			}
@@ -232,6 +253,20 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 				run.UpdatedAt = workflow.Now(ctx).UTC()
 				return persist(activityContext, run, []AuditIntent{{ActorType: "system", ActorID: "verifier", Action: "deployment.verify", ResourceType: "service", ResourceID: step.Service, Result: string(verification.Outcome()), Details: audit.EvidenceDetails(verification.Evidence)}}, "release.escalated")
 			}
+			if lifetimeVersion != workflow.DefaultVersion && domain.ExpiredAuthority(run.Plan, step.Approval, step.Service, workflow.Now(ctx)) != nil {
+				if err := completeScheduling(activityContext, run.ID, step.Service, true, false, scheduleResult.Lease, scheduleVersion); err != nil {
+					return run, err
+				}
+				return stopForAuthorization(activityContext, ctx, run, index)
+			}
+			if lifetimeVersion != workflow.DefaultVersion {
+				if stop := compensationRefusal(run, step.Service, deployed.Deployment, workflow.Now(ctx)); stop != nil {
+					if err := completeScheduling(activityContext, run.ID, step.Service, true, false, scheduleResult.Lease, scheduleVersion); err != nil {
+						return run, err
+					}
+					return persistAuthorizationStop(activityContext, ctx, run, index, stop)
+				}
+			}
 			step.Status = domain.StepRollingBack
 			run.UpdatedAt = workflow.Now(ctx).UTC()
 			run, err = persist(activityContext, run, nil, "rollback.started")
@@ -241,6 +276,16 @@ func ReleaseWorkflow(ctx workflow.Context, input ReleaseInput) (domain.ReleaseRu
 			step = &run.Steps[index]
 			var rolledBack RollbackResult
 			if err := workflow.ExecuteActivity(executionContext, ActivityRollback, RollbackInput{Deploy: deployInput, Deployment: deployed.Deployment}).Get(executionContext, &rolledBack); err != nil {
+				var refused *temporal.ApplicationError
+				if lifetimeVersion != workflow.DefaultVersion && errors.As(err, &refused) && (refused.Type() == "COMPENSATION_UNAVAILABLE" || refused.Type() == "COMPENSATION_EXPIRED" || refused.Type() == "REAUTHORIZATION_REQUIRED") {
+					var stop domain.AuthorizationStop
+					if refused.Details(&stop) == nil {
+						if err := completeScheduling(activityContext, run.ID, step.Service, true, false, scheduleResult.Lease, scheduleVersion); err != nil {
+							return run, err
+						}
+						return persistAuthorizationStop(activityContext, ctx, run, index, &stop)
+					}
+				}
 				if completeErr := completeScheduling(activityContext, run.ID, step.Service, true, true, scheduleResult.Lease, scheduleVersion); completeErr != nil {
 					return run, completeErr
 				}
@@ -434,9 +479,14 @@ func persist(ctx workflow.Context, run domain.ReleaseRun, audits []AuditIntent, 
 	return updated, err
 }
 
-func awaitApproval(activityContext, ctx workflow.Context, run domain.ReleaseRun, index int, decision domain.PolicyDecision, approvalChannel, pauseChannel, resumeChannel, cancelChannel workflow.ReceiveChannel) (domain.ReleaseRun, error) {
+func awaitApproval(activityContext, ctx workflow.Context, run domain.ReleaseRun, index int, decision domain.PolicyDecision, approvalChannel, pauseChannel, resumeChannel, cancelChannel workflow.ReceiveChannel, lifetimeVersion workflow.Version) (domain.ReleaseRun, error) {
 	now := workflow.Now(ctx).UTC()
 	approval := &domain.Approval{ID: deterministicID("approval", run.ID, run.Steps[index].Service), RequiredRoles: append([]string(nil), decision.RequiredRoles...), Status: domain.ApprovalPending, PlanHash: run.Plan.Hash, RequestedAt: now, ExpiresAt: now.Add(24 * time.Hour)}
+	if lifetimeVersion != workflow.DefaultVersion {
+		if until, _ := domain.ForwardDeadline(run.Plan, approval); !until.IsZero() {
+			approval.ExpiresAt = until
+		}
+	}
 	run.Steps[index].Approval = approval
 	run.Steps[index].Status = domain.StepWaitingApproval
 	run.Status = domain.RunWaitingApproval
@@ -467,6 +517,10 @@ func awaitApproval(activityContext, ctx workflow.Context, run domain.ReleaseRun,
 				return run, err
 			}
 			continue
+		}
+		if lifetimeVersion != workflow.DefaultVersion && domain.ExpiredAuthority(run.Plan, run.Steps[index].Approval, run.Steps[index].Service, workflow.Now(ctx)) != nil {
+			run.Steps[index].Approval.Status = domain.ApprovalExpired
+			return stopForAuthorization(activityContext, ctx, run, index)
 		}
 		if expired {
 			run.Steps[index].Approval.Status = domain.ApprovalExpired
@@ -594,4 +648,28 @@ func unmetDependency(plan domain.ReleasePlan, service string, selected, succeede
 		}
 	}
 	return ""
+}
+
+func stopForAuthorization(activityContext, ctx workflow.Context, run domain.ReleaseRun, index int) (domain.ReleaseRun, error) {
+	step := &run.Steps[index]
+	stop := domain.ExpiredAuthority(run.Plan, step.Approval, step.Service, workflow.Now(ctx).UTC())
+	if stop == nil {
+		return run, fmt.Errorf("authorization stop requires an expired bound")
+	}
+	return persistAuthorizationStop(activityContext, ctx, run, index, stop)
+}
+
+func persistAuthorizationStop(activityContext, ctx workflow.Context, run domain.ReleaseRun, index int, stop *domain.AuthorizationStop) (domain.ReleaseRun, error) {
+	step := &run.Steps[index]
+	run.AuthorizationStop = stop
+	step.Status = domain.StepBlocked
+	step.Failure = fmt.Sprintf("%s: %s expired at %s; replan remaining changes and obtain new approval; reconcile existing operations first", stop.ReasonCode, stop.Object, stop.Deadline.Format(time.RFC3339Nano))
+	run.Status = domain.RunBlocked
+	if stop.Object == "compensation" {
+		run.Status = domain.RunEscalated
+		step.Failure = stop.ReasonCode + ": automatic rollback has no current permission; continue read-only reconciliation and obtain separately approved recovery"
+	}
+	cancelDownstream(&run, index+1)
+	run.UpdatedAt = workflow.Now(ctx).UTC()
+	return persist(activityContext, run, []AuditIntent{{ActorType: "system", ActorID: "temporal", Action: "authorization.expired", ResourceType: "release_step", ResourceID: step.Service, Result: stop.ReasonCode, Details: map[string]any{"object": stop.Object, "deadline": stop.Deadline, "observed_at": stop.ObservedAt}}}, "authorization.reauthorization_required")
 }

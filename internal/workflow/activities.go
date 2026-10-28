@@ -326,6 +326,17 @@ func (a *Activities) Deploy(ctx context.Context, input DeployInput) (DeployResul
 	if string(run.Environment) != input.Environment {
 		return DeployResult{}, verificationGuardError(errors.New("deployment environment differs from durable run"))
 	}
+	if _, found, err := a.executionBeforeDispatch(a.AdapterName, input.IdempotencyKey); err != nil {
+		return DeployResult{}, err
+	} else if !found {
+		for _, step := range run.Steps {
+			if step.Service == input.Service {
+				if stop := domain.ExpiredAuthority(run.Plan, step.Approval, step.Service, a.Now().UTC()); stop != nil {
+					return DeployResult{}, temporal.NewNonRetryableApplicationError("fresh Plan and approval required before dispatch", "REAUTHORIZATION_REQUIRED", nil, *stop)
+				}
+			}
+		}
+	}
 	now := a.Now().UTC()
 	record := store.ExecutionRecord{ID: newID("execution"), RunID: input.RunID, Service: input.Service, Adapter: a.AdapterName,
 		IdempotencyKey: input.IdempotencyKey, CreatedAt: now, UpdatedAt: now, Payload: map[string]any{"desired_version": input.DesiredVersion}}
@@ -604,6 +615,20 @@ func (a *Activities) Rollback(ctx context.Context, input RollbackInput) (Rollbac
 		return RollbackResult{}, resultUnknown(errors.New("rollback source differs from durable deployment"))
 	}
 	key := input.Deploy.IdempotencyKey + "/rollback"
+	if _, found, err := a.executionBeforeDispatch(a.AdapterName+".rollback", key); err != nil {
+		return RollbackResult{}, err
+	} else if !found {
+		for _, step := range run.Steps {
+			if step.Service == input.Deploy.Service {
+				if stop := domain.ExpiredAuthority(run.Plan, step.Approval, step.Service, a.Now().UTC()); stop != nil {
+					return RollbackResult{}, temporal.NewNonRetryableApplicationError("new authorization required", stop.ReasonCode, nil, *stop)
+				}
+			}
+		}
+		if stop := compensationRefusal(*run, input.Deploy.Service, input.Deployment, a.Now().UTC()); stop != nil {
+			return RollbackResult{}, temporal.NewNonRetryableApplicationError("compensation requires operator review", stop.ReasonCode, nil, *stop)
+		}
+	}
 	now := a.Now().UTC()
 	record := store.ExecutionRecord{ID: newID("rollback"), RunID: input.Deploy.RunID, Service: input.Deploy.Service, Adapter: a.AdapterName + ".rollback", IdempotencyKey: key, CreatedAt: now, UpdatedAt: now}
 	audit := a.auditFor(input.Deploy.RunID, input.Deploy.RequestedBy, AuditIntent{ActorType: "system", ActorID: "workflow-worker", Action: "rollback.reserve", ResourceType: "service", ResourceID: input.Deploy.Service, Result: "AUTHORIZED"}, now)
