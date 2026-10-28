@@ -36,7 +36,10 @@ identity:
   # See docs/guides/production-identity.md.
   delegations_file: ${THEMISY_DELEGATIONS_FILE}
 policy:
-  bundle_file: policies/examples/development-bundle.json
+  # Development uses the embedded baseline. Production fetches assigned signed
+  # bundles through outbound mTLS; no startup-only local bundle is accepted.
+  # issuer: https://policy.example.invalid
+  # trust_bundle_file: /run/config/policy-trust.json
 journal:
   database_url: ${THEMISY_RUNNER_DATABASE_URL}
 manifests:
