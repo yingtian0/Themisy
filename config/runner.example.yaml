@@ -31,6 +31,9 @@ identity:
   # The single-key settings below are development-only.
   trust_key_id: development-oidc-key
   trust_key_file: ${THEMISY_OIDC_PUBLIC_KEY_FILE}
+  # Production replaces this unsigned file with directory_file, directory_issuer,
+  # directory_trust_bundle_file and directory_minimum_revision.
+  # See docs/guides/production-identity.md.
   delegations_file: ${THEMISY_DELEGATIONS_FILE}
 policy:
   bundle_file: policies/examples/development-bundle.json

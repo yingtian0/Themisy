@@ -35,5 +35,6 @@ for ((attempt=0; attempt<30; attempt++)); do
 done
 [[ "$ready" == true ]] || { echo "signed observation fixture did not become ready" >&2; exit 1; }
 
+THEMISY_IDENTITY_DIRECTORY_TEST_DATABASE_URL="postgres://observation_fixture:observation_fixture@127.0.0.1:${port}/themisy_observation_fixture?sslmode=disable" \
 THEMISY_OBSERVATION_TEST_DATABASE_URL="postgres://observation_fixture:observation_fixture@127.0.0.1:${port}/themisy_observation_fixture?sslmode=disable" \
-  go test -race -tags=integration ./internal/application -run '^TestPostgresSignedObservationFlow$' -count=1 -v
+  go test -race -tags=integration ./internal/application ./internal/store/postgres -run '^(TestPostgresSignedObservationFlow|TestIdentityDirectoryFenceSurvivesRestart)$' -count=1 -v
