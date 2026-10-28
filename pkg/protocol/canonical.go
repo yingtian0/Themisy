@@ -58,6 +58,20 @@ func EncodeActionGrant(grant ActionGrant) ([]byte, error) {
 }
 
 func validateGrantShape(grant ActionGrant) error {
+	if err := ValidateCompensation(grant.Compensation, grant.Action, grant.IssuedAt, grant.ExpiresAt, grant.ProtocolVersion == VersionV1Alpha2); err != nil {
+		return err
+	}
+	if grant.ProtocolVersion == VersionV1Alpha1 && grant.Compensation != nil {
+		return fmt.Errorf("compensation requires v1alpha2")
+	}
+
+	if err := ValidateAuthorizationLifetime(grant.AuthorizationEpoch, grant.AuthorizationValidUntil, grant.IssuedAt, grant.ExpiresAt, grant.ProtocolVersion == VersionV1Alpha2); err != nil {
+		return err
+	}
+	if grant.ProtocolVersion == VersionV1Alpha1 && grant.AuthorizationEpoch != "" {
+		return fmt.Errorf("lifetime fields require protocol v1alpha2")
+	}
+
 	if err := ValidateContextBinding(grant.ContextIssuer, grant.ContextRevision, grant.ContextExpiresAt, grant.ExpiresAt); err != nil {
 		return err
 	}
@@ -140,4 +154,32 @@ func ValidateContextBinding(issuer string, revision int64, expires string, grant
 		return fmt.Errorf("invalid Context lifetime binding")
 	}
 	return nil
+}
+
+func ValidateAuthorizationLifetime(epoch, until string, issued, expires time.Time, required bool) error {
+	if epoch == "" && until == "" && !required {
+		return nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, until)
+	if err != nil || !at.After(issued) || expires.After(at) || len(epoch) != 71 || !strings.HasPrefix(epoch, "sha256:") {
+		return fmt.Errorf("invalid authorization epoch/lifetime")
+	}
+	if _, err := hex.DecodeString(epoch[7:]); err != nil {
+		return fmt.Errorf("invalid authorization epoch")
+	}
+	return nil
+}
+
+// GrantSigningMessage keeps legacy signatures stable. V2 signs a domain-bound
+// digest of the entire canonical payload, keeping raw KMS messages bounded.
+func GrantSigningMessage(g ActionGrant) ([]byte, error) {
+	raw, err := CanonicalGrantPayload(g)
+	if err != nil {
+		return nil, err
+	}
+	if g.ProtocolVersion == VersionV1Alpha1 {
+		return raw, nil
+	}
+	sum := sha256.Sum256(raw)
+	return []byte("themisy.action-grant-signature/v2\x00" + hex.EncodeToString(sum[:])), nil
 }

@@ -127,7 +127,7 @@ func (s *DevelopmentSigner) Sign(_ context.Context, payload []byte) (protocol.Si
 }
 
 func SignActionGrant(ctx context.Context, signer Signer, actionGrant protocol.ActionGrant) (protocol.ActionGrant, error) {
-	payload, err := protocol.CanonicalGrantPayload(actionGrant)
+	payload, err := protocol.GrantSigningMessage(actionGrant)
 	if err != nil {
 		return protocol.ActionGrant{}, err
 	}

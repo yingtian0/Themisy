@@ -30,6 +30,7 @@ func (e *GrantResultPendingError) Unwrap() error   { return e.Err }
 func (e *GrantResultPendingError) GrantID() string { return e.ID }
 
 type GrantIssueRequest struct {
+	SourceGrantID       string
 	RunID               string
 	StepID              string
 	Capability          protocol.Capability
@@ -67,7 +68,7 @@ func (e *GrantExecutor) Rollback(ctx context.Context, deployment executor.Deploy
 	if e.Grants == nil || deployment.RunID == "" || deployment.Service == "" {
 		return executor.Deployment{}, errors.New("rollback grant context is unavailable")
 	}
-	record, _, err := e.Grants.Issue(ctx, GrantIssueRequest{RunID: deployment.RunID, StepID: deployment.Service, Capability: protocol.CapabilityRollback, ExternalExecutionID: deployment.ExternalID, IdempotencyKey: deployment.IdempotencyKey + "/rollback"})
+	record, _, err := e.Grants.Issue(ctx, GrantIssueRequest{RunID: deployment.RunID, StepID: deployment.Service, Capability: protocol.CapabilityRollback, SourceGrantID: deployment.GrantID, ExternalExecutionID: deployment.ExternalID, IdempotencyKey: deployment.IdempotencyKey + "/rollback"})
 	if err != nil {
 		return executor.Deployment{}, err
 	}
@@ -159,7 +160,13 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 	if err != nil || finalHash == "" || finalDecision.InputHash != finalHash {
 		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: final policy input mismatch", ErrGrantNotAuthorized)
 	}
+	if stop := domain.ExpiredAuthority(run.Plan, step.Approval, step.Service, now); stop != nil {
+		return store.GrantDispatchRecord{}, false, fmt.Errorf("%w: %s: %s expired at %s", ErrGrantNotAuthorized, stop.ReasonCode, stop.Object, stop.Deadline)
+	}
 	expiresAt := now.Add(g.TTL)
+	if until, _ := domain.ForwardDeadline(run.Plan, step.Approval); !until.IsZero() && until.Before(expiresAt) {
+		expiresAt = until
+	}
 	if run.Plan.Context != nil && g.Sources == nil {
 		return store.GrantDispatchRecord{}, false, ErrGrantNotAuthorized
 	}
@@ -221,10 +228,27 @@ func (g *Grants) Issue(ctx context.Context, request GrantIssueRequest) (store.Gr
 		IssuedAt:          now,
 		ExpiresAt:         expiresAt,
 	}
+	if epoch := domain.AuthorizationEpoch(*run, step); epoch != "" {
+		actionGrant.ProtocolVersion = protocol.VersionV1Alpha2
+		actionGrant.AuthorizationEpoch = epoch
+		until, _ := domain.ForwardDeadline(run.Plan, step.Approval)
+		actionGrant.AuthorizationValidUntil = until.Format(time.RFC3339Nano)
+	}
 	if run.Plan.Context != nil {
 		actionGrant.ContextIssuer = run.Plan.Context.Issuer
 		actionGrant.ContextRevision = run.Plan.Context.Revision
 		actionGrant.ContextExpiresAt = run.Plan.Context.ExpiresAt.Format(time.RFC3339Nano)
+	}
+	if request.Capability == protocol.CapabilityRollback && actionGrant.AuthorizationEpoch != "" {
+		permission, err := compensationFor(ctx, g.Store, *run, step, planned, request, now)
+		if err != nil {
+			return store.GrantDispatchRecord{}, false, err
+		}
+		actionGrant.Compensation = permission
+		until, _ := time.Parse(time.RFC3339Nano, permission.ValidUntil)
+		if until.Before(actionGrant.ExpiresAt) {
+			actionGrant.ExpiresAt = until
+		}
 	}
 	signed, err := grant.SignActionGrant(ctx, g.Signer, actionGrant)
 	if err != nil {

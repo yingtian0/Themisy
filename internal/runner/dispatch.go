@@ -173,3 +173,13 @@ func (d *SDKDispatcher) now() time.Time {
 	}
 	return time.Now().UTC()
 }
+
+func (d *SDKDispatcher) CompensationTargetHash(target protocol.Target) (string, error) {
+	source, ok := d.Adapter.(interface {
+		CompensationTargetHash(adapter.Target) (string, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("adapter has no reviewed compensation target")
+	}
+	return source.CompensationTargetHash(adapter.Target{Service: target.Service, Environment: target.Environment})
+}

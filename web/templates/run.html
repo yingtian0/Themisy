@@ -9,6 +9,7 @@
   <div><dt>Plan expiry</dt><dd>{{if .Run.Plan.ExpiresAt.IsZero}}Unknown / not recorded{{else}}{{.Run.Plan.ExpiresAt}}{{end}}</dd></div>
   <div><dt>Plan hash</dt><dd><code>{{.Run.Plan.Hash}}</code></dd></div>
 </dl>
+{{with .Run.AuthorizationStop}}<p role="alert">{{.ReasonCode}}: {{.Object}} permission ended{{if not .Deadline.IsZero}} at {{.Deadline}}{{end}}. Review the existing operation and its results before creating a fresh plan and approval. Resuming this Run does not renew permission.</p>{{end}}
 <h2>Steps</h2>
 <table>
   <thead><tr><th>Wave</th><th>Service</th><th>Status</th><th>Failure</th></tr></thead>

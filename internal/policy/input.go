@@ -21,33 +21,35 @@ const InputVersionV1Alpha1 = "themisy.policy.input/v1alpha1"
 // Input is the sole canonical policy input used by both Control Plane and Runner.
 // Trusted fields are populated only after identity and delegation verification.
 type Input struct {
-	ContextIssuer        string              `json:"context_issuer,omitempty"`
-	ContextRevision      int64               `json:"context_revision,omitempty"`
-	ContextExpiresAt     string              `json:"context_expires_at,omitempty"`
-	PolicyRevision       int64               `json:"policy_revision,omitempty"`
-	Version              string              `json:"version,omitempty"`
-	TenantID             string              `json:"tenant_id,omitempty"`
-	RunnerGroup          string              `json:"runner_group,omitempty"`
-	SubjectType          string              `json:"subject_type,omitempty"`
-	UserID               string              `json:"user_id"`
-	UserIssuer           string              `json:"user_issuer,omitempty"`
-	AgentID              string              `json:"agent_id"`
-	DelegationRef        string              `json:"delegation_ref,omitempty"`
-	AgentScopes          []string            `json:"-"` // Packet 00-02 compatibility only; never trusted or signed.
-	Environment          domain.Environment  `json:"environment"`
-	Service              string              `json:"service"`
-	Capability           protocol.Capability `json:"capability,omitempty"`
-	ArtifactDigest       string              `json:"artifact_digest,omitempty"`
-	Risk                 string              `json:"risk"`
-	PlanHash             string              `json:"plan_hash,omitempty"`
-	ContractHash         string              `json:"contract_hash,omitempty"`
-	ProfileHash          string              `json:"profile_hash,omitempty"`
-	PolicyHash           string              `json:"policy_hash,omitempty"`
-	EvidenceHash         string              `json:"evidence_hash,omitempty"`
-	ApprovalProofs       []string            `json:"approval_proofs,omitempty"`
-	CISuccess            bool                `json:"ci_success"`
-	DependenciesHealthy  bool                `json:"dependencies_healthy"`
-	DestructiveMigration bool                `json:"-"` // represented by risk, approval, and evidence in v1alpha1.
+	AuthorizationEpoch      string              `json:"authorization_epoch,omitempty"`
+	AuthorizationValidUntil string              `json:"authorization_valid_until,omitempty"`
+	ContextIssuer           string              `json:"context_issuer,omitempty"`
+	ContextRevision         int64               `json:"context_revision,omitempty"`
+	ContextExpiresAt        string              `json:"context_expires_at,omitempty"`
+	PolicyRevision          int64               `json:"policy_revision,omitempty"`
+	Version                 string              `json:"version,omitempty"`
+	TenantID                string              `json:"tenant_id,omitempty"`
+	RunnerGroup             string              `json:"runner_group,omitempty"`
+	SubjectType             string              `json:"subject_type,omitempty"`
+	UserID                  string              `json:"user_id"`
+	UserIssuer              string              `json:"user_issuer,omitempty"`
+	AgentID                 string              `json:"agent_id"`
+	DelegationRef           string              `json:"delegation_ref,omitempty"`
+	AgentScopes             []string            `json:"-"` // Packet 00-02 compatibility only; never trusted or signed.
+	Environment             domain.Environment  `json:"environment"`
+	Service                 string              `json:"service"`
+	Capability              protocol.Capability `json:"capability,omitempty"`
+	ArtifactDigest          string              `json:"artifact_digest,omitempty"`
+	Risk                    string              `json:"risk"`
+	PlanHash                string              `json:"plan_hash,omitempty"`
+	ContractHash            string              `json:"contract_hash,omitempty"`
+	ProfileHash             string              `json:"profile_hash,omitempty"`
+	PolicyHash              string              `json:"policy_hash,omitempty"`
+	EvidenceHash            string              `json:"evidence_hash,omitempty"`
+	ApprovalProofs          []string            `json:"approval_proofs,omitempty"`
+	CISuccess               bool                `json:"ci_success"`
+	DependenciesHealthy     bool                `json:"dependencies_healthy"`
+	DestructiveMigration    bool                `json:"-"` // represented by risk, approval, and evidence in v1alpha1.
 }
 
 func NormalizeInput(input Input) Input {
@@ -84,6 +86,11 @@ func InputForOperation(run domain.ReleaseRun, step domain.ReleaseStep, capabilit
 		result.ContextRevision = run.Plan.Context.Revision
 		result.ContextExpiresAt = run.Plan.Context.ExpiresAt.Format(time.RFC3339Nano)
 	}
+	result.AuthorizationEpoch = domain.AuthorizationEpoch(run, step)
+	if result.AuthorizationEpoch != "" {
+		until, _ := domain.ForwardDeadline(run.Plan, step.Approval)
+		result.AuthorizationValidUntil = until.Format(time.RFC3339Nano)
+	}
 	result.SubjectType = run.SubjectType
 	result.Capability = capability
 	for _, phase := range run.Plan.Phases {
@@ -107,6 +114,8 @@ func InputForOperation(run domain.ReleaseRun, step domain.ReleaseStep, capabilit
 
 func InputForGrant(grant protocol.ActionGrant, userIssuer, verifiedUser, verifiedAgent, verifiedDelegation string) Input {
 	input := Input{Version: InputVersionV1Alpha1, TenantID: grant.TenantID, RunnerGroup: grant.RunnerGroup, UserID: verifiedUser, UserIssuer: userIssuer, AgentID: verifiedAgent, DelegationRef: verifiedDelegation, Environment: domain.Environment(grant.Target.Environment), Service: grant.Target.Service, Capability: grant.Action.Capability, ArtifactDigest: grant.Action.ArtifactDigest, Risk: grant.Risk, PlanHash: grant.PlanHash, ContractHash: grant.ContractHash, ProfileHash: grant.ProfileHash, PolicyHash: grant.PolicyHash, EvidenceHash: grant.EvidenceHash, ApprovalProofs: append([]string(nil), grant.ApprovalProofs...), CISuccess: true, DependenciesHealthy: true}
+	input.AuthorizationEpoch = grant.AuthorizationEpoch
+	input.AuthorizationValidUntil = grant.AuthorizationValidUntil
 	input.ContextIssuer = grant.ContextIssuer
 	input.ContextRevision = grant.ContextRevision
 	input.ContextExpiresAt = grant.ContextExpiresAt

@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"themisy/internal/domain"
 	"themisy/internal/grant"
 	"themisy/internal/store"
 	"themisy/pkg/protocol"
@@ -21,6 +22,12 @@ func ApprovedManifest(ctx context.Context, st store.DurableStore, signer grant.S
 		return protocol.PlanManifest{}, err
 	}
 	p := protocol.PlanManifest{PolicyRevision: run.Plan.PolicyAssignments[planned.Scheduling.RunnerGroup], ProtocolVersion: protocol.PlanManifestVersion, Issuer: issuer, TenantID: run.TenantID, RunnerGroup: planned.Scheduling.RunnerGroup, RunID: run.ID, StepID: step.Service, Revision: revision, PlanHash: run.Plan.Hash, ContractHash: planned.ContractHash, ProfileHash: planned.ProfileHash, PolicyHash: run.Plan.PolicyHash, EvidenceHash: run.Plan.EvidenceHash, Target: protocol.Target{Service: step.Service, Environment: string(run.Environment)}, Action: protocol.Action{Capability: request.Capability, ArtifactDigest: step.Change.DesiredVersion, ExternalExecutionID: request.ExternalExecutionID}, IssuedAt: now, ExpiresAt: run.Plan.ExpiresAt}
+	if epoch := domain.AuthorizationEpoch(*run, step); epoch != "" {
+		p.ProtocolVersion = protocol.PlanManifestVersionV2
+		p.AuthorizationEpoch = epoch
+		until, _ := domain.ForwardDeadline(run.Plan, step.Approval)
+		p.AuthorizationValidUntil = until.Format(time.RFC3339Nano)
+	}
 	if run.Plan.Context != nil {
 		p.ContextIssuer = run.Plan.Context.Issuer
 		p.ContextRevision = run.Plan.Context.Revision
@@ -31,6 +38,17 @@ func ApprovedManifest(ctx context.Context, st store.DurableStore, signer grant.S
 		p.ApprovalProofs = []string{step.Approval.ID}
 		if step.Approval.ExpiresAt.Before(p.ExpiresAt) {
 			p.ExpiresAt = step.Approval.ExpiresAt
+		}
+	}
+	if request.Capability == protocol.CapabilityRollback && p.AuthorizationEpoch != "" {
+		permission, err := compensationFor(ctx, st, *run, step, planned, request, now)
+		if err != nil {
+			return protocol.PlanManifest{}, err
+		}
+		p.Compensation = permission
+		until, _ := time.Parse(time.RFC3339Nano, permission.ValidUntil)
+		if until.Before(p.ExpiresAt) {
+			p.ExpiresAt = until
 		}
 	}
 	return grant.SignPlanManifest(ctx, signer, p)

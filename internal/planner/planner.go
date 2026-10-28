@@ -32,15 +32,17 @@ type Options struct {
 }
 
 type serviceDefinition struct {
-	service      domain.Service
-	dependencies []domain.Dependency
-	environments map[domain.Environment]environmentDefinition
-	contractHash string
+	rollbackDeadline string
+	service          domain.Service
+	dependencies     []domain.Dependency
+	environments     map[domain.Environment]environmentDefinition
+	contractHash     string
 }
 
 type environmentDefinition struct {
-	profile     string
-	runnerGroup string
+	rollbackTargetHash string
+	profile            string
+	runnerGroup        string
 }
 
 type Planner struct {
@@ -165,8 +167,9 @@ func NewFromContracts(contracts []contract.ServiceContract, profiles []profile.R
 				return nil, domain.NewReasonError(domain.ReasonMissingCapability, "environments."+name+".capabilities", fmt.Sprintf("profile %q requires %v", environment.ReleaseProfile, missing), nil)
 			}
 			environments[domain.Environment(name)] = environmentDefinition{
-				profile:     environment.ReleaseProfile,
-				runnerGroup: environment.RunnerGroup,
+				rollbackTargetHash: environment.RollbackTargetHash,
+				profile:            environment.ReleaseProfile,
+				runnerGroup:        environment.RunnerGroup,
 			}
 		}
 		dependencies := sortedDependencies(serviceContract.Dependencies)
@@ -197,10 +200,11 @@ func NewFromContracts(contracts []contract.ServiceContract, profiles []profile.R
 		}
 		services[name] = service
 		definitions[name] = serviceDefinition{
-			service:      service,
-			dependencies: dependencies,
-			environments: environments,
-			contractHash: hash,
+			rollbackDeadline: serviceContract.Rollback.Deadline,
+			service:          service,
+			dependencies:     dependencies,
+			environments:     environments,
+			contractHash:     hash,
 		}
 		contractHashes[name] = hash
 	}
@@ -403,6 +407,8 @@ func (p *Planner) PlanIntent(intent domain.ReleaseIntent) (domain.ReleasePlan, e
 			phaseNumbers = append(phaseNumbers, phase[name])
 		}
 		step := domain.PlanStep{
+			RollbackDeadline:     definition.rollbackDeadline,
+			RollbackTargetHash:   environment.rollbackTargetHash,
 			Service:              name,
 			DesiredVersion:       change.DesiredVersion,
 			Phase:                phase[name],

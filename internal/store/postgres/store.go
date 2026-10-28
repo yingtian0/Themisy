@@ -389,12 +389,12 @@ func (s *Store) ReserveRunnerAction(ctx context.Context, record store.RunnerActi
 	}
 	defer tx.Rollback(ctx)
 	row := tx.QueryRow(ctx, `
-INSERT INTO runner_journal (grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at,runner_id,plan_revision,plan_hash)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+INSERT INTO runner_journal (grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at,runner_id,plan_revision,plan_hash,compensation_source_nonce)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 ON CONFLICT DO NOTHING
 RETURNING `+runnerActionColumns,
 		record.GrantID, record.RunID, record.StepID, record.TenantID, record.RunnerGroup, record.Nonce,
-		record.IdempotencyKey, record.RequestHash, target, action, record.Status, result, record.StateVersion, record.CreatedAt, record.UpdatedAt, record.RunnerID, record.PlanRevision, record.PlanHash)
+		record.IdempotencyKey, record.RequestHash, target, action, record.Status, result, record.StateVersion, record.CreatedAt, record.UpdatedAt, record.RunnerID, record.PlanRevision, record.PlanHash, record.CompensationSourceNonce)
 	createdRecord, scanErr := scanRunnerAction(row)
 	if scanErr == nil {
 		if err := insertAudit(ctx, tx, audit); err != nil {
@@ -490,7 +490,7 @@ func scanRunnerAction(row runnerActionRow) (store.RunnerActionRecord, error) {
 	var target, action, result []byte
 	if err := row.Scan(&record.GrantID, &record.RunID, &record.StepID, &record.TenantID, &record.RunnerGroup,
 		&record.Nonce, &record.IdempotencyKey, &record.RequestHash, &target, &action, &record.Status, &result, &record.StateVersion,
-		&record.CreatedAt, &record.UpdatedAt, &record.RunnerID, &record.ReconcileOwner, &until, &record.PlanRevision, &record.PlanHash); err != nil {
+		&record.CreatedAt, &record.UpdatedAt, &record.RunnerID, &record.ReconcileOwner, &until, &record.PlanRevision, &record.PlanHash, &record.CompensationSourceNonce); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.RunnerActionRecord{}, store.ErrNotFound
 		}

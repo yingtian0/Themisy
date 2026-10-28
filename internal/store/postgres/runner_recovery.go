@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const runnerActionColumns = `grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at,runner_id,reconcile_owner,reconcile_until,plan_revision,plan_hash`
+const runnerActionColumns = `grant_id,run_id,step_id,tenant_id,runner_group,nonce,idempotency_key,request_hash,target,action,status,result,state_version,created_at,updated_at,runner_id,reconcile_owner,reconcile_until,plan_revision,plan_hash,compensation_source_nonce`
 
 func (s *Store) ClaimRunnerActions(ctx context.Context, tenant, group, owner string, now, until time.Time, limit int) ([]store.RunnerActionRecord, error) {
 	if owner == "" || !until.After(now) {

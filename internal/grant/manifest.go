@@ -6,7 +6,7 @@ import (
 )
 
 func SignPlanManifest(ctx context.Context, signer Signer, m protocol.PlanManifest) (protocol.PlanManifest, error) {
-	payload, err := protocol.CanonicalManifestPayload(m)
+	payload, err := protocol.ManifestSigningMessage(m)
 	if err != nil {
 		return protocol.PlanManifest{}, err
 	}
