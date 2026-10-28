@@ -14,6 +14,7 @@ import (
 var ErrDelegationDenied = errors.New("AGENT_DELEGATION_DENIED")
 
 type Delegation struct {
+	TenantID         string `json:"tenant_id,omitempty"`
 	ID               string
 	Issuer           string
 	UserSubject      string
@@ -53,13 +54,21 @@ type DelegationRequest struct {
 }
 
 type DelegationVerifier struct {
-	Resolver DelegationResolver
-	Now      func() time.Time
+	TenantID    string
+	TenantClaim string
+	Resolver    DelegationResolver
+	Now         func() time.Time
 }
 
 func (v *DelegationVerifier) Verify(ctx context.Context, request DelegationRequest) (Delegation, error) {
 	if v == nil || v.Resolver == nil || request.Reference == "" || ctx.Err() != nil || request.Subject.Issuer == "" || request.Subject.ID == "" {
 		return Delegation{}, ErrDelegationDenied
+	}
+	if v.TenantID != "" {
+		tenant, ok := request.Subject.Claims[v.TenantClaim].(string)
+		if !ok || tenant != v.TenantID {
+			return Delegation{}, ErrDelegationDenied
+		}
 	}
 	delegation, err := v.Resolver.ResolveDelegation(ctx, request.Reference)
 	if err != nil {
@@ -72,7 +81,7 @@ func (v *DelegationVerifier) Verify(ctx context.Context, request DelegationReque
 	if ctx.Err() != nil || now.IsZero() || !request.Subject.ExpiresAt.After(now) || (!request.Subject.IssuedAt.IsZero() && request.Subject.IssuedAt.After(now)) {
 		return Delegation{}, ErrDelegationDenied
 	}
-	if delegation.ID != request.Reference || delegation.UserSubject != request.Subject.ID || delegation.Issuer != request.Subject.Issuer || delegation.AgentID != request.AgentID || !delegation.ExpiresAt.After(now) {
+	if (v.TenantID != "" && delegation.TenantID != v.TenantID) || delegation.ID != request.Reference || delegation.UserSubject != request.Subject.ID || delegation.Issuer != request.Subject.Issuer || delegation.AgentID != request.AgentID || !delegation.ExpiresAt.After(now) {
 		return Delegation{}, ErrDelegationDenied
 	}
 	requestedRisk, maximumRisk := riskLevel(request.Risk), riskLevel(delegation.MaximumRisk)
