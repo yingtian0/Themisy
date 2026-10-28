@@ -44,6 +44,7 @@ func TestProductionGrantRevalidatesDirectoryAndPersistsNoBearer(t *testing.T) {
 			run := grantRun(now)
 			memory := store.NewMemory()
 			signer, pub, _ := grant.NewDevelopmentSigner("key")
+			identitySigner, identityPub, _ := grant.NewDevelopmentSigner("identity-key")
 			idpPublic, idpKey, _ := ed25519.GenerateKey(rand.Reader)
 			oidc := &identity.OIDCVerifier{Issuer: run.SubjectIssuer, Audience: "themisy", Keys: identity.StaticOIDCKeys{run.SubjectIssuer + "\x00idp": idpPublic}, Now: func() time.Time { return now }}
 			h, _ := json.Marshal(map[string]any{"alg": "EdDSA", "kid": "idp"})
@@ -64,7 +65,7 @@ func TestProductionGrantRevalidatesDirectoryAndPersistsNoBearer(t *testing.T) {
 				}
 			}
 			write()
-			proof, err := identity.Attest(ctx, oidc, signer, "key", identity.Attestation{Issuer: "control", TenantID: run.TenantID, Audience: "themisy", SubjectType: run.SubjectType, RequestID: run.RequestID, AgentID: run.Agent.ID, DelegationRef: run.DelegationRef, Roles: []string{"deployer"}}, token)
+			proof, err := identity.Attest(ctx, oidc, identitySigner, "identity-key", identity.Attestation{Issuer: "identity", TenantID: run.TenantID, Audience: "themisy", SubjectType: run.SubjectType, RequestID: run.RequestID, AgentID: run.Agent.ID, DelegationRef: run.DelegationRef, Roles: []string{"deployer"}}, token)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -76,7 +77,7 @@ func TestProductionGrantRevalidatesDirectoryAndPersistsNoBearer(t *testing.T) {
 			service, _ := NewGrants(memory, signer, "control", fiveMinutes)
 			service.Signer = hookSigner{delegate: signer}
 			service.Now = func() time.Time { return now }
-			service.Authority = &IdentityAuthority{Audit: memory, Signer: signer, KeyID: "key", Verifier: &identity.AttestationVerifier{Issuer: "control", TenantID: run.TenantID, Audience: "themisy", Keys: grant.StaticKeys{"control\x00key": pub}, OIDC: oidc, Directory: dir, Now: func() time.Time { return now }}}
+			service.Authority = &IdentityAuthority{Audit: memory, Verifier: &identity.AttestationVerifier{Issuer: "identity", TenantID: run.TenantID, Audience: "themisy", Keys: grant.StaticKeys{"identity\x00identity-key": identityPub}, OIDC: oidc, Directory: dir, Now: func() time.Time { return now }}}
 			switch scenario {
 			case "requester revoked":
 				bundle.Revision++

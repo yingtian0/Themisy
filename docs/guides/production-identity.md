@@ -27,7 +27,12 @@ identity:
   directory_issuer: https://organization.example.invalid
   directory_trust_bundle_file: /run/config/directory-trust.json
   directory_minimum_revision: 1
-  attestation_trust_bundle_file: /run/config/control-plane-trust.json
+  attestation_issuer: https://identity-authority.example.invalid
+  attestation_endpoint: https://identity-authority.example.invalid/v1/identity/attest
+  attestation_ca_file: /run/config/identity-authority-ca.crt
+  attestation_client_cert_file: /run/secrets/control-plane-identity.crt
+  attestation_client_key_file: /run/secrets/control-plane-identity.key
+  attestation_trust_bundle_file: /run/config/identity-authority-trust.json
 ```
 
 The optional subject-type claim must be `user` or `ci`; absent means `user`.
@@ -82,6 +87,64 @@ from an independent trusted source on a new database; restoring a historical
 backup alone cannot prove the latest organization revision. Migrations do not
 allow an ordinary downgrade to discard a populated fence.
 
+## Independent identity authority
+
+Deploy `go run ./cmd/identityattestor -config identity-authority.yaml` under an
+independent organization identity workload. Give it only its own identity KMS
+signing key and its own PostgreSQL database. The Control Plane and Runner must
+have no KMS permission on that key; this is independent of the Grant signer and
+the organization Directory signer. Restrict its mTLS client CA and exact SPIFFE
+identity to the authorized Control Plane workload.
+
+```yaml
+mode: production
+http:
+  address: ":8443"
+  tls_cert_file: /run/secrets/identity-server.crt
+  tls_key_file: /run/secrets/identity-server.key
+client_ca_file: /run/config/control-plane-client-ca.crt
+client_identity: spiffe://customer.example/themisy/control-plane
+issuer: https://identity-authority.example.invalid
+signing:
+  provider: aws-kms
+  key_id: identity-authority-key-id
+  aws_region: ap-northeast-1
+database:
+  auto_migrate: false
+identity:
+  tenant_id: tenant-a
+  issuer: https://idp.example.invalid
+  audience: themisy-tenant-a
+  discovery_url: https://idp.example.invalid/.well-known/openid-configuration
+  jwks_cache_ttl: 5m
+  tenant_claim: organization
+  role_claim: groups
+  subject_type_claim: subject_type
+  role_mappings:
+    release-team: [deployer]
+    operations: [operator, sre]
+  directory_file: /run/config/identity-directory.json
+  directory_issuer: https://organization.example.invalid
+  directory_trust_bundle_file: /run/config/directory-trust.json
+  directory_minimum_revision: 1
+  attestation_trust_bundle_file: /run/config/identity-authority-trust.json
+```
+
+Set `THEMISY_IDENTITY_DATABASE_URL` from a protected workload secret. Apply the
+Control Plane schema migrations to this **separate identity database** with its
+migration identity before starting; it uses only identity audit and revision
+fence tables. Do not give the identity service access to the release database or
+the Runner journal. Protected local fixtures may use `mode: development` and a
+development signer. Production requires KMS and verified client certificates.
+
+The service exposes only `POST /v1/identity/attest`. It independently verifies
+the original bearer token, mapped/deployer Directory role and matching agent
+Delegation, then issues a request-bound receipt. It audits the sanitized decision
+before returning, rechecks current trust afterward, and never stores the bearer
+token. Requests and responses must not be body/header logged by ingress or
+observability middleware. The Control Plane exchanges the token before any
+workflow persistence and revalidates the returned independent signature.
+
 ## Runner
 
 Use `mode: production`, existing mTLS/customer journal/approved manifest/adapter
@@ -97,11 +160,13 @@ identity:
   directory_issuer: https://organization.example.invalid
   directory_trust_bundle_file: /run/config/directory-trust.json
   directory_minimum_revision: 1
+  attestation_issuer: https://identity-authority.example.invalid
+  attestation_trust_bundle_file: /run/config/identity-authority-trust.json
 ```
 
 Do not set the development `trust_key_id`, `trust_key_file` or
-`delegations_file`. The existing customer-managed Control Plane Grant trust
-bundle also verifies the domain-separated identity receipt. The Runner never
+`delegations_file`. A separate customer-managed identity-authority public trust bundle verifies
+the domain-separated identity receipt. The Grant trust bundle cannot do so. The Runner never
 accepts the raw IdP token on this production path.
 
 ## HTTP, CLI and UI
@@ -128,7 +193,7 @@ session store, or a trusted-header authentication mode for production.
 
 Stop creation of new production writes, apply Control Plane migration 11 and
 Runner migration 005 with the existing migration identities, provision both
-trust bundles and a fresh Directory, and start Control Plane/Workers and Runner
+trust bundles and a fresh Directory, and start the independent identity authority, Control Plane/Workers and Runner
 with the new settings. Do not run a mixed old/new production write fleet.
 Existing raw-proof records are not migrated or renewed. Old approvals without
 issuer provenance stop in production; replan and obtain a new approval.

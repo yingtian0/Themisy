@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"themisy/internal/domain"
-	"themisy/internal/grant"
+
 	"themisy/internal/identity"
 	"themisy/internal/policy"
 	"themisy/pkg/protocol"
@@ -16,11 +16,10 @@ import (
 // does not weaken the production chain: it uses a separate explicit mode.
 type IdentityAuthority struct {
 	Verifier *identity.AttestationVerifier
-	Signer   grant.Signer
+	Attester identity.Attester
 	Audit    interface {
 		AppendAuditContext(context.Context, domain.AuditEvent) error
 	}
-	KeyID string
 }
 
 func (a *IdentityAuthority) Prepare(ctx context.Context, intent domain.ReleaseIntent) (domain.ReleaseIntent, error) {
@@ -34,9 +33,16 @@ func (a *IdentityAuthority) Prepare(ctx context.Context, intent domain.ReleaseIn
 	if actor.TenantID != a.Verifier.TenantID {
 		return intent, identity.ErrInvalidIdentityProof
 	}
-	proof, err := identity.Attest(ctx, a.Verifier.OIDC, a.Signer, a.KeyID, identity.Attestation{Issuer: a.Verifier.Issuer, TenantID: actor.TenantID, Audience: a.Verifier.Audience, SubjectType: actor.SubjectType, RequestID: intent.RequestID, AgentID: intent.Agent.ID, DelegationRef: intent.DelegationRef, Roles: actor.Roles}, actor.ProofToken)
+	if a.Attester == nil {
+		return intent, identity.ErrInvalidIdentityProof
+	}
+	proof, err := a.Attester.Exchange(ctx, actor.ProofToken, identity.AttestationRequest{RequestID: intent.RequestID, AgentID: intent.Agent.ID, DelegationRef: intent.DelegationRef})
 	if err != nil {
 		return intent, err
+	}
+	receipt, err := a.Verifier.VerifyAttestation(ctx, proof)
+	if err != nil || receipt.SubjectID != actor.Subject || receipt.SubjectIssuer != actor.Issuer || receipt.SubjectType != actor.SubjectType || receipt.RequestID != intent.RequestID || receipt.AgentID != intent.Agent.ID || receipt.DelegationRef != intent.DelegationRef {
+		return intent, identity.ErrInvalidIdentityProof
 	}
 	intent.UserIdentityProof = proof
 	return intent, nil

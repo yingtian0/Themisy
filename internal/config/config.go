@@ -36,6 +36,11 @@ type Identity struct {
 	DirectoryIssuer            string              `yaml:"directory_issuer"`
 	DirectoryTrustBundleFile   string              `yaml:"directory_trust_bundle_file"`
 	DirectoryMinimumRevision   int64               `yaml:"directory_minimum_revision"`
+	AttestationEndpoint        string              `yaml:"attestation_endpoint"`
+	AttestationIssuer          string              `yaml:"attestation_issuer"`
+	AttestationCAFile          string              `yaml:"attestation_ca_file"`
+	AttestationClientCertFile  string              `yaml:"attestation_client_cert_file"`
+	AttestationClientKeyFile   string              `yaml:"attestation_client_key_file"`
 	AttestationTrustBundleFile string              `yaml:"attestation_trust_bundle_file"`
 }
 
@@ -56,7 +61,7 @@ func (c Identity) Validate() error {
 	if err != nil || ttl < time.Second || ttl > time.Hour {
 		return fmt.Errorf("identity.jwks_cache_ttl must be between one second and one hour")
 	}
-	if c.TenantID == "" || c.Audience == "" || c.TenantClaim == "" || c.RoleClaim == "" || c.TenantClaim == c.RoleClaim || len(c.RoleMappings) == 0 || c.DirectoryFile == "" || c.DirectoryIssuer == "" || c.DirectoryTrustBundleFile == "" || c.DirectoryMinimumRevision < 1 || c.AttestationTrustBundleFile == "" {
+	if c.TenantID == "" || c.Audience == "" || c.TenantClaim == "" || c.RoleClaim == "" || c.TenantClaim == c.RoleClaim || len(c.RoleMappings) == 0 || c.DirectoryFile == "" || c.DirectoryIssuer == "" || c.DirectoryTrustBundleFile == "" || c.DirectoryMinimumRevision < 1 || (c.AttestationTrustBundleFile == "" || c.AttestationEndpoint == "" || c.AttestationIssuer == "" || c.AttestationCAFile == "" || c.AttestationClientCertFile == "" || c.AttestationClientKeyFile == "") {
 		return fmt.Errorf("OIDC identity and signed Directory configuration is incomplete")
 	}
 	return nil
@@ -133,6 +138,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("AWS KMS signing requires OIDC identity mode")
 	}
 	if c.Identity.Mode == "oidc" {
+		if c.Identity.AttestationIssuer == c.Grants.Issuer || c.Identity.DirectoryIssuer == c.Grants.Issuer || c.Identity.AttestationIssuer == c.Identity.DirectoryIssuer {
+			return fmt.Errorf("identity, Directory and Grant issuers must be independent")
+		}
 		for _, registration := range c.RunnerTransport.Registrations {
 			if registration.TenantID != c.Identity.TenantID {
 				return fmt.Errorf("runner registration must match configured identity tenant")

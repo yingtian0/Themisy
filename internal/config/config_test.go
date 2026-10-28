@@ -68,7 +68,7 @@ func TestKMSRejectsDevelopmentHeaders(t *testing.T) {
 	if c.Validate() == nil {
 		t.Fatal("production signer accepted development identity")
 	}
-	c.Identity = Identity{Mode: "oidc", TenantID: c.RunnerTransport.Registrations[0].TenantID, Issuer: "https://idp.example", Audience: "themisy", DiscoveryURL: "https://idp.example/.well-known/openid-configuration", CacheTTL: "5m", TenantClaim: "organization", RoleClaim: "groups", RoleMappings: map[string][]string{"release-team": {"deployer"}}, DirectoryFile: "directory.json", DirectoryIssuer: "directory", DirectoryTrustBundleFile: "directory-trust.json", DirectoryMinimumRevision: 1, AttestationTrustBundleFile: "control-trust.json"}
+	c.Identity = Identity{Mode: "oidc", TenantID: c.RunnerTransport.Registrations[0].TenantID, Issuer: "https://idp.example", Audience: "themisy", DiscoveryURL: "https://idp.example/.well-known/openid-configuration", CacheTTL: "5m", TenantClaim: "organization", RoleClaim: "groups", RoleMappings: map[string][]string{"release-team": {"deployer"}}, DirectoryFile: "directory.json", DirectoryIssuer: "directory", DirectoryTrustBundleFile: "directory-trust.json", DirectoryMinimumRevision: 1, AttestationEndpoint: "https://identity.example/attest", AttestationIssuer: "https://identity.example", AttestationCAFile: "ca", AttestationClientCertFile: "cert", AttestationClientKeyFile: "key", AttestationTrustBundleFile: "identity-trust.json"}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}

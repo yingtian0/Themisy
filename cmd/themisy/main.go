@@ -107,7 +107,7 @@ func main() {
 		logger.Error("initialize grant execution path", "error", err)
 		os.Exit(1)
 	}
-	authority, resolver, err := buildIdentity(ctx, settings, persistentStore, grantService)
+	authority, resolver, err := buildIdentity(ctx, settings, persistentStore)
 	if err != nil {
 		logger.Error("initialize identity chain", "error", err)
 		os.Exit(1)

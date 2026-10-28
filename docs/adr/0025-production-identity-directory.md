@@ -28,7 +28,11 @@ Persist the greatest accepted revision and its content hash in each Control
 Plane and Runner database. Lower revisions and conflicting equal revisions fail
 closed. Deleting a membership or delegation in a higher revision revokes it.
 
-Consume the IdP token only in request memory. Replace it before persistence with
+Consume the IdP token only in request memory. Exchange it over pinned HTTPS mTLS
+with a separately deployed `identityattestor` workload. That workload independently
+verifies OIDC, Directory roles and agent delegation and signs with an identity-only
+key. The Control Plane/Worker and Runner have only its public trust bundle.
+Replace the token before persistence with
 a domain-separated Ed25519 verification receipt, valid for at most five minutes
 and never beyond the token. Bind issuer, subject, type (user/CI), tenant,
 audience, OIDC key fingerprint, request, agent and delegation. The receipt is
@@ -58,12 +62,15 @@ make revocation dependent on an untrusted update channel. A signed verification
 receipt plus independently provisioned Directory avoids those choices while
 requiring explicit trust provisioning and short-lived operation.
 
-The receipt is Control Plane attestation of OIDC verification, not an original
-IdP signature on the normalized receipt. The Runner trusts the configured
-Control Plane signing key for that fact, checks the IdP key remains trusted,
-and independently checks the signed Directory. A stronger independent identity
-exchange service would be a separate architecture change. Directory updates,
-trust roots and rollback fences need separate customer administration.
+The receipt is an independent identity authority's attestation of OIDC verification,
+not the original IdP signature on the normalized receipt. The Grant signer has
+no identity-attestor signing permission. A proof forged with the Grant key is
+rejected, even when the Grant itself is valid. Identity issuer, Directory issuer
+and Grant issuer are distinct; workload credentials, KMS policies and public
+trust bundles must preserve that separation. Both the Control Plane and Runner
+also check the IdP key remains trusted and independently read the signed
+Directory. The identity authority has its own durable audit and revision fence;
+an outage stops new starts instead of using cached receipts as login authority.
 
 Existing records are not rewritten. Quiesce old production writes, migrate both
 schemas, provision trust and Directory, then replan/reapprove. Read-only

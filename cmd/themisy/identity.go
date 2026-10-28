@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func buildIdentity(ctx context.Context, c config.Config, st *postgresstore.Store, grants *application.Grants) (*application.IdentityAuthority, api.IdentityResolver, error) {
+func buildIdentity(ctx context.Context, c config.Config, st *postgresstore.Store) (*application.IdentityAuthority, api.IdentityResolver, error) {
 	if err := c.Identity.Validate(); err != nil {
 		return nil, nil, err
 	}
@@ -34,11 +34,15 @@ func buildIdentity(ctx context.Context, c config.Config, st *postgresstore.Store
 	if _, err := directory.Read(ctx); err != nil {
 		return nil, nil, fmt.Errorf("identity Directory startup: %w", err)
 	}
-	attestationKeys := grant.FileKeys{Path: cfg.AttestationTrustBundleFile, Issuer: c.Grants.Issuer, Tenant: cfg.TenantID}
+	attestationKeys := grant.FileKeys{Path: cfg.AttestationTrustBundleFile, Issuer: cfg.AttestationIssuer, Tenant: cfg.TenantID}
 	if err := attestationKeys.Validate(ctx); err != nil {
 		return nil, nil, err
 	}
-	authority := &application.IdentityAuthority{Audit: st, Signer: grants.Signer, KeyID: c.Grants.Signing.KeyID, Verifier: &identity.AttestationVerifier{Issuer: c.Grants.Issuer, TenantID: cfg.TenantID, Audience: cfg.Audience, Keys: attestationKeys, OIDC: &oidc, Directory: directory}}
+	attester, err := identity.NewRemoteAttester(cfg.AttestationEndpoint, cfg.AttestationCAFile, cfg.AttestationClientCertFile, cfg.AttestationClientKeyFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	authority := &application.IdentityAuthority{Audit: st, Attester: attester, Verifier: &identity.AttestationVerifier{Issuer: cfg.AttestationIssuer, TenantID: cfg.TenantID, Audience: cfg.Audience, Keys: attestationKeys, OIDC: &oidc, Directory: directory}}
 	audited, err := api.NewAuditedOIDCIdentityResolver(api.OIDCPrincipalConfig{TenantID: cfg.TenantID, TenantClaim: cfg.TenantClaim, RoleClaim: cfg.RoleClaim, SubjectTypeClaim: cfg.SubjectTypeClaim, RoleMappings: cfg.RoleMappings, Verifier: oidc}, st)
 	if err != nil {
 		return nil, nil, err
