@@ -1,3 +1,5 @@
+context:
+  mode: synthetic # Development only. See docs/guides/source-admission.md.
 mode: development
 result_signing:
   provider: development

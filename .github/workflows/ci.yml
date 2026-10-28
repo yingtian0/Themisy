@@ -172,7 +172,7 @@ jobs:
       - name: Verify tenant-bound OIDC read API
         run: make test-oidc-read-api
 
-      - name: Verify signed observations and durable identity/Policy admission
+      - name: Verify signed observations and durable identity/Policy/Context admission
         run: make test-signed-observation
 
       - name: Verify shared workflow coordinator across processes

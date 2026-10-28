@@ -13,6 +13,7 @@ or a production support commitment. Task order: [#52](https://github.com/yingtia
 | coordinator acceptance `1d9fbfbd2a65d821c625278f228698eb108cd5aa` | Dedicated PostgreSQL independent-store and independent-OS-process tests passed locally with race detection; [reproduction target](runbooks/workflow-coordinator.md#reproduce-the-acceptance-gate) is now required in CI |
 | runtime verification `dc5f584fa4ac7f145639f81d7a512ed8f5509309` | [PR #93](https://github.com/yingtian0/Themisy/pull/93), [CI 40452048603](https://github.com/yingtian0/Themisy/actions/runs/40452048603), all five jobs succeeded; signed read-only observations, real PostgreSQL fixtures and simulated provider boundaries |
 | production identity `8d94cd97020f98fea6f66a442eb944dc516eed3d` | [PR #94](https://github.com/yingtian0/Themisy/pull/94), [CI 40624014693](https://github.com/yingtian0/Themisy/actions/runs/40624014693), all five jobs succeeded; independent identity attestation and durable Directory fences; no live IdP/cloud evidence |
+| Policy distribution `8724513cf2897a0e3a8a849d73b7af5a959f8489` | [PR #95](https://github.com/yingtian0/Themisy/pull/95), [CI 40628517563](https://github.com/yingtian0/Themisy/actions/runs/40628517563), all five jobs succeeded; scoped rollout, durable revision fences and synthetic customer boundaries |
 | This documentation revision | Git commit adding this table; document/link checks recorded in the associated PR. No execution changes |
 
 “Implemented” means code exists. “Simulated” includes mocks, fake SDKs, memory
@@ -46,9 +47,8 @@ Proposed; local acceptance is not production approval.
 ## Execution status and failure paths
 
 Paths below are repository-relative references in this revision. Historical PRs
-identify provenance; commit-specific CI evidence is listed above. New Policy
-rollout tests in this revision have local fixture evidence and require the PR's
-exact-head CI checks before merge. None of these rows is live cloud evidence.
+identify provenance; commit-specific CI evidence is listed above. New source-admission tests in this revision have local fixture evidence and require
+the PR's exact-head CI checks before merge. None of these rows is live cloud evidence.
 
 | Capability / scenario | Implementation / simulated evidence | Real DB / Temporal evidence | Real AWS / remaining gate |
 |---|---|---|---|
@@ -60,9 +60,9 @@ exact-head CI checks before merge. None of these rows is live cloud evidence.
 | Rollback and subsequent verification | Typed separate operation and simulated executor tests exist | `internal/workflow/deployment_result_integration_test.go` and signed recovery tests cover complete restored Deployment and one Write; `internal/application/deployment_restore_test.go` binds rollback Grant to restored source execution. Dedicated PostgreSQL/Temporal recovery target includes Worker process crashes | [#49](https://github.com/yingtian0/Themisy/issues/49), #48, #51; live rollback unverified |
 | UNKNOWN and restart, no blind retry | `internal/runner/recovery_integration_test.go`, journal ownership and read-only reconciliation | Main CI real PostgreSQL shared-journal/process recovery plus Temporal integration | Workflow/Run convergence [#38](https://github.com/yingtian0/Themisy/issues/38) and backup/retention [#30](https://github.com/yingtian0/Themisy/issues/30) completed. `make test-workflow-recovery` and `make verify-runner-journal-backup-restore` reproduce positive/negative gates; live AWS remains unverified |
 | STS credentials and fixed ECS targets | SDK fakes in `pkg/credentials`, `adapters/ecs`; Runner-local allowlists plus active registered task-definition and exact digest preflight ([PR #86](https://github.com/yingtian0/Themisy/pull/86)) | Not a cloud credential test | [#6](https://github.com/yingtian0/Themisy/issues/6), [#7](https://github.com/yingtian0/Themisy/issues/7), [#11](https://github.com/yingtian0/Themisy/issues/11) live KMS/STS/ECS/CloudTrail and direct Write denial pending |
-| Policy distribution | Authenticated registry/assignment/status/shadow/rollback API, scoped monotonic revisions, independent embedded mandatory baseline, fresh Runner verification; [guide](guides/policy-distribution.md) | Local real-PostgreSQL restart and concurrent admission tests plus full race suite; PR CI required | #10 local implementation; real customer canary rollout unverified |
+| Policy distribution | Authenticated registry/assignment/status/shadow/rollback API, scoped monotonic revisions, independent embedded mandatory baseline, fresh Runner verification; [guide](guides/policy-distribution.md) | Exact-head CI above includes real-PostgreSQL restart and concurrent admission tests plus the race suite | #10 local implementation merged; real customer canary rollout unverified |
 | Identity | [PR #94](https://github.com/yingtian0/Themisy/pull/94): OIDC REST/UI/MCP, separate mTLS identity attestor, signed Directory, requester/approver/delegation rechecks; [guide](guides/production-identity.md) | Exact-head CI above includes real DB fences and simulated HTTPS IdP/exchange boundaries | #12 local trust chain implemented; customer key/cert/Directory provisioning and live IdP validation unverified |
-| Pre-dispatch Context | [Typed source assembly](context/source-context.md) combines collector-minted CI/dependency/metadata observations; default planning still needs trusted-source admission wiring | Dedicated source audit tests are observations, not authorization | #13 remains open; caller CI/health booleans are not production evidence |
+| Pre-dispatch Context | [Signed source admission](guides/source-admission.md) connects independently signed build provenance, typed CI/dependency observations and verified metadata to standard Plan/Grant/Runner authorization | Local real-PostgreSQL source fences and end-to-end fixtures; exact-head PR CI required | #13 remains open: owner confirmed staging unavailable; [external procedure](guides/source-admission-staging.md) is unexecuted; caller booleans are not authority |
 
 Private security triage is tracked through [SECURITY.md](../SECURITY.md), with
 channel availability in [#39](https://github.com/yingtian0/Themisy/issues/39).
