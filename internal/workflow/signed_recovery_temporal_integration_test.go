@@ -349,7 +349,7 @@ func testTemporalSignedRecoveryOptions(t *testing.T, options signedRecoveryOptio
 		wantRun = domain.RunBlocked
 	}
 	for _, value := range []domain.ReleaseRun{finished, *saved} {
-		if options.nextStepAfterExpiry && (len(value.Steps) != 2 || value.Steps[1].Status != domain.StepUnknown) {
+		if options.nextStepAfterExpiry && (len(value.Steps) != 2 || value.Steps[1].Status != domain.StepBlocked || value.AuthorizationStop == nil || value.AuthorizationStop.ReasonCode != "REAUTHORIZATION_REQUIRED") {
 			t.Fatalf("expired downstream context advanced: %+v", value)
 		}
 		if cancelBeforeRecovery {
@@ -389,12 +389,9 @@ func testTemporalSignedRecoveryOptions(t *testing.T, options signedRecoveryOptio
 		if !time.Now().After(run.Plan.ExpiresAt) || !time.Now().After(dispatch.Grant.ExpiresAt) {
 			t.Fatal("recovery did not cross expiry")
 		}
-		next, err := replacement.GetExecution("mock", run.ID+"/staging/payments/"+digest)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if next.Status != store.ExecutionUnknown || next.Payload["grant_id"] != nil {
-			t.Fatal("expired downstream step obtained a Grant or advanced")
+		_, err := replacement.GetExecution("mock", run.ID+"/staging/payments/"+digest)
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("expired downstream step reserved an execution: %v", err)
 		}
 	}
 	// Claiming the initial deploy consumes its dispatch outbox row. Count
@@ -406,7 +403,7 @@ func testTemporalSignedRecoveryOptions(t *testing.T, options signedRecoveryOptio
 	counts := map[protocol.Capability]int{}
 	expiryDenied := false
 	for _, event := range audits {
-		if event.Action == "deployment.result" && event.ResourceID == "payments" && strings.Contains(fmt.Sprint(event.Details["error"]), "plan or grant expired") {
+		if event.Action == "authorization.expired" && event.ResourceID == "payments" && event.Result == "REAUTHORIZATION_REQUIRED" && event.Details["object"] == "plan" {
 			expiryDenied = true
 		}
 		if event.Action == "grant.issue" {

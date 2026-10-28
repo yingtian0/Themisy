@@ -208,9 +208,9 @@ acceptance after expiry; it grants no permission to repeat an expired Write.
 `TestTemporalExpiredRecoveryCannotAuthorizeNextStep` uses a two-Step Plan and
 independent Worker processes. The first authorized operation can recover and
 verify after Plan/Grant expiry, but the real issuer rejects the next Step because
-its Plan expired. The rejection audit must identify expiry, not a missing fixture
-field. A store guard fails any attempted new Grant persistence. The Run stays
-BLOCKED, the next Step UNKNOWN, and only the first Grant exists. This deliberately
-retains the current conservative UNKNOWN projection for a failed downstream
-activity. Known pre-reservation expiry now stops explicitly; a reserved or unknown operation retains reconciliation semantics. No expiry is extended
-and no provider Write is used to discover the old result.
+its Plan expired. The authorization audit identifies the expired Plan and
+`REAUTHORIZATION_REQUIRED`. A store guard fails any attempted new Grant
+persistence. The Run stays BLOCKED, the next Step is BLOCKED with no execution
+reservation, and only the first Grant exists. Known pre-reservation expiry stops
+explicitly; reserved/UNKNOWN operations retain read-only reconciliation. No
+expiry is extended and no provider Write is used to discover the old result.
