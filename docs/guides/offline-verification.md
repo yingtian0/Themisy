@@ -55,3 +55,23 @@ fakes, which are not evidence of a live provider.
 The two companion examples now specify Go 1.26.10, matching `go.mod` and both
 courses. Independent timing, published distribution and actual continued use
 remain unmeasured and tracked in #43/#47; their empty record fields are retained.
+
+## Candidate package reproduction on 2026-11-03
+
+Source: main `4dceded8f4b25f80d46a1ea7d3aae73f8cbff9d7`; macOS arm64, Go 1.26.10.
+Maintainer check of the local, unsigned, unpublished candidate `0.1.0-alpha.0`
+built with `scripts/package-offline.py`. It is not an independent participant
+trial, a clean separate machine, or a published release.
+
+| Scope | Result |
+|---|---|
+| `shasum -a 256 -c SHA256SUMS` | archive OK |
+| Extract into a new directory; run with `env -i PATH=/usr/bin:/bin` | `version` reports `0.1.0-alpha.0` and the source commit above, exit 0 |
+| `offline-plan -at 2026-10-18T00:00:00Z examples/offline/release.json` | exit 0; synthetic-Context notice and Plan emitted |
+| `offline-plan examples/offline/rejected.json` | exit 1; `unknown service "missing-api"`; no Plan |
+| `scripts/verify-offline-package.py` | PASS: checksum, linked-module SBOM binding, embedded source/version, normal/rejected examples |
+
+Still open for #43: a published, tagged alpha; signed provenance; an execution
+image (not part of the offline CLI scope); full component/license review; and a
+clean-machine run by someone other than the packager. Publishing a release
+requires a separate maintainer decision.
