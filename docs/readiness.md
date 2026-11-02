@@ -1,6 +1,6 @@
 # Readiness and supported evaluation scope
 
-Reviewed 2026-10-28 (Asia/Tokyo). This is a development snapshot, not a release
+Reviewed 2026-11-03 (Asia/Tokyo). This is a development snapshot, not a release
 or a production support commitment. Task order: [#52](https://github.com/yingtian0/Themisy/issues/52).
 
 ## Versions and evidence
@@ -15,6 +15,7 @@ or a production support commitment. Task order: [#52](https://github.com/yingtia
 | production identity `8d94cd97020f98fea6f66a442eb944dc516eed3d` | [PR #94](https://github.com/yingtian0/Themisy/pull/94), [CI 40624014693](https://github.com/yingtian0/Themisy/actions/runs/40624014693), all five jobs succeeded; independent identity attestation and durable Directory fences; no live IdP/cloud evidence |
 | Policy distribution `8724513cf2897a0e3a8a849d73b7af5a959f8489` | [PR #95](https://github.com/yingtian0/Themisy/pull/95), [CI 40628517563](https://github.com/yingtian0/Themisy/actions/runs/40628517563), all five jobs succeeded; scoped rollout, durable revision fences and synthetic customer boundaries |
 | Signed source admission `45125355f758d0903d13f6c79cd7c9ec88783d9d` | [PR #96](https://github.com/yingtian0/Themisy/pull/96), [CI 40634453461](https://github.com/yingtian0/Themisy/actions/runs/40634453461), all five jobs succeeded; real PostgreSQL and synthetic source boundaries, no real staging |
+| Authorization lifetime and compensation `4dceded8f4b25f80d46a1ea7d3aae73f8cbff9d7` | [PR #97](https://github.com/yingtian0/Themisy/pull/97) (#51), [CI 40712627511](https://github.com/yingtian0/Themisy/actions/runs/40712627511), all five jobs succeeded on main; v2 authorization epoch/expiry, explicit stop, single-use compensation bound to the original successful execution; synthetic boundaries, no live cloud |
 | This documentation revision | Git commit adding this table; document/link checks recorded in the associated PR. No execution changes |
 
 “Implemented” means code exists. “Simulated” includes mocks, fake SDKs, memory

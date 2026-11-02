@@ -47,6 +47,11 @@ No versioned alpha binary/image has been published by this work (#43).
   refuse success; this has not been validated against live AWS/Datadog.
 - Opt-in, audited CI/dependency/metadata and runtime snapshots. These source
   observations are not yet the default production authorization Context.
+- Bounded authorization lifetime: v2 Grants carry an authorization epoch and
+  expiry; operators can stop a Run explicitly, and compensation is single-use,
+  bound to the original successful execution and its known restore target. After
+  the original Plan/approval/identity period ends there is no automatic
+  re-authorization, successor Run or rollback ([ADR-0011](docs/adr/0011-authorization-and-compensation-lifetimes.md)).
 - REST, CLI, structured MCP, and a minimal status/approval UI using the same
   application boundary. [Approval cards](docs/guides/approval-review.md) display the pinned change, declared
   impact, observation availability and explicit unknowns; they do not infer
