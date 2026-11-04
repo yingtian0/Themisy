@@ -75,3 +75,14 @@ Still open for #43: a published, tagged alpha; signed provenance; an execution
 image (not part of the offline CLI scope); full component/license review; and a
 clean-machine run by someone other than the packager. Publishing a release
 requires a separate maintainer decision.
+
+## Signed provenance exercise on 2026-11-05
+
+[Workflow run 41881938281](https://github.com/yingtian0/Themisy/actions/runs/41881938281)
+(`offline-release-candidate.yml`, label `0.1.0-alpha.0`, linux/amd64) succeeded. The
+downloaded archive passed `gh attestation verify ... --repo yingtian0/Themisy` (exit 0,
+one Sigstore attestation found for its SHA-256). No tag, Release or image was
+created; the artifact expires with workflow retention. This shows which workflow and
+commit built the archive, not license/vulnerability completeness. The label is a
+candidate, not an approved alpha; publication, an execution image and an independent
+clean-machine run remain open under #43.
