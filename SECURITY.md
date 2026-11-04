@@ -8,7 +8,7 @@ Themisy is a prototype and is not production ready. The in-memory store, mock ad
 
 Do not open a public issue or pull request for a suspected vulnerability.
 
-Use the repository's private security-advisory reporting feature. Include:
+Use the repository's private security-advisory reporting feature (Security → Report a vulnerability; enabled 2026-11-05). Maintainer scope and absence handling: [MAINTAINERS.md](MAINTAINERS.md). Include:
 
 - affected version or commit;
 - component and deployment assumptions;

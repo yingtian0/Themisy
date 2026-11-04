@@ -14,8 +14,8 @@ Thank you for helping build a safer change-execution boundary. This project welc
 For your first contribution, follow the [small first PR guide](docs/guides/first-contribution.md).
 It separates the essential steps from checks needed only for affected boundaries.
 Questions about a non-sensitive change belong on its Issue or
-[#45](https://github.com/yingtian0/Themisy/issues/45). Named review/triage ownership
-and private community contacts are still tracked in #44; no response SLA is promised.
+[#45](https://github.com/yingtian0/Themisy/issues/45). Review/triage ownership
+and contacts are in [MAINTAINERS.md](MAINTAINERS.md); no response SLA is promised.
 
 Go 1.26.10 or later is required.
 
