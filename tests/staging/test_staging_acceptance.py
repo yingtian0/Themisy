@@ -1,6 +1,4 @@
 import json
-import os
-import stat
 import sys
 import tempfile
 import unittest
