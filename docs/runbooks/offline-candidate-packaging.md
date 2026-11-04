@@ -58,3 +58,21 @@ but forged BuildInfo/SBOM pair must still fail their specific inner checks.
 The trusted candidate's original binary is used; test artifacts are separate.
 CI runs these controls only after building its own native candidate, so absence
 of an explicit candidate is not presented as a passed tampering test.
+
+## Provenance workflow (manual)
+
+`.github/workflows/offline-release-candidate.yml` is `workflow_dispatch` only. It
+builds and verifies the linux/amd64 candidate for the selected ref and attests the
+archive and `SHA256SUMS` with `actions/attest-build-provenance` (Sigstore-signed
+SLSA provenance bound to this repository, workflow and commit). Only that job holds
+`id-token`/`attestations: write`; it creates no tag, Release or image, and ordinary
+PR CI permissions are unchanged. After downloading the workflow artifact, a
+consumer verifies origin with:
+
+```bash
+gh attestation verify themisyctl_<version>_linux_amd64.tar.gz --repo yingtian0/Themisy
+```
+
+The attestation proves which workflow/commit built the file; it is not a
+license, vulnerability or safety review. Not yet exercised: run it only after the
+PR merges, then record the run and the verification output.

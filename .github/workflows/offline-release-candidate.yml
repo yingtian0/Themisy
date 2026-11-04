@@ -1,0 +1,62 @@
+name: Offline release candidate
+run-name: Offline candidate ${{ inputs.version }} from ${{ github.sha }}
+
+# Manual only. Builds the linux/amd64 offline CLI candidate from the selected
+# committed ref, verifies it, and attaches a Sigstore-signed SLSA build
+# provenance attestation. It uploads a workflow artifact only: it creates no tag,
+# GitHub Release or container image. Publishing remains a separate maintainer
+# decision.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Numeric semantic-version candidate label, e.g. 0.1.0-alpha.0"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  candidate:
+    name: Build, verify and attest candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build candidate
+        env:
+          CANDIDATE_VERSION: ${{ inputs.version }}
+        run: python3 scripts/package-offline.py --output "$RUNNER_TEMP/candidate" --version "$CANDIDATE_VERSION"
+
+      - name: Verify candidate
+        run: python3 scripts/verify-offline-package.py "$RUNNER_TEMP/candidate"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/candidate/*.tar.gz
+            ${{ runner.temp }}/candidate/SHA256SUMS
+
+      - name: Upload candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: offline-candidate-${{ inputs.version }}
+          path: ${{ runner.temp }}/candidate/
+          if-no-files-found: error
+          retention-days: 30
