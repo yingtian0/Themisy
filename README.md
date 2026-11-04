@@ -131,10 +131,10 @@ identity at an internet-facing ingress. They are not production authentication.
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [governance](GOVERNANCE.md), and the
+See [CONTRIBUTING.md](CONTRIBUTING.md), [maintainers and contacts](MAINTAINERS.md), [governance](GOVERNANCE.md), and the
 [Code of Conduct](CODE_OF_CONDUCT.md). Follow [SECURITY.md](SECURITY.md) for private
-reports; never put vulnerability details in public Issues or PRs. Reporting
-channel availability remains tracked in #39.
+reports; never put vulnerability details in public Issues or PRs. Private vulnerability reporting is enabled on the repository; external-reporter
+reachability is still being confirmed (#39).
 
 [Roadmap #52](https://github.com/yingtian0/Themisy/issues/52) is the current task
 order. Licensed under [Apache License 2.0](LICENSE).

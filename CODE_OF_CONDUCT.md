@@ -34,7 +34,7 @@ This Code of Conduct applies within project spaces and when an individual is off
 
 ## Enforcement
 
-Report abusive, harassing, or otherwise unacceptable behavior privately to the maintainers through the repository owner's private contact channel. If no private community contact is published, use the repository hosting provider's abuse-reporting mechanism. Do not use the security vulnerability channel for conduct reports unless the report also describes a security risk.
+Report abusive, harassing, or otherwise unacceptable behavior privately to the maintainers by email to haidouyingtian0@gmail.com (see [MAINTAINERS.md](MAINTAINERS.md)). If you cannot use that address, use the repository hosting provider's abuse-reporting mechanism. Do not use the security vulnerability channel for conduct reports unless the report also describes a security risk.
 
 Maintainers will respect the privacy and security of reporters. Enforcement decisions follow the correction, warning, temporary ban, and permanent ban guidelines in the [Contributor Covenant enforcement ladder](https://www.contributor-covenant.org/version/2/1/code_of_conduct/enforcement/).
 
