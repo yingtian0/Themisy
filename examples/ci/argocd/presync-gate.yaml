@@ -1,0 +1,47 @@
+# REFERENCE EXAMPLE (not applied by this repository). Kubernetes/Argo CD config-repo
+# pattern: a PreSync hook that refuses to sync unless a Themisy Run for THIS plan hash
+# SUCCEEDED. Replace every <placeholder>. Non-production alpha: staging only.
+#
+# LIMIT: this is a consistency gate, NOT an enforcement boundary. Argo CD still holds
+# its own cluster write permission; if it (or anyone) can sync without the hook, the
+# change bypasses Themisy. Treat Argo's write path as one that must be removed or
+# restricted before claiming control; Themisy's Runner-executed typed operations
+# (ECS today) are the enforced path. No Argo CD adapter exists in Themisy.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: themisy-presync-gate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: gate
+          # Image providing python3, themisyctl and scripts/themisy_gate.py; pin by digest.
+          image: <your-registry>/themisy-gate@sha256:<digest>
+          command: ["python3", "/opt/themisy/themisy_gate.py", "verify",
+                    "$(THEMISY_RUN_ID)", "--plan-hash", "$(THEMISY_PLAN_HASH)",
+                    "--environment", "staging"]
+          env:
+            - name: THEMISY_SERVER
+              value: https://<control-plane>
+            - name: THEMISY_TENANT_ID
+              value: <tenant>
+            - name: THEMISY_OIDC_TOKEN_FILE
+              value: /var/run/secrets/themisy/token # projected, audience-bound token
+            # Committed together with the manifests being synced (reviewed in the PR):
+            - name: THEMISY_RUN_ID
+              value: <run id>
+            - name: THEMISY_PLAN_HASH
+              value: <plan hash>
+          volumeMounts:
+            - {name: themisy-token, mountPath: /var/run/secrets/themisy, readOnly: true}
+      volumes:
+        - name: themisy-token
+          projected:
+            sources:
+              - serviceAccountToken: {audience: themisy, path: token, expirationSeconds: 600}

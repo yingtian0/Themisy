@@ -1,0 +1,61 @@
+# REFERENCE EXAMPLE (not enabled in this repository). Copy into your service
+# repository's .github/workflows/. Non-production alpha: use a dedicated staging
+# Control Plane only.
+#
+# This job holds NO cloud credentials and performs NO deployment. It asks the
+# Themisy Control Plane to plan/start a release; Themisy approvals, the signed Grant
+# and the customer Runner perform the Write. The job succeeds only if the Control
+# Plane reports the Run SUCCEEDED. "Tests passed" is not deployment success. For the
+# boundary to mean anything, this repository's CI identity must also have no direct
+# ecs:UpdateService permission (verify with scripts/staging_acceptance.py iam-denial).
+name: themisy-release
+on:
+  workflow_dispatch:
+    inputs:
+      intent:
+        description: Path to the ReleaseIntent JSON in this repository
+        required: true
+        default: release/intent.json
+
+permissions:
+  contents: read
+  id-token: write # only to obtain an OIDC token for the Control Plane
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      THEMISY_SERVER: ${{ vars.THEMISY_SERVER }} # https:// Control Plane URL
+      THEMISY_TENANT_ID: ${{ vars.THEMISY_TENANT_ID }}
+      TAG: v0.1.0-alpha.0
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Fetch and verify themisyctl
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" -R yingtian0/Themisy -D "$RUNNER_TEMP/themisy"
+          (cd "$RUNNER_TEMP/themisy" && sha256sum -c SHA256SUMS)
+          gh attestation verify "$RUNNER_TEMP"/themisy/*.tar.gz --repo yingtian0/Themisy
+          tar -xzf "$RUNNER_TEMP"/themisy/*.tar.gz -C "$RUNNER_TEMP/themisy"
+          echo "THEMISYCTL=$(echo "$RUNNER_TEMP"/themisy/themisyctl_*/themisyctl)" >> "$GITHUB_ENV"
+
+      - name: Obtain OIDC token (protected file)
+        run: |
+          umask 077
+          echo "THEMISY_OIDC_TOKEN_FILE=$RUNNER_TEMP/oidc" >> "$GITHUB_ENV"
+          curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=themisy" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])' > "$RUNNER_TEMP/oidc"
+
+      # scripts/themisy_gate.py is copied (and reviewed) from the Themisy repository
+      # into this repository; it is not part of the v0.1.0-alpha.0 archive.
+      - name: Plan, start, and wait for verified success
+        run: |
+          "$THEMISYCTL" plan "${{ inputs.intent }}" | tee plan.json
+          RUN=$(python3 scripts/themisy_gate.py --themisyctl "$THEMISYCTL" submit "${{ inputs.intent }}")
+          # Approvals happen out of band in Themisy; WAITING_APPROVAL ends as exit 3, not success.
+          python3 scripts/themisy_gate.py --themisyctl "$THEMISYCTL" wait "$RUN" --timeout 3000
