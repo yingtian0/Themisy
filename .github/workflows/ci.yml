@@ -84,6 +84,12 @@ jobs:
       - name: Test offline package SBOM metadata
         run: python3 -m unittest discover -s tests/packaging -p test_offline_sbom.py -v
 
+      - name: Test staging acceptance helper (fake AWS CLI, no network)
+        run: python3 -m unittest discover -s tests/staging -p 'test_*.py' -v
+
+      - name: Test CI/CD gate helper (fake themisyctl, no network)
+        run: python3 -m unittest discover -s tests/integrations -p 'test_*.py' -v
+
       - name: Build and verify local offline candidate
         run: |
           python3 scripts/package-offline.py --output "$RUNNER_TEMP/offline-candidate"
