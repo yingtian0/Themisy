@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 
 from offline_sbom import build_sbom, sha256
+from third_party_notices import build as build_notices
 
 
 def run(*args, cwd=None, env=None):
@@ -59,6 +60,7 @@ def main():
         shutil.copytree(source / "examples", bundle / "examples")
         shutil.copyfile(source / "LICENSE", bundle / "LICENSE")
         shutil.copyfile(source / "docs/guides/offline-package.md", bundle / "README.md")
+        (bundle / "THIRD_PARTY_NOTICES.txt").write_text(build_notices("./cmd/themisyctl", source, env))
         info = run("go", "version", "-m", str(bundle / "themisyctl"), cwd=source, env=env).decode().splitlines()
         (bundle / "build-info.txt").write_text("\n".join(info[1:]) + "\n")
         structured_info = json.loads(run("go", "version", "-m", "-json", str(bundle / "themisyctl"), cwd=source, env=env))

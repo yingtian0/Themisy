@@ -49,6 +49,9 @@ a new candidate in another directory, record its source/version and repeat the
 normal/rejected examples. Do not overwrite existing files blindly. Existing
 server APIs, protocols and production Plans are unchanged by this CLI package.
 
+`THIRD_PARTY_NOTICES.txt` reproduces the license texts of linked modules and the Go
+toolchain (candidates from 0.1.0-alpha.1 onward; see the license review runbook).
+
 Release blockers remain: private reporting availability (#39), reviewed alpha
 tag/source, full SBOM/component/license review and signed provenance, plus
 independent clean-machine/user
