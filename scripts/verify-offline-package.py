@@ -33,6 +33,9 @@ def verify(directory):
         version = json.loads(subprocess.check_output([str(root / "themisyctl"), "version"], cwd=root))
         if version != {"version": manifest["version"], "source_commit": manifest["source_commit"]}:
             raise ValueError("version/commit mismatch")
+        notices = root / "THIRD_PARTY_NOTICES.txt"
+        if not notices.is_file() or "Go standard library" not in notices.read_text():
+            raise ValueError("third-party notices are missing")
         sbom_info = manifest.get("sbom", {})
         if sbom_info.get("file") != "sbom.spdx.json":
             raise ValueError("SBOM file is missing or unsupported")
