@@ -32,7 +32,7 @@ Reproduce: `python3 scripts/license_inventory.py ./cmd/themisyctl` (CLI) or `./c
 | Scope | Result 2026-11-05 |
 |---|---|
 | CLI (`./cmd/themisyctl`), 35 modules | Apache-2.0 16, MIT 13, BSD-3-Clause 5, BSD-2-Clause 1; none needs review |
-| All commands (`./cmd/...`), 69 modules | Apache-2.0 29, MIT 26, BSD-3-Clause 10, BSD-2-Clause 2, ISC 1; one module with no license file in the module cache: `nexus-rpc/nexus-proto-annotations@v0.1.0` — its upstream repository declares MIT (GitHub license API) but that is not confirmed in the cached module, so it must be re-verified before any image |
+| All commands (`./cmd/...`), 69 modules | Apache-2.0 29, MIT 26, BSD-3-Clause 10, BSD-2-Clause 2, ISC 1; one module with no license file in the module cache: `nexus-rpc/nexus-proto-annotations@v0.1.0` — its upstream repository declares MIT (GitHub license API) but that is not confirmed in the cached module, so it must be re-verified before any image. **Re-verified 2026-11-07 against upstream:** tag `v0.1.0` (commit date 2026-03-30) contains no LICENSE file (tree: README.md, buf files, go.mod/go.sum, `go/`, `nexusannotations/`); the MIT LICENSE was added on the default branch on 2026-06-29, after the tag. The declared MIT therefore does not apply to the pinned `v0.1.0` content as published. Before building any execution image: upgrade to a tagged release that ships the LICENSE, or obtain written confirmation from upstream, or exclude the module; do not ship it under an assumed MIT notice |
 | Copyleft (GPL/AGPL/MPL) | None detected by the heuristic |
 
 Classification is a text heuristic; unknown texts are reported, not guessed. The SBOM
